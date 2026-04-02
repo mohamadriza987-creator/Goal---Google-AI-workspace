@@ -1,0 +1,5 @@
+{
+  "name": "Project Goal",
+  "description": "A voice-first goal-setting app that uses AI to structure your spoken intent into clear, actionable goals and matches you with like-minded community groups.",
+  "requestFramePermissions": ["microphone", "geolocation"]
+}

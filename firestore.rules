@@ -1,0 +1,168 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: /users/{userId}
+// Fields: id, displayName, username, avatarUrl, bio, locality, geohash, lat, lng, preferredLanguage, hiddenUsers, blockedUsers, trustSignals, createdAt, updatedAt
+//
+// Collection: /goals/{goalId}
+// Fields: id, ownerId, title, description, originalVoiceTranscript, originalLanguage, aiGeneratedTitle, aiGeneratedDescription, visibility, publicFields, category, status, progressPercent, likesCount, groupId, createdAt, updatedAt
+//
+// Collection: /goals/{goalId}/tasks/{taskId}
+// Fields: id, goalId, text, source, order, isDone, completedAt, createdAt
+//
+// Collection: /goals/{goalId}/notes/{noteId}
+// Fields: id, goalId, ownerId, sourceType, sourceMessageId, text, privateComment, reminderAt, createdAt
+//
+// Collection: /groups/{groupId}
+// Fields: id, derivedGoalTheme, localityCenter, geohash, lat, lng, radiusUsed, targetRegion, memberCount, maxMembers, createdAt, updatedAt
+//
+// Collection: /groups/{groupId}/members/{memberId}
+// Fields: id, groupId, userId, goalId, joinedAt
+//
+// Collection: /groups/{groupId}/messages/{messageId}
+// Fields: id, groupId, userId, content, contentType, replyToMessageId, threadRootId, reactions, attachmentMetadata, createdAt
+//
+// Collection: /reports/{reportId}
+// Fields: id, reporterId, reportedUserId, messageId, reason, status, createdAt
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.ownerId;
+    }
+
+    function isUserDoc(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidString(field, min, max) {
+      return request.resource.data[field] is string && 
+             request.resource.data[field].size() >= min && 
+             request.resource.data[field].size() <= max;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
+             data.username is string && data.username.size() > 0 && data.username.size() < 50;
+    }
+
+    function isValidGoal(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isValidTask(data) {
+      return data.text is string && data.text.size() > 0 && data.text.size() < 500;
+    }
+
+    function isValidNote(data) {
+      return data.text is string && data.text.size() > 0 && data.text.size() < 2000 &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "mohamadriza987@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    function isNotBlockedBy(authorId) {
+      return !(request.auth.uid in get(/databases/$(database)/documents/users/$(authorId)).data.blockedUsers);
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isUserDoc(userId) && isValidUser(request.resource.data) && hasOnlyAllowedFields(['displayName', 'username', 'avatarUrl', 'bio', 'locality', 'geohash', 'lat', 'lng', 'preferredLanguage', 'hiddenUsers', 'blockedUsers', 'trustSignals', 'createdAt', 'updatedAt']);
+      allow update: if isUserDoc(userId) && isValidUser(request.resource.data) && hasOnlyAllowedFields(['displayName', 'username', 'avatarUrl', 'bio', 'locality', 'geohash', 'lat', 'lng', 'preferredLanguage', 'hiddenUsers', 'blockedUsers', 'trustSignals', 'createdAt', 'updatedAt']);
+    }
+
+    // Allow collection group queries for tasks
+    match /{path=**}/tasks/{taskId} {
+      allow read: if isAuthenticated() && 
+        (resource == null || get(/databases/$(database)/documents/goals/$(resource.data.goalId)).data.ownerId == request.auth.uid);
+    }
+
+    match /goals/{goalId} {
+      allow read: if isAuthenticated() && 
+                    (resource.data.visibility == 'public' || resource.data.visibility == 'group' || resource.data.ownerId == request.auth.uid) &&
+                    (resource.data.ownerId == request.auth.uid || isNotBlockedBy(resource.data.ownerId));
+      allow create: if isAuthenticated() && isValidGoal(request.resource.data);
+      allow update: if isAuthenticated() && (resource.data.ownerId == request.auth.uid) && isValidGoal(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+
+      match /tasks/{taskId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid && isValidTask(request.resource.data);
+        allow update: if isAuthenticated() && get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid && isValidTask(request.resource.data);
+        allow delete: if isAuthenticated() && get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid;
+      }
+
+      match /notes/{noteId} {
+        allow read: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+        allow create: if isAuthenticated() && isValidNote(request.resource.data);
+        allow update: if isAuthenticated() && resource.data.ownerId == request.auth.uid && isValidNote(request.resource.data);
+        allow delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+      }
+    }
+
+    match /groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+
+      match /members/{memberId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+        allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      }
+
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isNotBlockedBy(resource.data.userId));
+        allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+        allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+        allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      }
+    }
+
+    match /moderation_events/{eventId} {
+      allow read: if false;
+      allow create: if isAuthenticated() && request.resource.data.actorUserId == request.auth.uid;
+    }
+
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() && request.resource.data.reporterId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}
