@@ -4,6 +4,7 @@ export interface User {
   username: string;
   avatarUrl?: string;
   bio?: string;
+  age?: number;
   locality?: string;
   geohash?: string;
   lat?: number;
@@ -34,6 +35,8 @@ export interface Goal {
   groupId?: string;
   createdAt: string;
   updatedAt?: string;
+  savingStatus?: 'saving' | 'success' | 'error';
+  draftData?: any;
 }
 
 export interface TaskNote {

@@ -15,7 +15,10 @@ interface CommunityScreenProps {
   reportUser: (reportedUserId: string, messageId: string, reason: string) => Promise<void>;
 }
 
+import { useTranslation } from '../contexts/LanguageContext';
+
 export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser }: CommunityScreenProps) {
+  const { t } = useTranslation();
   const [messages, setMessages] = useState<CommunityMessage[]>([]);
   const [activeGroup, setActiveGroup] = useState<Group | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'image' | 'video' | 'link' | 'thread'>('all');
@@ -23,6 +26,26 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
   const [mediaType, setMediaType] = useState<'image' | 'video'>('image');
   const [mediaUrl, setMediaUrl] = useState('');
   const [isViewOnce, setIsViewOnce] = useState(false);
+  const [messageInput, setMessageInput] = useState('');
+
+  // Auto-resize textareas
+  useEffect(() => {
+    const adjustHeights = () => {
+      const textareas = document.querySelectorAll('textarea');
+      textareas.forEach(ta => {
+        ta.style.height = 'auto';
+        ta.style.height = (ta.scrollHeight) + 'px';
+      });
+    };
+    
+    const timeoutId = setTimeout(adjustHeights, 50);
+    
+    window.addEventListener('resize', adjustHeights);
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', adjustHeights);
+    };
+  }, [messageInput, isMediaModalOpen]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
@@ -89,8 +112,8 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
     >
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Community</h1>
-          <p className="text-zinc-500 text-sm mt-1">Goal Group: {activeGroup?.derivedGoalTheme || "Matching..."}</p>
+          <h1 className="text-3xl font-bold tracking-tight">{t('community')}</h1>
+          <p className="text-zinc-500 text-sm mt-1">{t('goalGroup')}: {activeGroup?.derivedGoalTheme || t('matching') + "..."}</p>
         </div>
         <div className="flex gap-2">
           <div className="relative group">
@@ -127,8 +150,8 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
             <div className="w-16 h-16 bg-zinc-900 rounded-full flex items-center justify-center mb-4 border border-zinc-800">
               <MessageSquare size={24} className="text-zinc-700" />
             </div>
-            <p className="text-zinc-500 font-medium">No messages yet</p>
-            <p className="text-zinc-600 text-xs mt-2">Be the first to start the conversation!</p>
+            <p className="text-zinc-500 font-medium">{t('noMessages')}</p>
+            <p className="text-zinc-600 text-xs mt-2">{t('beFirst')}</p>
           </div>
         )}
 
@@ -310,23 +333,37 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
           >
             <Plus size={20} />
           </button>
-          <input 
-            placeholder="Message the group..."
-            className="flex-1 bg-transparent border-none focus:ring-0 py-3 text-sm"
+          <textarea 
+            placeholder={t('messageGroup') + "..."}
+            value={messageInput}
+            onChange={(e) => {
+              setMessageInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = e.target.scrollHeight + 'px';
+            }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              target.style.height = 'auto';
+              target.style.height = target.scrollHeight + 'px';
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.currentTarget.value || mediaUrl)) {
-                handleSendMessage(e.currentTarget.value);
-                e.currentTarget.value = '';
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (messageInput.trim() || mediaUrl) {
+                  handleSendMessage(messageInput);
+                  setMessageInput('');
+                }
               }
             }}
+            rows={1}
+            className="flex-1 bg-transparent border-none focus:ring-0 py-3 text-sm resize-none overflow-hidden"
           />
           <button className="p-3 text-zinc-500 hover:text-white"><Mic size={20} /></button>
           <button 
-            onClick={(e) => {
-              const input = e.currentTarget.previousElementSibling?.previousElementSibling as HTMLInputElement;
-              if (input.value || mediaUrl) {
-                handleSendMessage(input.value);
-                input.value = '';
+            onClick={() => {
+              if (messageInput.trim() || mediaUrl) {
+                handleSendMessage(messageInput);
+                setMessageInput('');
               }
             }}
             className="p-3 bg-white text-black rounded-2xl"

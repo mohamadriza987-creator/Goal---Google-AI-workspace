@@ -4,25 +4,62 @@ import { auth, db } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import { Shield, MoreHorizontal, LogOut, Plus } from 'lucide-react';
+import { cn } from '../lib/utils';
 
 interface ProfileScreenProps {
   user: FirebaseUser | null;
 }
 
+import { useTranslation } from '../contexts/LanguageContext';
+
 export function ProfileScreen({ user }: ProfileScreenProps) {
+  const { t, language, setLanguage } = useTranslation();
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="max-w-2xl mx-auto p-6 pt-12"
+      className="max-w-2xl mx-auto p-6 pt-12 pb-32"
     >
       <div className="flex flex-col items-center text-center mb-12">
         <div className="w-24 h-24 rounded-full bg-zinc-800 mb-4" />
-        <h2 className="text-2xl font-bold">{user?.displayName}</h2>
-        <p className="text-zinc-500 text-sm">@{user?.email?.split('@')[0]}</p>
+        <h2 className="text-2xl font-bold break-words w-full">{user?.displayName}</h2>
+        <p className="text-zinc-500 text-sm break-words w-full">@{user?.email?.split('@')[0]}</p>
       </div>
 
       <div className="space-y-4">
+        <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-400">
+              <Plus size={20} />
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold">{t('language')}</p>
+              <p className="text-xs text-zinc-500">{t('selectLanguage')}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { code: 'en', name: 'English' },
+              { code: 'es', name: 'Español' },
+              { code: 'fr', name: 'Français' },
+              { code: 'hi', name: 'हिन्दी' }
+            ].map((lang) => (
+              <button
+                key={lang.code}
+                onClick={() => setLanguage(lang.code as any)}
+                className={cn(
+                  "py-3 px-4 rounded-2xl text-sm font-medium transition-all border",
+                  language === lang.code 
+                    ? "bg-white text-black border-white" 
+                    : "bg-zinc-800/50 text-zinc-400 border-zinc-700 hover:border-zinc-500"
+                )}
+              >
+                {lang.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {user?.email === 'mohamadriza987@gmail.com' && (
           <button 
             onClick={async () => {
@@ -53,7 +90,7 @@ export function ProfileScreen({ user }: ProfileScreenProps) {
           <div className="flex items-center gap-4">
             <Shield className="text-zinc-500" />
             <div>
-              <p className="font-semibold">Privacy & Safety</p>
+              <p className="font-semibold">{t('privacy')}</p>
               <p className="text-xs text-zinc-500">Manage blocked and hidden users</p>
             </div>
           </div>
@@ -64,7 +101,7 @@ export function ProfileScreen({ user }: ProfileScreenProps) {
           className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-red-500 hover:bg-red-500/10 transition-colors"
         >
           <LogOut />
-          <span className="font-semibold">Sign Out</span>
+          <span className="font-semibold">{t('signOut')}</span>
         </button>
       </div>
     </motion.div>

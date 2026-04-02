@@ -15,7 +15,10 @@ interface GoalsScreenProps {
   setFocusedTaskId: (id: string | null) => void;
   setCurrentScreen: (screen: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
+  onRetrySave?: (goal: Goal) => void;
 }
+
+import { useTranslation } from '../contexts/LanguageContext';
 
 export function GoalsScreen({ 
   goals, 
@@ -24,14 +27,35 @@ export function GoalsScreen({
   focusedTaskId,
   setFocusedTaskId,
   setCurrentScreen, 
-  handleFirestoreError 
+  handleFirestoreError,
+  onRetrySave
 }: GoalsScreenProps) {
+  const { t } = useTranslation();
   const [activeGoalTasks, setActiveGoalTasks] = useState<GoalTask[]>([]);
   const [newNote, setNewNote] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [isNoteListening, setIsNoteListening] = useState(false);
+
+  // Auto-resize textareas
+  useEffect(() => {
+    const adjustHeights = () => {
+      const textareas = document.querySelectorAll('textarea');
+      textareas.forEach(ta => {
+        ta.style.height = 'auto';
+        ta.style.height = (ta.scrollHeight) + 'px';
+      });
+    };
+    
+    // Initial adjustment with a small delay
+    const timeoutId = setTimeout(adjustHeights, 50);
+    
+    window.addEventListener('resize', adjustHeights);
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', adjustHeights);
+    };
+  }, [activeGoal, focusedTaskId, editingNoteId]);
 
   useEffect(() => {
     if (activeGoal) {
@@ -126,28 +150,6 @@ export function GoalsScreen({
     }
   };
 
-  const startNoteListening = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Speech recognition is not supported in this browser.");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US';
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => setIsNoteListening(true);
-    recognition.onend = () => setIsNoteListening(false);
-    recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setNewNote(prev => prev ? `${prev} ${transcript}` : transcript);
-    };
-
-    recognition.start();
-  };
-
   const filteredGoals = React.useMemo(() => {
     return goals.filter(g => categoryFilter === 'all' || g.category === categoryFilter);
   }, [goals, categoryFilter]);
@@ -161,14 +163,14 @@ export function GoalsScreen({
       {activeGoal ? (
         <div className="max-w-2xl mx-auto">
           <button onClick={() => setActiveGoal(null)} className="mb-8 text-zinc-500 hover:text-white flex items-center gap-2">
-            <ArrowLeft size={20} /> Back to List
+            <ArrowLeft size={20} /> {t('back')}
           </button>
-          <h1 className="text-4xl font-bold mb-4 tracking-tight">{activeGoal.title}</h1>
-          <p className="text-zinc-400 text-lg mb-12 leading-relaxed">{activeGoal.description}</p>
+          <h1 className="text-4xl font-bold mb-4 tracking-tight break-words">{activeGoal.title}</h1>
+          <p className="text-zinc-400 text-lg mb-12 leading-relaxed break-words">{activeGoal.description}</p>
           
           <div className="mb-12 space-y-3">
             <div className="flex justify-between items-end">
-              <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold">Goal Progress</span>
+              <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold">{t('goalProgress')}</span>
               <span className="text-3xl font-light tabular-nums">
                 {activeGoalTasks.length > 0 
                   ? Math.round((activeGoalTasks.filter(t => t.isDone).length / activeGoalTasks.length) * 100) 
@@ -190,7 +192,7 @@ export function GoalsScreen({
           </div>
           
           <div className="space-y-4">
-            <h3 className="text-xs uppercase tracking-widest text-zinc-500 mb-6">Tasks</h3>
+            <h3 className="text-xs uppercase tracking-widest text-zinc-500 mb-6">{t('tasks')}</h3>
             <div className="flex flex-col gap-4">
               {(() => {
                 const focusedTask = focusedTaskId ? activeGoalTasks.find(t => t.id === focusedTaskId) : null;
@@ -225,7 +227,7 @@ export function GoalsScreen({
                         </AnimatePresence>
                       </motion.div>
                       <span className={cn(
-                        "text-2xl font-medium flex-1",
+                        "text-2xl font-medium flex-1 break-words",
                         focusedTask.isDone && "line-through text-zinc-600"
                       )}>
                         {focusedTask.text}
@@ -239,7 +241,7 @@ export function GoalsScreen({
                     </div>
 
                     <div className="space-y-4 pt-4 border-t border-zinc-800">
-                      <h4 className="text-xs uppercase tracking-widest text-zinc-500">Notes</h4>
+                      <h4 className="text-xs uppercase tracking-widest text-zinc-500">{t('notes')}</h4>
                       <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
                         {focusedTask.notes?.map((note) => (
                           <motion.div 
@@ -249,13 +251,27 @@ export function GoalsScreen({
                             className="group relative p-3 bg-zinc-800/50 rounded-xl text-sm text-zinc-300 border border-zinc-700/50 hover:border-zinc-600 transition-all"
                           >
                             {editingNoteId === note.id ? (
-                              <input
+                              <textarea
                                 autoFocus
                                 value={editingNoteText}
-                                onChange={(e) => setEditingNoteText(e.target.value)}
+                                onChange={(e) => {
+                                  setEditingNoteText(e.target.value);
+                                  e.target.style.height = 'auto';
+                                  e.target.style.height = e.target.scrollHeight + 'px';
+                                }}
+                                onInput={(e) => {
+                                  const target = e.target as HTMLTextAreaElement;
+                                  target.style.height = 'auto';
+                                  target.style.height = target.scrollHeight + 'px';
+                                }}
                                 onBlur={() => editNoteInTask(activeGoal.id, focusedTaskId!, note.id, editingNoteText)}
-                                onKeyDown={(e) => e.key === 'Enter' && editNoteInTask(activeGoal.id, focusedTaskId!, note.id, editingNoteText)}
-                                className="w-full bg-transparent border-none focus:outline-none text-white"
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    editNoteInTask(activeGoal.id, focusedTaskId!, note.id, editingNoteText);
+                                  }
+                                }}
+                                rows={1}
+                                className="w-full bg-transparent border-none focus:outline-none text-white resize-none overflow-hidden"
                               />
                             ) : (
                               <div className="flex items-start justify-between gap-2">
@@ -264,7 +280,7 @@ export function GoalsScreen({
                                     setEditingNoteId(note.id);
                                     setEditingNoteText(note.text);
                                   }}
-                                  className="flex-1 cursor-text"
+                                  className="flex-1 cursor-text break-words"
                                 >
                                   {note.text}
                                 </span>
@@ -298,31 +314,39 @@ export function GoalsScreen({
                         ))}
                       </div>
 
-                      <div className="flex gap-2">
-                        <div className="flex-1 relative">
-                          <input 
-                            placeholder="Add a note..."
-                            value={newNote}
-                            onChange={(e) => setNewNote(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && addNoteToTask(activeGoal.id, focusedTaskId!)}
-                            className="w-full bg-zinc-800 border border-zinc-700 rounded-xl pl-4 pr-10 py-2 text-sm focus:outline-none focus:border-zinc-500"
-                          />
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <div className="flex-1 relative">
+                            <textarea 
+                              placeholder={t('addNote') + "..."}
+                              value={newNote}
+                              onChange={(e) => {
+                                setNewNote(e.target.value);
+                                e.target.style.height = 'auto';
+                                e.target.style.height = e.target.scrollHeight + 'px';
+                              }}
+                              onInput={(e) => {
+                                const target = e.target as HTMLTextAreaElement;
+                                target.style.height = 'auto';
+                                target.style.height = target.scrollHeight + 'px';
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  addNoteToTask(activeGoal.id, focusedTaskId!);
+                                }
+                              }}
+                              rows={1}
+                              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-zinc-500 resize-none overflow-hidden"
+                            />
+                          </div>
                           <button 
-                            onClick={startNoteListening}
-                            className={cn(
-                              "absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors",
-                              isNoteListening ? "text-red-500 bg-red-500/10 animate-pulse" : "text-zinc-500 hover:text-white"
-                            )}
+                            onClick={() => addNoteToTask(activeGoal.id, focusedTaskId!)}
+                            className="p-2 bg-white text-black rounded-xl hover:bg-zinc-200 transition-colors"
                           >
-                            <Mic size={16} />
+                            <Plus size={20} />
                           </button>
                         </div>
-                        <button 
-                          onClick={() => addNoteToTask(activeGoal.id, focusedTaskId!)}
-                          className="p-2 bg-white text-black rounded-xl hover:bg-zinc-200 transition-colors"
-                        >
-                          <Plus size={20} />
-                        </button>
                       </div>
                     </div>
                   </motion.div>
@@ -363,7 +387,7 @@ export function GoalsScreen({
                     </motion.div>
                     <span 
                       onClick={() => setFocusedTaskId(task.id)}
-                      className={cn("text-lg flex-1", task.isDone && "line-through text-zinc-600")}
+                      className={cn("text-lg flex-1 break-words", task.isDone && "line-through text-zinc-600")}
                     >
                       {task.text}
                     </span>
@@ -384,7 +408,7 @@ export function GoalsScreen({
       ) : (
         <>
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-6">
-            <h1 className="text-3xl font-bold tracking-tight">My Goals</h1>
+            <h1 className="text-3xl font-bold tracking-tight">{t('myGoals')}</h1>
             <div className="flex items-center gap-4">
               <div className="flex bg-zinc-900 border border-zinc-800 p-1 rounded-2xl">
                 {(['all', 'health', 'learning', 'personal', 'business'] as const).map((cat) => (
@@ -396,7 +420,7 @@ export function GoalsScreen({
                       categoryFilter === cat ? "bg-white text-black shadow-lg" : "text-zinc-500 hover:text-white"
                     )}
                   >
-                    {cat}
+                    {t(cat) || cat}
                   </button>
                 ))}
               </div>
@@ -412,6 +436,7 @@ export function GoalsScreen({
                 key={goal.id} 
                 goal={goal} 
                 onClick={() => setActiveGoal(goal)} 
+                onRetry={onRetrySave}
               />
             ))}
           </div>
