@@ -4,7 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from "url";
 import session from "express-session";
 import cookieParser from "cookie-parser";
-import { structureGoalFromAudio } from "./server/gemini";
+import { structureGoalFromAudio, transcribeAudio, generateGoalFromTranscript } from "./server/gemini.ts";
 
 import fs from "fs";
 
@@ -27,7 +27,7 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 8080;
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -48,8 +48,44 @@ async function startServer() {
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
   });
+  
+  // Fast Transcription Endpoint
+  app.post("/api/transcribe", async (req, res) => {
+    try {
+      const { audioBase64, mimeType } = req.body;
+      if (!audioBase64 || !mimeType) {
+        return res.status(400).json({ error: "Missing audio data or mime type" });
+      }
+      const transcript = await transcribeAudio(audioBase64, mimeType);
+      res.json({ transcript });
+    } catch (error: any) {
+      console.error("Transcription error:", error);
+      res.status(500).json({ 
+        error: "Failed to transcribe audio",
+        details: error.message || String(error)
+      });
+    }
+  });
 
-  // Panda Processing Endpoint
+  // Goal Generation from Transcript Endpoint
+  app.post("/api/generate-goal", async (req, res) => {
+    try {
+      const { transcript, userContext } = req.body;
+      if (!transcript) {
+        return res.status(400).json({ error: "Missing transcript" });
+      }
+      const structuredGoal = await generateGoalFromTranscript(transcript, userContext);
+      res.json(structuredGoal);
+    } catch (error: any) {
+      console.error("Goal generation error:", error);
+      res.status(500).json({ 
+        error: "Failed to generate goal from transcript",
+        details: error.message || String(error)
+      });
+    }
+  });
+
+  // Panda Processing Endpoint (Legacy/Fallback)
   app.post("/api/process-audio", async (req, res) => {
     try {
       const { audioBase64, mimeType, userContext } = req.body;

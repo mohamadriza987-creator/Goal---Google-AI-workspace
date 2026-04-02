@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
-import { structureGoalFromAudio, StructuredGoal } from '../services/geminiService';
+import { transcribeAudio, generateGoalFromTranscript, StructuredGoal } from '../services/geminiService';
 import { collection, addDoc, writeBatch, doc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
@@ -31,8 +31,10 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const { t, setLanguage } = useTranslation();
   const [loading, setLoading] = useState(false);
+  const [processingState, setProcessingState] = useState<'idle' | 'transcribing' | 'generating'>('idle');
   const [isSaving, setIsSaving] = useState(false);
   const [processingError, setProcessingError] = useState<string | null>(null);
+  const [currentTranscript, setCurrentTranscript] = useState<string | null>(null);
   const [structuredGoal, setStructuredGoal] = useState<StructuredGoal | null>(null);
   const [manualTasks, setManualTasks] = useState<string[]>([]);
   const [newTaskInput, setNewTaskInput] = useState('');
@@ -83,7 +85,10 @@ export function HomeScreen({
 
   const processAudio = async (blob: Blob) => {
     setLoading(true);
+    setProcessingState('transcribing');
     setProcessingError(null);
+    setCurrentTranscript(null);
+    
     try {
       const reader = new FileReader();
       const base64Promise = new Promise<string>((resolve) => {
@@ -95,12 +100,18 @@ export function HomeScreen({
       reader.readAsDataURL(blob);
       const base64Audio = await base64Promise;
 
+      // Step 1: Transcription
+      const transcript = await transcribeAudio(base64Audio, blob.type);
+      setCurrentTranscript(transcript);
+      
+      // Step 2: Goal Generation
+      setProcessingState('generating');
       const userContext = {
         age: dbUser?.age,
         locality: dbUser?.locality
       };
 
-      const structured = await structureGoalFromAudio(base64Audio, blob.type, userContext);
+      const structured = await generateGoalFromTranscript(transcript, userContext);
       
       // Update app language based on detected language
       if (structured.language) {
@@ -117,6 +128,40 @@ export function HomeScreen({
       setProcessingError(err.message || t('error'));
     } finally {
       setLoading(false);
+      setProcessingState('idle');
+    }
+  };
+
+  const retryGeneration = async () => {
+    if (!currentTranscript) return;
+    
+    setLoading(true);
+    setProcessingState('generating');
+    setProcessingError(null);
+    
+    try {
+      const userContext = {
+        age: dbUser?.age,
+        locality: dbUser?.locality
+      };
+
+      const structured = await generateGoalFromTranscript(currentTranscript, userContext);
+      
+      if (structured.language) {
+        const langCode = mapLanguageNameToCode(structured.language);
+        if (langCode !== 'en') {
+          setLanguage(langCode);
+        }
+      }
+
+      setStructuredGoal(structured);
+      setCurrentView('review');
+    } catch (err: any) {
+      console.error('Retry error:', err);
+      setProcessingError(err.message || t('error'));
+    } finally {
+      setLoading(false);
+      setProcessingState('idle');
     }
   };
 
@@ -244,14 +289,31 @@ export function HomeScreen({
                 className="mt-12 flex flex-col items-center gap-4"
               >
                 {loading && (
-                  <div className="flex items-center gap-3 text-zinc-400 bg-zinc-900/50 px-6 py-3 rounded-2xl border border-white/5 backdrop-blur-xl">
-                    <Loader2 size={18} className="animate-spin" />
-                    <span className="text-sm font-medium">{t('processing')}</span>
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="flex items-center gap-3 text-zinc-400 bg-zinc-900/50 px-6 py-3 rounded-2xl border border-white/5 backdrop-blur-xl">
+                      <Loader2 size={18} className="animate-spin" />
+                      <span className="text-sm font-medium">
+                        {processingState === 'transcribing' ? 'Transcribing audio...' : 'Generating your goal...'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-zinc-500 uppercase tracking-widest animate-pulse">
+                      {processingState === 'transcribing' ? 'Step 1 of 2' : 'Step 2 of 2'}
+                    </p>
                   </div>
                 )}
                 {(recorderError || processingError) && (
-                  <div className="text-red-400 text-sm text-center bg-red-400/10 px-6 py-3 rounded-2xl border border-red-400/20 backdrop-blur-xl">
-                    {recorderError || processingError}
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="text-red-400 text-sm text-center bg-red-400/10 px-6 py-3 rounded-2xl border border-red-400/20 backdrop-blur-xl">
+                      {recorderError || processingError}
+                    </div>
+                    {processingError && currentTranscript && (
+                      <button 
+                        onClick={retryGeneration}
+                        className="text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white transition-colors"
+                      >
+                        Retry Generation
+                      </button>
+                    )}
                   </div>
                 )}
               </motion.div>
