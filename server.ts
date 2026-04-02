@@ -12,18 +12,31 @@ import { z } from "zod";
 import fs from "fs";
 
 // Load Firebase config for Admin SDK
-const firebaseConfig = JSON.parse(fs.readFileSync("./firebase-applet-config.json", "utf-8"));
+const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
-admin.initializeApp({
-  projectId: firebaseConfig.projectId,
-});
+if (!admin.apps.length) {
+  // Use default credentials if available (Cloud Run), otherwise use config
+  try {
+    admin.initializeApp();
+  } catch (e) {
+    admin.initializeApp({
+      projectId: firebaseConfig.projectId,
+    });
+  }
+}
 
-const db = getFirestore(admin.app(), firebaseConfig.firestoreDatabaseId || '(default)');
+// Ensure we use the correct database ID for the Admin SDK
+const db = getFirestore(admin.app(), firebaseConfig.firestoreDatabaseId);
 
 import { loadEnv } from "vite";
 
 // Helper for cosine similarity
 function cosineSimilarity(vecA: number[], vecB: number[]) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) {
+    console.warn(`Cosine similarity error: vectors are missing or have different lengths (A: ${vecA?.length}, B: ${vecB?.length})`);
+    return 0;
+  }
   let dotProduct = 0;
   let normA = 0;
   let normB = 0;
@@ -32,7 +45,9 @@ function cosineSimilarity(vecA: number[], vecB: number[]) {
     normA += vecA[i] * vecA[i];
     normB += vecB[i] * vecB[i];
   }
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+  if (magnitude === 0) return 0;
+  return dotProduct / magnitude;
 }
 
 // Simple in-memory rate limiter
@@ -141,8 +156,15 @@ async function startServer() {
   );
 
   // API Routes
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
+  app.get("/api/health", async (req, res) => {
+    try {
+      // Test Firestore connection
+      await db.collection('test').doc('health').get();
+      res.json({ status: "ok", firestore: "connected" });
+    } catch (error: any) {
+      console.error("Health check Firestore error:", error);
+      res.json({ status: "ok", firestore: "error", details: error.message });
+    }
   });
   
   // Fast Transcription Endpoint
@@ -304,28 +326,41 @@ async function startServer() {
       const groupsSnap = await db.collection('groups').get();
       const allGroups = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
-      const SIMILARITY_THRESHOLD_EXISTING = 0.85;
-      const SIMILARITY_THRESHOLD_NEW = 0.80;
+      const SIMILARITY_THRESHOLD_EXISTING = 0.80; // Lowered from 0.85
+      const SIMILARITY_THRESHOLD_NEW = 0.75; // Lowered from 0.80
 
       // 1. Try to find an existing group
       let bestGroup = null;
       let maxScore = -1;
 
+      console.log(`Assigning group for goal: ${goal.id} (${goal.title})`);
+      console.log(`Goal embedding length: ${goal.embedding?.length}`);
+      console.log(`Total groups to check: ${allGroups.length}`);
+
       for (const group of allGroups) {
         if (!group.representativeEmbedding) continue;
         
         // Filter by privacy
-        if (goal.visibility === 'private' && group.matchingCriteria?.privacy !== 'private') continue;
-        if (goal.visibility !== 'private' && group.matchingCriteria?.privacy === 'private') continue;
+        const goalIsPrivate = goal.visibility === 'private';
+        const groupIsPrivate = group.matchingCriteria?.privacy === 'private';
+
+        if (goalIsPrivate !== groupIsPrivate) {
+          console.log(`Skipping group ${group.id} due to privacy mismatch: goal=${goal.visibility}, group=${group.matchingCriteria?.privacy}`);
+          continue;
+        }
 
         const score = cosineSimilarity(goal.embedding, group.representativeEmbedding);
+        console.log(`Checking group ${group.id}: score=${score.toFixed(4)}`);
         if (score > maxScore) {
           maxScore = score;
           bestGroup = group;
         }
       }
 
+      console.log(`Best existing group score: ${maxScore}`);
+
       if (bestGroup && maxScore >= SIMILARITY_THRESHOLD_EXISTING) {
+        console.log(`Assigned to existing group: ${bestGroup.id} (${bestGroup.derivedGoalTheme})`);
         return res.json({ 
           action: 'assigned', 
           groupId: bestGroup.id, 
@@ -336,10 +371,20 @@ async function startServer() {
 
       // 2. Try to find a cluster of goals to form a new group
       const ungroupedGoals = allGoals.filter(g => !g.groupId && g.id !== goal.id && g.embedding);
+      console.log(`Ungrouped goals to check: ${ungroupedGoals.length}`);
+
       const potentialMatches = ungroupedGoals
-        .map(g => ({ goal: g, score: cosineSimilarity(goal.embedding, g.embedding) }))
+        .map(g => {
+          const score = cosineSimilarity(goal.embedding, g.embedding);
+          return { goal: g, score };
+        })
         .filter(m => m.score >= SIMILARITY_THRESHOLD_NEW)
         .sort((a, b) => b.score - a.score);
+
+      console.log(`Potential matches found: ${potentialMatches.length}`);
+      if (potentialMatches.length > 0) {
+        console.log(`Top match score: ${potentialMatches[0].score} for goal: ${potentialMatches[0].goal.title} (ID: ${potentialMatches[0].goal.id})`);
+      }
 
       if (potentialMatches.length >= 1) { // Cluster of 2 (new goal + at least 1 other)
         const clusterGoals = [goal, ...potentialMatches.slice(0, 4).map(m => m.goal)];
@@ -348,7 +393,7 @@ async function startServer() {
         return res.json({ 
           action: 'create', 
           groupName, 
-          memberGoalIds: clusterGoals.map(g => g.id),
+          members: clusterGoals.map(g => ({ goalId: g.id, ownerId: g.ownerId })),
           representativeEmbedding: goal.embedding,
           matchingCriteria: {
             category: goal.category,

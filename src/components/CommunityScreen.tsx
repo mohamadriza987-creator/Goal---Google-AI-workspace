@@ -92,20 +92,28 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
             joinedAt: new Date().toISOString()
           });
         }
+        return true;
       } catch (err) {
         console.error("Error ensuring membership:", err);
+        return false;
       }
     };
 
-    checkMembership();
+    let unsubscribe: (() => void) | null = null;
 
-    const mq = query(collection(db, 'groups', activeGroup.id, 'messages'), orderBy('createdAt', 'desc'), limit(50));
-    const unsubscribe = onSnapshot(mq, (msnap) => {
-      const m = msnap.docs.map(d => ({ id: d.id, ...d.data() } as CommunityMessage));
-      setMessages(m);
-    }, (err) => handleFirestoreError(err, 'get', `groups/${activeGroup.id}/messages`));
+    checkMembership().then((isMember) => {
+      if (!isMember && !dbUser?.role) return; // Wait for membership unless admin
 
-    return () => unsubscribe();
+      const mq = query(collection(db, 'groups', activeGroup.id, 'messages'), orderBy('createdAt', 'desc'), limit(50));
+      unsubscribe = onSnapshot(mq, (msnap) => {
+        const m = msnap.docs.map(d => ({ id: d.id, ...d.data() } as CommunityMessage));
+        setMessages(m);
+      }, (err) => handleFirestoreError(err, 'get', `groups/${activeGroup.id}/messages`));
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, [activeGroup?.id]);
 
   const filteredMessages = React.useMemo(() => {

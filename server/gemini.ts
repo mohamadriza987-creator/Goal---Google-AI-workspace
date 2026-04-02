@@ -227,6 +227,7 @@ export async function generateGoalFromTranscript(transcript: string, userContext
 
 export async function normalizeGoal(goalData: { title: string, description: string, category: string, tags: string[], timeHorizon: string, privacy: string, sourceText?: string }, userContext?: UserContext): Promise<string> {
   console.log(`Normalizing goal: "${goalData.title}"`);
+  console.log(`User Context: ${JSON.stringify(userContext)}`);
   
   if (!process.env.gemfree) {
     throw new Error("The 'gemfree' secret is not set in the environment");

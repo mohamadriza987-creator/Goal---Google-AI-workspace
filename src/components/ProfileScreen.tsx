@@ -17,23 +17,12 @@ import { useTranslation } from '../contexts/LanguageContext';
 
 export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   const { t, language, setLanguage } = useTranslation();
-  const [isBackfilling, setIsBackfilling] = React.useState(false);
-  const [backfillProgress, setBackfillProgress] = React.useState(0);
-  const [backfillTotal, setBackfillTotal] = React.useState(0);
-  const [isBackfillingEmbeddings, setIsBackfillingEmbeddings] = React.useState(false);
-  const [embBackfillProgress, setEmbBackfillProgress] = React.useState(0);
-  const [embBackfillTotal, setEmbBackfillTotal] = React.useState(0);
-  const [showSimilarityChecker, setShowSimilarityChecker] = React.useState(false);
-  const [selectedGoalForMatch, setSelectedGoalForMatch] = React.useState<Goal | null>(null);
-  const [similarMatches, setSimilarMatches] = React.useState<any[]>([]);
-  const [isMatching, setIsMatching] = React.useState(false);
+  const [isSyncing, setIsSyncing] = React.useState(false);
+  const [syncProgress, setSyncProgress] = React.useState(0);
+  const [syncTotal, setSyncTotal] = React.useState(0);
+  const [showGoalMap, setShowGoalMap] = React.useState(false);
   const [allGoals, setAllGoals] = React.useState<Goal[]>([]);
   const [allGroups, setAllGroups] = React.useState<Group[]>([]);
-  const [isBackfillingGroups, setIsBackfillingGroups] = React.useState(false);
-  const [groupBackfillProgress, setGroupBackfillProgress] = React.useState(0);
-  const [groupBackfillTotal, setGroupBackfillTotal] = React.useState(0);
-  const [showGroupInspector, setShowGroupInspector] = React.useState(false);
-  const [selectedGroupForInspect, setSelectedGroupForInspect] = React.useState<Group | null>(null);
   const [showModeration, setShowModeration] = React.useState(false);
   const [reports, setReports] = React.useState<any[]>([]);
 
@@ -49,6 +38,21 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
     }
   }, [showModeration, isAdminUser]);
 
+  React.useEffect(() => {
+    if (showGoalMap) {
+      const unsubGoals = onSnapshot(collection(db, 'goals'), (snap) => {
+        setAllGoals(snap.docs.map(d => ({ id: d.id, ...d.data() } as Goal)));
+      });
+      const unsubGroups = onSnapshot(collection(db, 'groups'), (snap) => {
+        setAllGroups(snap.docs.map(d => ({ id: d.id, ...d.data() } as Group)));
+      });
+      return () => {
+        unsubGoals();
+        unsubGroups();
+      };
+    }
+  }, [showGoalMap]);
+
   const handleResolveReport = async (reportId: string, status: 'resolved' | 'dismissed') => {
     try {
       await updateDoc(firestoreDoc(db, 'reports', reportId), { status, updatedAt: new Date().toISOString() });
@@ -57,301 +61,84 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
     }
   };
 
-  React.useEffect(() => {
-    if (showSimilarityChecker || showGroupInspector) {
-      getDocs(collection(db, 'goals')).then(snap => {
-        setAllGoals(snap.docs.map(d => ({ id: d.id, ...d.data() } as Goal)));
-      });
-      getDocs(collection(db, 'groups')).then(snap => {
-        setAllGroups(snap.docs.map(d => ({ id: d.id, ...d.data() } as Group)));
-      });
-    }
-  }, [showSimilarityChecker, showGroupInspector]);
-
-  const handleGroupBackfill = async () => {
-    if (!user || isBackfillingGroups) return;
-    
-    const confirm = window.confirm("This will iterate through all goals and assign them to groups based on similarity. Continue?");
+  const handleFullSync = async () => {
+    if (!user || isSyncing) return;
+    const confirm = window.confirm("This will synchronize all goals: Normalization -> Embedding -> Grouping. This ensures everyone is connected. Continue?");
     if (!confirm) return;
 
-    setIsBackfillingGroups(true);
-    setGroupBackfillProgress(0);
-    
-    try {
-      const goalsSnap = await getDocs(collection(db, 'goals'));
-      const goalsToAssign = goalsSnap.docs
-        .map(d => ({ id: d.id, ...d.data() } as Goal))
-        .filter(g => g.embedding && !g.groupId);
-      
-      const groupsSnap = await getDocs(collection(db, 'groups'));
-      let currentGroups = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Group));
-      
-      setGroupBackfillTotal(goalsToAssign.length);
-
-      for (const goal of goalsToAssign) {
-        try {
-          const idToken = await user.getIdToken();
-          const res = await fetch("/api/groups/assign", {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${idToken}`
-            },
-            body: JSON.stringify({
-              goal
-            })
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            if (data.action === 'assigned') {
-              await updateDoc(firestoreDoc(db, 'goals', goal.id), { groupId: data.groupId });
-              await updateDoc(firestoreDoc(db, 'groups', data.groupId), { memberCount: (currentGroups.find(g => g.id === data.groupId)?.memberCount || 0) + 1 });
-              // Add user to members subcollection
-              await updateDoc(firestoreDoc(db, 'groups', data.groupId), {
-                [`members.${goal.ownerId}`]: {
-                  userId: goal.ownerId,
-                  joinedAt: new Date().toISOString()
-                }
-              }).catch(async () => {
-                // Fallback if members is not a map or doesn't exist yet
-                // Actually, the rules say it's a subcollection.
-                await setDoc(firestoreDoc(db, 'groups', data.groupId, 'members', goal.ownerId), {
-                  userId: goal.ownerId,
-                  joinedAt: new Date().toISOString()
-                });
-              });
-            } else if (data.action === 'create') {
-              const newGroupRef = await addDoc(collection(db, 'groups'), {
-                derivedGoalTheme: data.groupName,
-                memberCount: data.memberGoalIds.length,
-                maxMembers: 70,
-                representativeEmbedding: data.representativeEmbedding,
-                matchingCriteria: data.matchingCriteria,
-                createdAt: new Date().toISOString()
-              });
-              
-              const newGroup = { id: newGroupRef.id, derivedGoalTheme: data.groupName, memberCount: data.memberGoalIds.length, representativeEmbedding: data.representativeEmbedding } as Group;
-              currentGroups.push(newGroup);
-
-              const batch = writeBatch(db);
-              data.memberGoalIds.forEach((gid: string) => {
-                batch.update(firestoreDoc(db, 'goals', gid), { groupId: newGroupRef.id });
-                // We also need to add each goal owner to the members subcollection
-                const goalToAssign = goalsSnap.docs.find(d => d.id === gid)?.data() as Goal;
-                if (goalToAssign) {
-                  batch.set(firestoreDoc(db, 'groups', newGroupRef.id, 'members', goalToAssign.ownerId), {
-                    userId: goalToAssign.ownerId,
-                    joinedAt: new Date().toISOString()
-                  });
-                }
-              });
-              
-              const msgRef = collection(db, 'groups', newGroupRef.id, 'messages');
-              batch.set(firestoreDoc(msgRef), {
-                groupId: newGroupRef.id,
-                userId: 'system',
-                content: `Welcome to the ${data.groupName} community! We've grouped you together because of your similar goals.`,
-                contentType: 'text',
-                reactions: {},
-                createdAt: new Date().toISOString()
-              });
-              await batch.commit();
-            }
-          }
-          setGroupBackfillProgress(prev => prev + 1);
-        } catch (err) {
-          console.error(`Error assigning goal ${goal.id}:`, err);
-        }
-      }
-      alert("Group backfill complete!");
-    } catch (err) {
-      console.error("Group backfill error:", err);
-    } finally {
-      setIsBackfillingGroups(false);
-    }
-  };
-
-  const handleMembersBackfill = async () => {
-    if (!user || isBackfillingGroups) return;
-    const confirm = window.confirm("This will ensure all users with goals in a group are added to the members subcollection. Continue?");
-    if (!confirm) return;
-
-    setIsBackfillingGroups(true);
-    try {
-      const goalsSnap = await getDocs(collection(db, 'goals'));
-      const goalsWithGroups = goalsSnap.docs
-        .map(d => ({ id: d.id, ...d.data() } as Goal))
-        .filter(g => g.groupId);
-      
-      for (const goal of goalsWithGroups) {
-        if (goal.groupId) {
-          await setDoc(firestoreDoc(db, 'groups', goal.groupId, 'members', goal.ownerId), {
-            userId: goal.ownerId,
-            joinedAt: new Date().toISOString()
-          }, { merge: true });
-        }
-      }
-      alert("Members backfill complete!");
-    } catch (err) {
-      console.error("Members backfill error:", err);
-    } finally {
-      setIsBackfillingGroups(false);
-    }
-  };
-
-  const handleMatchCheck = async (goal: Goal) => {
-    if (!goal.embedding) {
-      alert("This goal has no embedding yet. Backfill embeddings first.");
-      return;
-    }
-    setSelectedGoalForMatch(goal);
-    setIsMatching(true);
+    setIsSyncing(true);
     try {
       const idToken = await user.getIdToken();
-      const res = await fetch("/api/goals/similar", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken}`
-        },
-        body: JSON.stringify({
-          goalId: goal.id,
-          embedding: goal.embedding
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSimilarMatches(data.matches);
-      }
-    } catch (err) {
-      console.error("Match error:", err);
-    } finally {
-      setIsMatching(false);
-    }
-  };
-
-  const handleEmbeddingBackfill = async () => {
-    if (!user || isBackfillingEmbeddings) return;
-    
-    const confirm = window.confirm("This will generate embeddings for ALL goals that don't have one. Continue?");
-    if (!confirm) return;
-
-    setIsBackfillingEmbeddings(true);
-    setEmbBackfillProgress(0);
-    
-    try {
       const goalsSnap = await getDocs(collection(db, 'goals'));
-      const goalsToBackfill = goalsSnap.docs
-        .map(d => ({ id: d.id, ...d.data() } as Goal))
-        .filter(g => g.normalizedMatchingText && !g.embedding);
+      const goals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
       
-      setEmbBackfillTotal(goalsToBackfill.length);
+      setSyncTotal(goals.length);
+      setSyncProgress(0);
 
-      if (goalsToBackfill.length === 0) {
-        alert("All goals already have embeddings!");
-        setIsBackfillingEmbeddings(false);
-        return;
-      }
-
-      for (const goal of goalsToBackfill) {
+      for (const goal of goals) {
         try {
-          const idToken = await user.getIdToken();
-          const response = await fetch("/api/generate-embedding", {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${idToken}`
-            },
-            body: JSON.stringify({ text: goal.normalizedMatchingText })
-          });
+          // 1. Normalize if missing
+          let normalizedText = goal.normalizedMatchingText;
+          if (!normalizedText) {
+            const normRes = await fetch("/api/normalize-goal", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
+              body: JSON.stringify({
+                goalData: {
+                  title: goal.title,
+                  description: goal.description,
+                  category: goal.category || 'other',
+                  tags: goal.tags || [],
+                  timeHorizon: goal.timeHorizon || 'unknown',
+                  privacy: goal.visibility,
+                  sourceText: goal.sourceText || `${goal.title}: ${goal.description}`
+                }
+              })
+            });
+            if (normRes.ok) {
+              const data = await normRes.json();
+              normalizedText = data.normalizedMatchingText;
+              await updateDoc(firestoreDoc(db, 'goals', goal.id), { 
+                normalizedMatchingText: normalizedText,
+                sourceText: goal.sourceText || `${goal.title}: ${goal.description}`
+              });
+            }
+          }
 
-          if (response.ok) {
-            const { embedding } = await response.json();
-            await updateDoc(firestoreDoc(db, 'goals', goal.id), {
-              embedding,
-              embeddingUpdatedAt: new Date().toISOString()
+          // 2. Embed if missing
+          let embedding = goal.embedding;
+          if (!embedding && normalizedText) {
+            const embRes = await fetch("/api/generate-embedding", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
+              body: JSON.stringify({ text: normalizedText })
+            });
+            if (embRes.ok) {
+              const data = await embRes.json();
+              embedding = data.embedding;
+              await updateDoc(firestoreDoc(db, 'goals', goal.id), { embedding });
+            }
+          }
+
+          // 3. Assign Group if missing
+          if (!goal.groupId && embedding) {
+            await fetch("/api/groups/assign", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
+              body: JSON.stringify({ goal: { ...goal, embedding, normalizedMatchingText: normalizedText } })
             });
           }
-          setEmbBackfillProgress(prev => prev + 1);
         } catch (err) {
-          console.error(`Error embedding goal ${goal.id}:`, err);
+          console.error(`Error syncing goal ${goal.id}:`, err);
         }
+        setSyncProgress(prev => prev + 1);
       }
-      alert(`Embedding backfill complete! Processed ${goalsToBackfill.length} goals.`);
+      alert("Synchronization complete!");
     } catch (err) {
-      console.error("Embedding backfill error:", err);
+      console.error("Sync error:", err);
+      alert("Sync failed.");
     } finally {
-      setIsBackfillingEmbeddings(false);
-    }
-  };
-
-  const handleBackfill = async () => {
-    if (!user || isBackfilling) return;
-    
-    const confirm = window.confirm("This will iterate through ALL goals in the database and generate normalized matching metadata. This may take a while and consume API quota. Continue?");
-    if (!confirm) return;
-
-    setIsBackfilling(true);
-    setBackfillProgress(0);
-    
-    try {
-      const goalsSnap = await getDocs(collection(db, 'goals'));
-      const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
-      
-      // Filter goals that need backfill (either missing normalizedMatchingText or missing sourceText)
-      const goalsToBackfill = allGoals.filter(g => !g.normalizedMatchingText);
-      setBackfillTotal(goalsToBackfill.length);
-
-      if (goalsToBackfill.length === 0) {
-        alert("All goals are already normalized!");
-        setIsBackfilling(false);
-        return;
-      }
-
-      for (const goal of goalsToBackfill) {
-        try {
-          const idToken = await user.getIdToken();
-          const response = await fetch("/api/normalize-goal", {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${idToken}`
-            },
-            body: JSON.stringify({
-              goalData: {
-                title: goal.title,
-                description: goal.description,
-                category: goal.category || 'other',
-                tags: goal.tags || [],
-                timeHorizon: goal.timeHorizon || 'unknown',
-                privacy: goal.visibility,
-                sourceText: goal.sourceText || goal.originalVoiceTranscript || `${goal.title}: ${goal.description}`
-              }
-            })
-          });
-
-          if (response.ok) {
-            const { normalizedMatchingText } = await response.json();
-            await updateDoc(firestoreDoc(db, 'goals', goal.id), {
-              normalizedMatchingText,
-              sourceText: goal.sourceText || goal.originalVoiceTranscript || `${goal.title}: ${goal.description}`,
-              updatedAt: new Date().toISOString()
-            });
-          }
-          
-          setBackfillProgress(prev => prev + 1);
-        } catch (err) {
-          console.error(`Error backfilling goal ${goal.id}:`, err);
-        }
-      }
-      
-      alert(`Backfill complete! Processed ${goalsToBackfill.length} goals.`);
-    } catch (err) {
-      console.error("Backfill error:", err);
-      alert("Failed to backfill goals. Check console for details.");
-    } finally {
-      setIsBackfilling(false);
+      setIsSyncing(false);
     }
   };
   return (
@@ -403,190 +190,32 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
         {user?.email === 'mohamadriza987@gmail.com' && (
           <div className="space-y-2">
             <button 
-              onClick={async () => {
-                const groupRef = await addDoc(collection(db, 'groups'), {
-                  derivedGoalTheme: 'Learning & Growth',
-                  localityCenter: 'Global',
-                  memberCount: 1,
-                  maxMembers: 70,
-                  createdAt: new Date().toISOString(),
-                });
-                await addDoc(collection(db, 'groups', groupRef.id, 'messages'), {
-                  groupId: groupRef.id,
-                  userId: 'system',
-                  content: 'Welcome to the Learning & Growth group! Share your goals and progress here.',
-                  contentType: 'text',
-                  reactions: {},
-                  createdAt: new Date().toISOString(),
-                });
-                alert('Demo group created!');
-              }}
-              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors"
-            >
-              <Plus />
-              <span className="font-semibold">Create Demo Group</span>
-            </button>
-
-            <button 
-              onClick={handleBackfill}
-              disabled={isBackfilling}
+              onClick={handleFullSync}
+              disabled={isSyncing}
               className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
             >
-              <RefreshCw className={cn(isBackfilling && "animate-spin")} />
-              <span className="font-semibold">
-                {isBackfilling ? `Normalizing... (${backfillProgress}/${backfillTotal})` : 'Backfill All Normalization'}
-              </span>
+              <RefreshCw className={cn(isSyncing && "animate-spin")} />
+              <div className="flex-1 text-left">
+                <p className="font-semibold">Sync All Goals</p>
+                <p className="text-xs text-zinc-500">
+                  {isSyncing ? `Processing... (${syncProgress}/${syncTotal})` : 'Normalize, Embed, and Group all goals'}
+                </p>
+              </div>
             </button>
 
             <button 
-              onClick={handleEmbeddingBackfill}
-              disabled={isBackfillingEmbeddings}
-              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
-            >
-              <Target className={cn(isBackfillingEmbeddings && "animate-spin")} />
-              <span className="font-semibold">
-                {isBackfillingEmbeddings ? `Embedding... (${embBackfillProgress}/${embBackfillTotal})` : 'Backfill All Embeddings'}
-              </span>
-            </button>
-
-            <button 
-              onClick={() => setShowSimilarityChecker(!showSimilarityChecker)}
+              onClick={() => setShowGoalMap(!showGoalMap)}
               className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors"
             >
               <Search />
-              <span className="font-semibold">Similarity Verification Tool</span>
-            </button>
-
-            <button 
-              onClick={handleGroupBackfill}
-              disabled={isBackfillingGroups}
-              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
-            >
-              <Users className={cn(isBackfillingGroups && "animate-spin")} />
-              <span className="font-semibold">
-                {isBackfillingGroups ? `Grouping... (${groupBackfillProgress}/${groupBackfillTotal})` : 'Backfill Group Assignments'}
-              </span>
-            </button>
-
-            <button 
-              onClick={handleMembersBackfill}
-              disabled={isBackfillingGroups}
-              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
-            >
-              <Users className={cn(isBackfillingGroups && "animate-spin")} />
-              <span className="font-semibold">
-                {isBackfillingGroups ? 'Backfilling Members...' : 'Backfill Group Memberships'}
-              </span>
-            </button>
-
-            <button 
-              onClick={() => setShowGroupInspector(!showGroupInspector)}
-              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors"
-            >
-              <Users />
-              <span className="font-semibold">Group Inspector (Admin)</span>
-            </button>
-
-            {showGroupInspector && (
-              <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
-                <h3 className="font-bold text-lg">Active Communities:</h3>
-                <div className="max-h-60 overflow-y-auto space-y-2 pr-2">
-                  {allGroups.map(grp => (
-                    <button
-                      key={grp.id}
-                      onClick={() => setSelectedGroupForInspect(grp)}
-                      className={cn(
-                        "w-full text-left p-3 rounded-xl border transition-all text-sm",
-                        selectedGroupForInspect?.id === grp.id ? "bg-white text-black border-white" : "bg-zinc-800/50 border-zinc-700 hover:border-zinc-500"
-                      )}
-                    >
-                      <div className="flex justify-between items-center">
-                        <p className="font-bold">{grp.derivedGoalTheme}</p>
-                        <span className="text-[10px] bg-zinc-800 px-2 py-0.5 rounded-full">{grp.memberCount} members</span>
-                      </div>
-                      <p className="text-[10px] opacity-60 mt-1">ID: {grp.id}</p>
-                    </button>
-                  ))}
-                </div>
-
-                {selectedGroupForInspect && (
-                  <div className="mt-6 space-y-4 border-t border-zinc-800 pt-4">
-                    <h4 className="font-bold">Members of "{selectedGroupForInspect.derivedGoalTheme}"</h4>
-                    <div className="space-y-2">
-                      {allGoals.filter(g => g.groupId === selectedGroupForInspect.id).map(g => (
-                        <div key={g.id} className="p-3 bg-zinc-800/30 border border-zinc-800 rounded-xl text-xs">
-                          <p className="font-bold">{g.title}</p>
-                          <p className="text-zinc-500 mt-1 italic">"{g.normalizedMatchingText}"</p>
-                          <div className="flex justify-between mt-2 text-[10px] text-zinc-600">
-                            <span>User: {g.ownerId.slice(0, 6)}</span>
-                            <span>Privacy: {g.visibility}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+              <div className="flex-1 text-left">
+                <p className="font-semibold">Global Goal Map</p>
+                <p className="text-xs text-zinc-500">View all goals organized by similarity</p>
               </div>
-            )}
+            </button>
 
-            {showSimilarityChecker && (
-              <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
-                <h3 className="font-bold text-lg">Select a goal to test matching:</h3>
-                <div className="max-h-60 overflow-y-auto space-y-2 pr-2">
-                  {allGoals.map(g => (
-                    <button
-                      key={g.id}
-                      onClick={() => handleMatchCheck(g)}
-                      className={cn(
-                        "w-full text-left p-3 rounded-xl border transition-all text-sm",
-                        selectedGoalForMatch?.id === g.id ? "bg-white text-black border-white" : "bg-zinc-800/50 border-zinc-700 hover:border-zinc-500"
-                      )}
-                    >
-                      <p className="font-bold truncate">{g.title}</p>
-                      <p className="text-xs opacity-60 truncate">{g.normalizedMatchingText}</p>
-                    </button>
-                  ))}
-                </div>
-
-                {selectedGoalForMatch && (
-                  <div className="mt-6 space-y-4 border-t border-zinc-800 pt-4">
-                    <h4 className="font-bold">Top Matches for: "{selectedGoalForMatch.title}"</h4>
-                    {isMatching ? (
-                      <div className="flex items-center gap-2 text-zinc-500 italic">
-                        <RefreshCw size={14} className="animate-spin" />
-                        Finding matches...
-                      </div>
-                    ) : similarMatches.length > 0 ? (
-                      <div className="space-y-3">
-                        {similarMatches.map((match, idx) => (
-                          <div key={match.id} className="p-3 bg-zinc-800/30 border border-zinc-800 rounded-xl text-xs">
-                            <div className="flex justify-between items-start mb-1">
-                              <span className="font-bold text-sm">#{idx + 1} {match.goalTitle}</span>
-                              <span className="bg-white text-black px-2 py-0.5 rounded-full font-mono font-bold">
-                                {(match.similarityScore * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                            <p className="text-zinc-400 mb-1 italic">"{match.normalizedMatchingText}"</p>
-                            <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
-                              <span>{match.category}</span>
-                              <span>•</span>
-                              <span>{match.timeHorizon}</span>
-                              {match.locality && (
-                                <>
-                                  <span>•</span>
-                                  <span>{match.locality}</span>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-zinc-500 italic">No matches found.</p>
-                    )}
-                  </div>
-                )}
-              </div>
+            {showGoalMap && (
+              <GlobalGoalMap allGoals={allGoals} allGroups={allGroups} />
             )}
 
             <button 
@@ -594,7 +223,7 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
               className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors"
             >
               <Shield />
-              <span className="font-semibold">Moderation Dashboard (Admin)</span>
+              <span className="font-semibold">Moderation Dashboard</span>
             </button>
 
             {showModeration && isAdminUser && (
@@ -659,5 +288,67 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
         </button>
       </div>
     </motion.div>
+  );
+}
+
+function GlobalGoalMap({ allGoals, allGroups }: { allGoals: Goal[], allGroups: Group[] }) {
+  const groupedGoals = React.useMemo(() => {
+    const groups: { [key: string]: Goal[] } = { 'ungrouped': [] };
+    allGoals.forEach(g => {
+      if (g.groupId) {
+        if (!groups[g.groupId]) groups[g.groupId] = [];
+        groups[g.groupId].push(g);
+      } else {
+        groups['ungrouped'].push(g);
+      }
+    });
+    return groups;
+  }, [allGoals]);
+
+  return (
+    <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-8">
+      <h3 className="font-bold text-lg flex items-center gap-2">
+        <Users size={20} /> Community Clusters
+      </h3>
+      
+      <div className="space-y-6">
+        {Object.entries(groupedGoals).map(([groupId, goals]) => {
+          const group = allGroups.find(g => g.id === groupId);
+          if (groupId === 'ungrouped' && goals.length === 0) return null;
+
+          return (
+            <div key={groupId} className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                  {groupId === 'ungrouped' ? 'Ungrouped Goals' : `Community: ${group?.derivedGoalTheme || groupId}`}
+                </h4>
+                <span className="text-[10px] bg-zinc-800 px-2 py-0.5 rounded-full text-zinc-400">
+                  {goals.length} goals
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-2">
+                {goals.map(g => (
+                  <div key={g.id} className="p-4 bg-zinc-800/30 border border-zinc-800 rounded-2xl flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm truncate">{g.title}</p>
+                      <p className="text-[10px] text-zinc-500 mt-1 italic truncate">"{g.normalizedMatchingText}"</p>
+                    </div>
+                    <div className="text-right flex flex-col items-end gap-1">
+                      <span className="text-[10px] font-bold text-zinc-600">User: {g.ownerId.slice(0, 6)}</span>
+                      <span className={cn(
+                        "text-[8px] px-1.5 py-0.5 rounded-full uppercase font-bold",
+                        g.visibility === 'private' ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500"
+                      )}>
+                        {g.visibility}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

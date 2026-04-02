@@ -368,7 +368,7 @@ export default function App() {
             } else if (assignData.action === 'create') {
               const newGroupRef = await addDoc(collection(db, 'groups'), {
                 derivedGoalTheme: assignData.groupName,
-                memberCount: assignData.memberGoalIds.length,
+                memberCount: assignData.members.length,
                 maxMembers: 70,
                 representativeEmbedding: assignData.representativeEmbedding,
                 matchingCriteria: assignData.matchingCriteria,
@@ -377,16 +377,14 @@ export default function App() {
               
               // Update all goals in the cluster
               const updateBatch = writeBatch(db);
-              assignData.memberGoalIds.forEach((gid: string) => {
-                updateBatch.update(doc(db, 'goals', gid), { groupId: newGroupRef.id });
-              });
-
-              // Add all cluster members to members subcollection
-              // Note: assignData.memberGoalIds are IDs of goals, we need to find their owners.
-              // For simplicity, we'll add the current user now, and others will be added when they save or via backfill.
-              updateBatch.set(doc(db, 'groups', newGroupRef.id, 'members', user.uid), {
-                userId: user.uid,
-                joinedAt: new Date().toISOString()
+              assignData.members.forEach((m: { goalId: string, ownerId: string }) => {
+                updateBatch.update(doc(db, 'goals', m.goalId), { groupId: newGroupRef.id });
+                
+                // Add each user to members subcollection
+                updateBatch.set(doc(db, 'groups', newGroupRef.id, 'members', m.ownerId), {
+                  userId: m.ownerId,
+                  joinedAt: new Date().toISOString()
+                });
               });
               
               // Add welcome message

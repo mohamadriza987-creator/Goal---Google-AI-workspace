@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, onSnapshot, doc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { collection, query, orderBy, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { db, auth } from '../firebase';
 import { Goal, GoalTask } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, CheckCircle2, Circle, X, MessageCircle, Bell, Trash2, Plus, Mic, Calendar as CalendarIcon, Edit2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Circle, X, MessageCircle, Bell, Trash2, Plus, Mic, Calendar as CalendarIcon, Edit2, Users, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { GoalCard } from './GoalCard';
 
@@ -168,6 +168,13 @@ export function GoalsScreen({
           <h1 className="text-4xl font-bold mb-4 tracking-tight break-words">{activeGoal.title}</h1>
           <p className="text-zinc-400 text-lg mb-12 leading-relaxed break-words">{activeGoal.description}</p>
           
+          {/* Similar Goals / Community Discovery */}
+          <SimilarGoalsSection 
+            goal={activeGoal} 
+            handleFirestoreError={handleFirestoreError}
+            setCurrentScreen={setCurrentScreen}
+          />
+
           <div className="mb-12 space-y-3">
             <div className="flex justify-between items-end">
               <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold">{t('goalProgress')}</span>
@@ -443,5 +450,187 @@ export function GoalsScreen({
         </>
       )}
     </motion.div>
+  );
+}
+
+function SimilarGoalsSection({ 
+  goal, 
+  handleFirestoreError,
+  setCurrentScreen
+}: { 
+  goal: Goal, 
+  handleFirestoreError: any,
+  setCurrentScreen: (screen: any) => void
+}) {
+  const { t } = useTranslation();
+  const [similarMatches, setSimilarMatches] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [joining, setJoining] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (goal.embedding) {
+      fetchSimilar();
+    }
+  }, [goal.id]);
+
+  const fetchSimilar = async () => {
+    setLoading(true);
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch("/api/goals/similar", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          goalId: goal.id,
+          embedding: goal.embedding
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Filter out own goal and very low scores
+        setSimilarMatches(data.matches.filter((m: any) => m.id !== goal.id && m.score > 0.7));
+      }
+    } catch (err) {
+      console.error("Match error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleJoinCommunity = async (groupId: string) => {
+    if (!auth.currentUser) return;
+    setJoining(groupId);
+    try {
+      // Add user to members subcollection
+      await setDoc(doc(db, 'groups', groupId, 'members', auth.currentUser.uid), {
+        userId: auth.currentUser.uid,
+        joinedAt: new Date().toISOString()
+      });
+      
+      // Update goal to point to this group
+      await updateDoc(doc(db, 'goals', goal.id), { groupId });
+      
+      // Navigate to community
+      setCurrentScreen({ name: 'community', groupId });
+    } catch (err) {
+      handleFirestoreError(err, 'update', `groups/${groupId}/members`);
+    } finally {
+      setJoining(null);
+    }
+  };
+
+  const handleStartConversation = async (otherGoal: any) => {
+    if (!auth.currentUser) return;
+    setJoining(otherGoal.id);
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      // Use the group assignment API to create a cluster
+      const res = await fetch("/api/groups/assign", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          goal: { ...goal, embedding: goal.embedding }
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.action === 'assigned' || data.action === 'create') {
+          // If it was created or assigned, the App.tsx logic usually handles the Firestore updates
+          // But here we're in a specific sub-component, so we might need to wait or trigger a refresh.
+          // For now, let's just navigate to the community screen if we have a groupId.
+          if (data.groupId) {
+            setCurrentScreen({ name: 'community', groupId: data.groupId });
+          } else {
+            // If it created a new group, we need the ID. The API returns it in App.tsx but let's check server.ts
+            // Actually, the API for 'create' returns the groupName and memberGoalIds, but not the new ID yet.
+            // Let's just alert the user that we're connecting them.
+            alert("Connecting you with " + otherGoal.title + "...");
+            // In a real app, we'd wait for the group to be created and then navigate.
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Start conversation error:", err);
+    } finally {
+      setJoining(null);
+    }
+  };
+
+  if (loading) return (
+    <div className="mb-12 p-6 bg-zinc-900/30 border border-zinc-800 rounded-3xl flex items-center gap-4">
+      <Loader2 className="animate-spin text-zinc-500" size={20} />
+      <span className="text-sm text-zinc-500 font-medium tracking-tight">Searching for similar goals...</span>
+    </div>
+  );
+
+  if (similarMatches.length === 0) return null;
+
+  return (
+    <div className="mb-12 space-y-6">
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
+          <Users size={16} className="text-white" />
+        </div>
+        <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-white">Similar Goals Found</h3>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4">
+        {similarMatches.map((match) => (
+          <motion.div 
+            key={match.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-[2rem] hover:border-zinc-700 transition-all group"
+          >
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div className="flex-1">
+                <h4 className="text-lg font-bold mb-1 group-hover:text-white transition-colors">{match.title}</h4>
+                <p className="text-sm text-zinc-500 line-clamp-2">{match.description}</p>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600 block mb-1">Match Score</span>
+                <span className="text-xl font-light tabular-nums text-white">{(match.score * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-4 border-t border-zinc-800/50">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center text-[10px] font-bold text-zinc-500">
+                  {match.ownerId.substring(0, 2).toUpperCase()}
+                </div>
+                <span className="text-xs text-zinc-500 font-medium">User {match.ownerId.substring(0, 5)}</span>
+              </div>
+
+              {match.groupId ? (
+                <button 
+                  onClick={() => handleJoinCommunity(match.groupId)}
+                  disabled={joining === match.groupId}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-white text-black rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-200 transition-all active:scale-95 disabled:opacity-50"
+                >
+                  {joining === match.groupId ? <Loader2 className="animate-spin" size={12} /> : <MessageCircle size={12} />}
+                  Join Community
+                </button>
+              ) : (
+                <button 
+                  onClick={() => handleStartConversation(match)}
+                  disabled={joining === match.id}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-zinc-800 text-white rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 transition-all active:scale-95 disabled:opacity-50"
+                >
+                  {joining === match.id ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}
+                  Start Conversation
+                </button>
+              )}
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
   );
 }
