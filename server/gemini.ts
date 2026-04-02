@@ -26,6 +26,7 @@ export interface StructuredGoal {
   timeHorizon: string;
   privacy: 'private' | 'group' | 'public';
   language: string;
+  normalizedMatchingText: string;
 }
 
 export interface UserContext {
@@ -136,26 +137,31 @@ export async function generateGoalFromTranscript(transcript: string, userContext
       },
       config: {
         systemInstruction: `You are a world-class life coach and productivity expert. 
-        The user has spoken a personal goal or dream. Your job is to structure it into a clear, actionable plan.
+        The user has provided a personal goal or dream. Your job is to structure it into a clear, actionable plan.
 
         CRITICAL INSTRUCTIONS:
-        1. Transcript: Use the provided transcript as the basis.
+        1. Transcript: Use the provided transcript as the basis. If the user has provided multiple refinements or added details, use the full combined context.
         2. Stay on subject: Do not drift off the user's actual subject. Do not invent facts or goals the user didn't mention.
         3. Strong Title: Generate a strong, short, and inspiring goal title (max 60 chars).
         4. Useful Description: Generate a concise and helpful description (max 200 chars).
-        5. Practical Tasks: Generate 5-8 practical, non-generic suggested tasks. 
+        5. Practical Tasks: Generate exactly 5-8 practical, non-generic suggested tasks. 
+           - PRIORITY ORDER: Tasks MUST be ordered from most important/foundational (first) to least urgent/later-stage (last).
            - Tasks must be realistic first steps, not motivational fluff.
            - Avoid generic trash like "stay motivated", "work hard", or "believe in yourself".
            - Tasks should be specific (e.g., "Research 3 local photography courses" instead of "Learn photography").
            - Tasks should match the goal type and the user's likely situation (using age/locality context if provided).
-        6. Language Consistency: The entire response (transcript, goalTitle, goalDescription, suggestedTasks, tags, timeHorizon) MUST be in the EXACT SAME LANGUAGE as the transcript.
-        7. Strict JSON: Return ONLY a structured JSON object. Do not include any other text or markdown formatting.
+        6. Language Consistency: The entire response (transcript, goalTitle, goalDescription, suggestedTasks, tags, timeHorizon, normalizedMatchingText) MUST be in the EXACT SAME LANGUAGE as the transcript.
+        7. Normalized Matching Text: Create one clean, comma-separated string for backend matching. 
+           - Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
+           - Remove filler words. Keep only core meaning.
+           - Do not invent facts. If age/locality aren't in the provided context, ignore them.
+        8. Strict JSON: Return ONLY a structured JSON object. Do not include any other text or markdown formatting.
 
         Structure:
         - transcript: The original transcript provided.
         - goalTitle: Short, clear, actionable title in the original language.
         - goalDescription: Concise summary in the original language.
-        - suggestedTasks: A list of 5-8 specific, practical to-do items in the original language.
+        - suggestedTasks: A list of 5-8 specific, practical to-do items in the original language, ordered by priority.
         - category: One of [health, finance, learning, business, personal, social, other].
         - tags: 3-5 relevant tags in the original language.
         - timeHorizon: Estimated duration (e.g., "1 week", "1 month") in the original language.
@@ -182,9 +188,10 @@ export async function generateGoalFromTranscript(transcript: string, userContext
               type: Type.STRING,
               enum: ['private', 'group', 'public']
             },
-            language: { type: Type.STRING }
+            language: { type: Type.STRING },
+            normalizedMatchingText: { type: Type.STRING }
           },
-          required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language"]
+          required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"]
         }
       }
     }));
@@ -216,6 +223,108 @@ export async function generateGoalFromTranscript(transcript: string, userContext
   const text = response.text;
   if (!text) throw new Error("No response from AI");
   return JSON.parse(text) as StructuredGoal;
+}
+
+export async function normalizeGoal(goalData: { title: string, description: string, category: string, tags: string[], timeHorizon: string, privacy: string, sourceText?: string }, userContext?: UserContext): Promise<string> {
+  console.log(`Normalizing goal: "${goalData.title}"`);
+  
+  if (!process.env.gemfree) {
+    throw new Error("The 'gemfree' secret is not set in the environment");
+  }
+
+  const ai = getAI();
+
+  const contextPrompt = userContext ? `
+  User Context:
+  - Age: ${userContext.age || 'Not provided'}
+  - Locality: ${userContext.locality || 'Not provided'}
+  ` : '';
+
+  const response = await withRetry(() => ai.models.generateContent({
+    model: "gemini-3.1-flash-lite-preview",
+    contents: {
+      parts: [
+        {
+          text: `Create a normalized matching text for the following goal. 
+          
+          Goal Data:
+          - Title: ${goalData.title}
+          - Description: ${goalData.description}
+          - Category: ${goalData.category}
+          - Tags: ${goalData.tags.join(', ')}
+          - Time Horizon: ${goalData.timeHorizon}
+          - Privacy: ${goalData.privacy}
+          ${goalData.sourceText ? `- Source Text: ${goalData.sourceText}` : ''}
+          
+          ${contextPrompt}
+          
+          Return ONLY a clean, comma-separated string for backend matching. 
+          Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
+          Remove filler words. Keep only core meaning.
+          Do not invent facts. If age/locality aren't in the provided context, ignore them.`
+        }
+      ]
+    },
+    config: {
+      systemInstruction: "You are a data normalization engine. Your job is to extract the core meaning of a goal into a standardized format for similarity matching.",
+    }
+  }));
+
+  const text = response.text;
+  if (!text) throw new Error("No response from AI");
+  return text.trim();
+}
+
+export async function generateEmbedding(text: string): Promise<number[]> {
+  console.log(`Generating embedding for text: "${text.substring(0, 50)}..."`);
+  
+  if (!process.env.gemfree) {
+    throw new Error("The 'gemfree' secret is not set in the environment");
+  }
+
+  const ai = getAI();
+  const result = await withRetry(() => ai.models.embedContent({
+    model: 'gemini-embedding-2-preview',
+    contents: [text],
+  }));
+
+  if (!result.embeddings || result.embeddings.length === 0) {
+    throw new Error("No embeddings returned from AI");
+  }
+
+  return result.embeddings[0].values;
+}
+
+export async function generateGroupName(goals: { title: string, description: string }[]): Promise<string> {
+  console.log(`Generating group name for ${goals.length} goals...`);
+  
+  if (!process.env.gemfree) {
+    throw new Error("The 'gemfree' secret is not set in the environment");
+  }
+
+  const ai = getAI();
+  const response = await withRetry(() => ai.models.generateContent({
+    model: "gemini-3.1-flash-lite-preview",
+    contents: {
+      parts: [
+        {
+          text: `Create a short, clean, and natural community name for a group of users with these goals:
+          
+          ${goals.map((g, i) => `${i+1}. ${g.title}: ${g.description}`).join('\n')}
+          
+          The name should be 2-4 words maximum. 
+          Avoid robotic names like "Group 1" or "Similarity Cluster". 
+          Example: "5K Runners", "Language Learners", "Mindful Morning", "Tech Career Growth".
+          
+          Return ONLY the name string.`
+        }
+      ]
+    }
+  }));
+
+  const text = response.text;
+  if (!text) throw new Error("No response from AI");
+  return text.trim().replace(/["']/g, '');
 }
 
 export async function structureGoalFromAudio(audioBase64: string, mimeType: string, userContext?: UserContext): Promise<StructuredGoal> {
@@ -264,8 +373,12 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
            - Avoid generic trash like "stay motivated", "work hard", or "believe in yourself".
            - Tasks should be specific (e.g., "Research 3 local photography courses" instead of "Learn photography").
            - Tasks should match the goal type and the user's likely situation (using age/locality context if provided).
-        6. Language Consistency: The entire response (transcript, goalTitle, goalDescription, suggestedTasks, tags, timeHorizon) MUST be in the EXACT SAME LANGUAGE as the audio input.
-        7. Strict JSON: Return ONLY a structured JSON object. Do not include any other text or markdown formatting.
+        6. Language Consistency: The entire response (transcript, goalTitle, goalDescription, suggestedTasks, tags, timeHorizon, normalizedMatchingText) MUST be in the EXACT SAME LANGUAGE as the audio input.
+        7. Normalized Matching Text: Create one clean, comma-separated string for backend matching. 
+           - Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
+           - Remove filler words. Keep only core meaning.
+           - Do not invent facts. If age/locality aren't in the provided context, ignore them.
+        8. Strict JSON: Return ONLY a structured JSON object. Do not include any other text or markdown formatting.
 
         Structure:
         - transcript: The accurate transcription of the audio in the original language.
@@ -298,9 +411,10 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
               type: Type.STRING,
               enum: ['private', 'group', 'public']
             },
-            language: { type: Type.STRING }
+            language: { type: Type.STRING },
+            normalizedMatchingText: { type: Type.STRING }
           },
-          required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language"]
+          required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"]
         }
       }
     }));

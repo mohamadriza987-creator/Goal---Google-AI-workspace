@@ -41,6 +41,13 @@ export function HomeScreen({
   const [editingManualTaskIndex, setEditingManualTaskIndex] = useState<number | null>(null);
   const [editingManualTaskText, setEditingManualTaskText] = useState('');
   const [currentView, setCurrentView] = useState<'voice' | 'review'>('voice');
+  const [isTyping, setIsTyping] = useState(false);
+  const [typedGoal, setTypedGoal] = useState('');
+  const [refinementCount, setRefinementCount] = useState(0);
+  const [isAddingDetails, setIsAddingDetails] = useState(false);
+  const [additionalDetails, setAdditionalDetails] = useState('');
+  const [isEditingTranscript, setIsEditingTranscript] = useState(false);
+  const REFINEMENT_LIMIT = 5;
 
   const {
     isRecording,
@@ -71,23 +78,14 @@ export function HomeScreen({
     }
   }, [currentView, structuredGoal, manualTasks, editingManualTaskIndex]);
 
-  const handlePandaClick = async () => {
-    if (isRecording) {
-      const audioBlob = await stopRecording();
-      if (audioBlob) {
-        processAudio(audioBlob);
-      }
-    } else {
-      setProcessingError(null);
-      await startRecording();
-    }
-  };
-
-  const processAudio = async (blob: Blob) => {
+  const processAudio = async (blob: Blob, isRefinement = false) => {
     setLoading(true);
     setProcessingState('transcribing');
     setProcessingError(null);
-    setCurrentTranscript(null);
+    
+    if (!isRefinement) {
+      setCurrentTranscript(null);
+    }
     
     try {
       const reader = new FileReader();
@@ -100,18 +98,41 @@ export function HomeScreen({
       reader.readAsDataURL(blob);
       const base64Audio = await base64Promise;
 
+      const idToken = await user.getIdToken();
+
       // Step 1: Transcription
-      const transcript = await transcribeAudio(base64Audio, blob.type);
-      setCurrentTranscript(transcript);
+      const transcript = await transcribeAudio(base64Audio, blob.type, idToken);
       
-      // Step 2: Goal Generation
-      setProcessingState('generating');
+      if (isRefinement) {
+        const combinedTranscript = `${currentTranscript}\n\nAdditional details: ${transcript}`;
+        setCurrentTranscript(combinedTranscript);
+        await processTranscript(combinedTranscript, idToken, true);
+      } else {
+        setCurrentTranscript(transcript);
+        await processTranscript(transcript, idToken);
+      }
+    } catch (err: any) {
+      console.error('Processing error:', err);
+      setProcessingError(err.message || t('error'));
+    } finally {
+      setLoading(false);
+      setProcessingState('idle');
+    }
+  };
+
+  const processTranscript = async (transcript: string, idToken?: string, isRefinement = false) => {
+    setLoading(true);
+    setProcessingState('generating');
+    setProcessingError(null);
+    
+    try {
       const userContext = {
         age: dbUser?.age,
         locality: dbUser?.locality
       };
 
-      const structured = await generateGoalFromTranscript(transcript, userContext);
+      const token = idToken || await user.getIdToken();
+      const structured = await generateGoalFromTranscript(transcript, token, userContext);
       
       // Update app language based on detected language
       if (structured.language) {
@@ -123,6 +144,11 @@ export function HomeScreen({
 
       setStructuredGoal(structured);
       setCurrentView('review');
+      if (isRefinement) {
+        setRefinementCount(prev => prev + 1);
+        setIsAddingDetails(false);
+        setAdditionalDetails('');
+      }
     } catch (err: any) {
       console.error('Processing error:', err);
       setProcessingError(err.message || t('error'));
@@ -132,37 +158,52 @@ export function HomeScreen({
     }
   };
 
-  const retryGeneration = async () => {
-    if (!currentTranscript) return;
-    
-    setLoading(true);
-    setProcessingState('generating');
-    setProcessingError(null);
-    
-    try {
-      const userContext = {
-        age: dbUser?.age,
-        locality: dbUser?.locality
-      };
+  const handleTypedGoalSubmit = async () => {
+    if (!typedGoal.trim()) return;
+    setCurrentTranscript(typedGoal.trim());
+    const idToken = await user.getIdToken();
+    await processTranscript(typedGoal.trim(), idToken);
+    setTypedGoal('');
+    setIsTyping(false);
+  };
 
-      const structured = await generateGoalFromTranscript(currentTranscript, userContext);
-      
-      if (structured.language) {
-        const langCode = mapLanguageNameToCode(structured.language);
-        if (langCode !== 'en') {
-          setLanguage(langCode);
+  const handleRegenerate = async () => {
+    if (!currentTranscript) return;
+    setIsEditingTranscript(false);
+    const idToken = await user.getIdToken();
+    await processTranscript(currentTranscript, idToken, true);
+  };
+
+  const handleAddDetailsSubmit = async () => {
+    if (!additionalDetails.trim() || refinementCount >= REFINEMENT_LIMIT) return;
+    const combinedTranscript = `${currentTranscript}\n\nAdditional details: ${additionalDetails.trim()}`;
+    setCurrentTranscript(combinedTranscript);
+    const idToken = await user.getIdToken();
+    await processTranscript(combinedTranscript, idToken, true);
+  };
+
+  const handlePandaClick = async () => {
+    if (isRecording) {
+      const audioBlob = await stopRecording();
+      if (audioBlob) {
+        if (isAddingDetails) {
+          processAudio(audioBlob, true);
+        } else if (currentView === 'review') {
+          processAudio(audioBlob, true);
+        } else {
+          processAudio(audioBlob);
         }
       }
-
-      setStructuredGoal(structured);
-      setCurrentView('review');
-    } catch (err: any) {
-      console.error('Retry error:', err);
-      setProcessingError(err.message || t('error'));
-    } finally {
-      setLoading(false);
-      setProcessingState('idle');
+    } else {
+      setProcessingError(null);
+      await startRecording();
     }
+  };
+
+  const retryGeneration = async () => {
+    if (!currentTranscript) return;
+    const idToken = await user.getIdToken();
+    await processTranscript(currentTranscript, idToken);
   };
 
   const saveGoal = async () => {
@@ -184,6 +225,14 @@ export function HomeScreen({
       status: 'active',
       createdAt: createdAt,
       savingStatus: 'saving',
+      sourceText: structuredGoal.transcript,
+      normalizedMatchingText: structuredGoal.normalizedMatchingText,
+      timeHorizon: structuredGoal.timeHorizon,
+      tags: structuredGoal.tags,
+      matchingMetadata: {
+        age: dbUser?.age ?? null,
+        locality: dbUser?.locality ?? null
+      },
       draftData: {
         structuredGoal,
         manualTasks
@@ -214,6 +263,9 @@ export function HomeScreen({
     setStructuredGoal(null);
     setManualTasks([]);
     setCurrentView('voice');
+    setRefinementCount(0);
+    setIsAddingDetails(false);
+    setAdditionalDetails('');
   };
 
   const toggleTaskSelection = (task: string) => {
@@ -255,18 +307,75 @@ export function HomeScreen({
             exit={{ opacity: 0, y: -20 }}
             className="flex flex-col items-center justify-center h-[100dvh] p-6 overflow-hidden"
           >
-            <div className="relative flex flex-col items-center">
-              <Panda isListening={isRecording} onClick={handlePandaClick} />
+            <div className="relative flex flex-col items-center w-full max-w-md">
+              <Panda 
+                isListening={isRecording} 
+                onClick={handlePandaClick} 
+                className="w-64 h-64"
+              />
               
               <motion.div
-                key={isRecording ? 'recording' : 'idle'}
+                key={isRecording ? 'recording' : isTyping ? 'typing' : 'idle'}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="mt-8 text-center"
+                className="mt-8 text-center w-full"
               >
-                <p className="text-zinc-400 text-lg font-medium tracking-tight">
-                  {isRecording ? t('recording') : t('tapToRecord')}
-                </p>
+                {!isTyping ? (
+                  <>
+                    <p className="text-zinc-400 text-lg font-medium tracking-tight">
+                      {isRecording ? t('recording') : t('tapToRecord')}
+                    </p>
+                    {!isRecording && (
+                      <button 
+                        onClick={() => setIsTyping(true)}
+                        className="mt-4 flex items-center gap-2 mx-auto text-zinc-500 hover:text-white transition-colors text-sm font-medium"
+                      >
+                        <Edit2 size={16} />
+                        {t('typeInstead')}
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <div className="w-full relative group">
+                    <textarea
+                      autoFocus
+                      placeholder={t('typeYourGoal')}
+                      value={typedGoal}
+                      onChange={(e) => {
+                        setTypedGoal(e.target.value);
+                        e.target.style.height = 'auto';
+                        e.target.style.height = e.target.scrollHeight + 'px';
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleTypedGoalSubmit();
+                        }
+                      }}
+                      className={cn(
+                        "w-full bg-zinc-900/50 border border-white/10 rounded-2xl p-4 pr-14 text-white placeholder-zinc-500 focus:outline-none focus:border-white/20 resize-none overflow-hidden min-h-[120px] transition-opacity",
+                        loading && processingState === 'generating' && !isAddingDetails && currentView === 'voice' && "opacity-30"
+                      )}
+                    />
+                    {loading && processingState === 'generating' && !isAddingDetails && currentView === 'voice' && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="bg-zinc-900/80 backdrop-blur-sm px-6 py-3 rounded-full border border-white/5 flex items-center gap-3">
+                          <Loader2 size={18} className="animate-spin text-white" />
+                          <span className="text-sm font-bold uppercase tracking-widest text-white">
+                            {t('processing')}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <button 
+                      onClick={handleTypedGoalSubmit}
+                      disabled={!typedGoal.trim() || loading}
+                      className="absolute bottom-3 right-3 bg-white text-black p-3 rounded-xl font-bold hover:bg-zinc-200 transition-all disabled:opacity-50 active:scale-95 shadow-lg"
+                    >
+                      {loading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+                    </button>
+                  </div>
+                )}
                 {isRecording && (
                   <div className="flex gap-1 justify-center mt-4">
                     {[1, 2, 3, 4, 5].map(i => (
@@ -338,9 +447,141 @@ export function HomeScreen({
                 </div>
                 
                 <div className="space-y-8">
-                  <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl">
-                    <label className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold mb-3 block">{t('transcript')}</label>
-                    <p className="text-sm text-zinc-400 italic leading-relaxed">"{structuredGoal.transcript}"</p>
+                  <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <label className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold block">{t('transcript')}</label>
+                        <button 
+                          onClick={() => {
+                            if (isEditingTranscript) {
+                              handleRegenerate();
+                            } else {
+                              setIsEditingTranscript(true);
+                            }
+                          }}
+                          disabled={loading}
+                          className="text-zinc-500 hover:text-white transition-colors p-1 flex items-center gap-2"
+                        >
+                          {isEditingTranscript ? (
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-green-500">{t('done')}</span>
+                          ) : (
+                            <Edit2 size={12} />
+                          )}
+                        </button>
+                        {loading && processingState === 'generating' && !isAddingDetails && (
+                          <div className="flex items-center gap-2 text-zinc-500">
+                            <Loader2 size={10} className="animate-spin" />
+                            <span className="text-[10px] font-bold uppercase tracking-widest animate-pulse">
+                              {t('processing').split(' ')[0]}...
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      {refinementCount > 0 && (
+                        <span className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">
+                          {t('refinementLimitReached').split(' ')[0]}: {refinementCount}/{REFINEMENT_LIMIT}
+                        </span>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <textarea
+                        readOnly={!isEditingTranscript}
+                        value={currentTranscript || ''}
+                        onChange={(e) => {
+                          setCurrentTranscript(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = e.target.scrollHeight + 'px';
+                        }}
+                        className={cn(
+                          "w-full bg-transparent border-none focus:ring-0 p-0 text-sm italic leading-relaxed resize-none overflow-hidden transition-colors",
+                          isEditingTranscript ? "text-white" : "text-zinc-400",
+                          loading && processingState === 'generating' && !isAddingDetails && "opacity-30"
+                        )}
+                      />
+                      {loading && processingState === 'generating' && !isAddingDetails && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="bg-zinc-900/80 backdrop-blur-sm px-4 py-2 rounded-full border border-white/5 flex items-center gap-3">
+                            <Loader2 size={14} className="animate-spin text-white" />
+                            <span className="text-xs font-bold uppercase tracking-widest text-white">
+                              {t('processing')}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {!isAddingDetails && refinementCount < REFINEMENT_LIMIT && (
+                      <div className="flex flex-wrap items-center gap-4 pt-2">
+                        <button 
+                          onClick={() => setIsAddingDetails(true)}
+                          className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 hover:text-white transition-colors flex items-center gap-2"
+                        >
+                          <Plus size={12} />
+                          {t('addMoreDetails')}
+                        </button>
+                      </div>
+                    )}
+
+                    <AnimatePresence>
+                      {isAddingDetails && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="pt-4 border-t border-white/5 space-y-4 overflow-hidden"
+                        >
+                          <div className="relative">
+                            <textarea
+                              autoFocus
+                              placeholder={t('typeAdditionalDetails')}
+                              value={additionalDetails}
+                              onChange={(e) => {
+                                setAdditionalDetails(e.target.value);
+                                e.target.style.height = 'auto';
+                                e.target.style.height = e.target.scrollHeight + 'px';
+                              }}
+                              className={cn(
+                                "w-full bg-zinc-950/50 border border-white/5 rounded-2xl pl-4 pr-12 py-4 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-white/10 resize-none overflow-hidden min-h-[60px] transition-opacity",
+                                loading && processingState === 'generating' && isAddingDetails && "opacity-30"
+                              )}
+                            />
+                            {loading && processingState === 'generating' && isAddingDetails && (
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="bg-zinc-900/80 backdrop-blur-sm px-4 py-2 rounded-full border border-white/5 flex items-center gap-3">
+                                  <Loader2 size={14} className="animate-spin text-white" />
+                                  <span className="text-xs font-bold uppercase tracking-widest text-white">
+                                    {t('processing')}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                            <div className="absolute right-2 bottom-2 flex items-center gap-2">
+                              {additionalDetails.trim().length > 0 && (
+                                <button 
+                                  onClick={handleAddDetailsSubmit}
+                                  disabled={loading}
+                                  className="p-2 bg-white text-black rounded-full hover:bg-zinc-200 transition-colors disabled:opacity-50"
+                                >
+                                  {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <div className="flex justify-end">
+                            <button 
+                              onClick={() => {
+                                setIsAddingDetails(false);
+                                setAdditionalDetails('');
+                              }}
+                              className="text-[10px] font-bold uppercase tracking-widest text-zinc-600 hover:text-white transition-colors"
+                            >
+                              {t('discard')}
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
 
                   <div>
@@ -626,9 +867,11 @@ export function HomeScreen({
 
               <div className="lg:w-80 flex flex-col items-center justify-center">
                 <div className="relative group">
-                  <div className="scale-75">
-                    <Panda isListening={isRecording} onClick={handlePandaClick} />
-                  </div>
+                  <Panda 
+                    isListening={isRecording} 
+                    onClick={handlePandaClick} 
+                    className="w-48 h-48"
+                  />
                 </div>
               </div>
             </motion.div>

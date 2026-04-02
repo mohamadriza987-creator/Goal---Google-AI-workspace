@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, limit, getDocs, orderBy, onSnapshot, addDoc, doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { collection, query, limit, getDocs, orderBy, onSnapshot, addDoc, doc, updateDoc, arrayUnion, where, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { CommunityMessage, Group, User } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
@@ -20,6 +20,7 @@ import { useTranslation } from '../contexts/LanguageContext';
 export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser }: CommunityScreenProps) {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<CommunityMessage[]>([]);
+  const [userGroups, setUserGroups] = useState<Group[]>([]);
   const [activeGroup, setActiveGroup] = useState<Group | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'image' | 'video' | 'link' | 'thread'>('all');
   const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
@@ -27,6 +28,10 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
   const [mediaUrl, setMediaUrl] = useState('');
   const [isViewOnce, setIsViewOnce] = useState(false);
   const [messageInput, setMessageInput] = useState('');
+  const [replyingTo, setReplyingTo] = useState<CommunityMessage | null>(null);
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [selectedMsgForNote, setSelectedMsgForNote] = useState<CommunityMessage | null>(null);
+  const [noteComment, setNoteComment] = useState('');
 
   // Auto-resize textareas
   useEffect(() => {
@@ -48,25 +53,60 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
   }, [messageInput, isMediaModalOpen]);
 
   useEffect(() => {
-    let unsubscribe: (() => void) | null = null;
-    const q = query(collection(db, 'groups'), limit(1));
-    getDocs(q).then(snap => {
-      if (!snap.empty) {
-        const g = { id: snap.docs[0].id, ...snap.docs[0].data() } as Group;
-        setActiveGroup(g);
+    // 1. Find all goals of the user to get their groupIds
+    const gq = query(collection(db, 'goals'), where('ownerId', '==', user.uid));
+    const unsubscribeGoals = onSnapshot(gq, async (snap) => {
+      const groupIds = Array.from(new Set(snap.docs.map(d => d.data().groupId).filter(Boolean)));
+      
+      if (groupIds.length > 0) {
+        const grpsSnap = await getDocs(collection(db, 'groups'));
+        const grps = grpsSnap.docs
+          .map(d => ({ id: d.id, ...d.data() } as Group))
+          .filter(g => groupIds.includes(g.id));
         
-        const mq = query(collection(db, 'groups', g.id, 'messages'), orderBy('createdAt', 'desc'), limit(50));
-        unsubscribe = onSnapshot(mq, (msnap) => {
-          const m = msnap.docs.map(d => ({ id: d.id, ...d.data() } as CommunityMessage));
-          setMessages(m);
-        }, (err) => handleFirestoreError(err, 'get', `groups/${g.id}/messages`));
+        setUserGroups(grps);
+        if (!activeGroup && grps.length > 0) {
+          setActiveGroup(grps[0]);
+        }
+      } else {
+        setUserGroups([]);
+        setActiveGroup(null);
       }
-    }).catch(err => handleFirestoreError(err, 'get', 'groups'));
+    });
 
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
+    return () => unsubscribeGoals();
   }, [user.uid]);
+
+  useEffect(() => {
+    if (!activeGroup || !user.uid) return;
+
+    // Ensure user is in the members subcollection for security rules
+    const checkMembership = async () => {
+      try {
+        const memberRef = doc(db, 'groups', activeGroup.id, 'members', user.uid);
+        const snap = await getDocs(query(collection(db, 'groups', activeGroup.id, 'members'), where('userId', '==', user.uid)));
+        
+        if (snap.empty) {
+          await setDoc(memberRef, {
+            userId: user.uid,
+            joinedAt: new Date().toISOString()
+          });
+        }
+      } catch (err) {
+        console.error("Error ensuring membership:", err);
+      }
+    };
+
+    checkMembership();
+
+    const mq = query(collection(db, 'groups', activeGroup.id, 'messages'), orderBy('createdAt', 'desc'), limit(50));
+    const unsubscribe = onSnapshot(mq, (msnap) => {
+      const m = msnap.docs.map(d => ({ id: d.id, ...d.data() } as CommunityMessage));
+      setMessages(m);
+    }, (err) => handleFirestoreError(err, 'get', `groups/${activeGroup.id}/messages`));
+
+    return () => unsubscribe();
+  }, [activeGroup?.id]);
 
   const filteredMessages = React.useMemo(() => {
     return messages
@@ -78,29 +118,117 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
         if (filterType === 'thread') return !msg.replyToMessageId;
         return true;
       })
-      .filter(msg => !dbUser?.blockedUsers?.includes(msg.userId));
-  }, [messages, filterType, dbUser?.blockedUsers]);
+      .filter(msg => !dbUser?.blockedUsers?.includes(msg.userId))
+      .filter(msg => !dbUser?.hiddenUsers?.includes(msg.userId));
+  }, [messages, filterType, dbUser?.blockedUsers, dbUser?.hiddenUsers]);
 
   const handleSendMessage = async (content: string) => {
     if (!activeGroup) return;
+    const trimmedContent = content.trim();
+    if (!trimmedContent && !mediaUrl) return;
+    if (trimmedContent.length > 2000) {
+      alert("Message is too long (max 2000 characters)");
+      return;
+    }
+
     try {
-      const msgData = {
+      const msgData: any = {
         groupId: activeGroup.id,
         userId: user.uid,
-        content,
+        content: trimmedContent,
         contentType: mediaUrl ? mediaType : 'text',
         mediaUrl: mediaUrl || undefined,
         mediaType: mediaUrl ? mediaType : undefined,
         viewOnce: isViewOnce,
         viewedBy: [],
         createdAt: new Date().toISOString(),
+        reactions: {},
       };
+      
+      if (replyingTo) {
+        msgData.replyToMessageId = replyingTo.id;
+      }
+
       await addDoc(collection(db, 'groups', activeGroup.id, 'messages'), msgData);
       setMediaUrl('');
       setIsMediaModalOpen(false);
       setIsViewOnce(false);
+      setReplyingTo(null);
     } catch (err) {
       handleFirestoreError(err, 'write', `groups/${activeGroup.id}/messages`);
+    }
+  };
+
+  const handleReaction = async (messageId: string, emoji: string) => {
+    // ... existing logic ...
+  };
+
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!activeGroup) return;
+    if (!window.confirm("Are you sure you want to delete this message?")) return;
+    try {
+      const msgRef = doc(db, 'groups', activeGroup.id, 'messages', messageId);
+      await deleteDoc(msgRef);
+    } catch (err) {
+      handleFirestoreError(err, 'delete', `groups/${activeGroup.id}/messages/${messageId}`);
+    }
+  };
+
+  const handleHideUser = async (targetUserId: string) => {
+    if (!user) return;
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      await updateDoc(userRef, {
+        hiddenUsers: arrayUnion(targetUserId)
+      });
+      alert("User hidden. You will no longer see their messages.");
+    } catch (err) {
+      handleFirestoreError(err, 'update', 'users');
+    }
+  };
+
+  const handleBlockUser = async (targetUserId: string) => {
+    if (!user) return;
+    if (!window.confirm("Block this user? They will not be able to interact with you.")) return;
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      await updateDoc(userRef, {
+        blockedUsers: arrayUnion(targetUserId)
+      });
+      alert("User blocked.");
+    } catch (err) {
+      handleFirestoreError(err, 'update', 'users');
+    }
+  };
+
+  const handleSaveToNotes = async () => {
+    if (!selectedMsgForNote || !activeGroup) return;
+    try {
+      // Find the goal associated with this group for the user
+      const gq = query(collection(db, 'goals'), where('ownerId', '==', user.uid), where('groupId', '==', activeGroup.id), limit(1));
+      const gsnap = await getDocs(gq);
+      if (gsnap.empty) {
+        alert("No active goal found for this community.");
+        return;
+      }
+      const goalId = gsnap.docs[0].id;
+
+      await addDoc(collection(db, 'goals', goalId, 'notes'), {
+        goalId,
+        ownerId: user.uid,
+        sourceType: 'community_message',
+        sourceMessageId: selectedMsgForNote.id,
+        text: selectedMsgForNote.content,
+        privateComment: noteComment,
+        createdAt: new Date().toISOString()
+      });
+
+      setIsNoteModalOpen(false);
+      setSelectedMsgForNote(null);
+      setNoteComment('');
+      alert("Saved to notes!");
+    } catch (err) {
+      handleFirestoreError(err, 'write', 'notes');
     }
   };
 
@@ -113,7 +241,23 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{t('community')}</h1>
-          <p className="text-zinc-500 text-sm mt-1">{t('goalGroup')}: {activeGroup?.derivedGoalTheme || t('matching') + "..."}</p>
+          <div className="flex items-center gap-2 mt-1">
+            {userGroups.length > 1 ? (
+              <select 
+                value={activeGroup?.id} 
+                onChange={(e) => setActiveGroup(userGroups.find(g => g.id === e.target.value) || null)}
+                className="bg-transparent border-none text-zinc-500 text-sm p-0 focus:ring-0 font-medium cursor-pointer hover:text-white transition-colors"
+              >
+                {userGroups.map(g => (
+                  <option key={g.id} value={g.id} className="bg-zinc-900 text-white">
+                    {g.derivedGoalTheme}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="text-zinc-500 text-sm">{t('goalGroup')}: {activeGroup?.derivedGoalTheme || t('matching') + "..."}</p>
+            )}
+          </div>
         </div>
         <div className="flex gap-2">
           <div className="relative group">
@@ -170,28 +314,54 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
                   </div>
                   <div className="relative opacity-0 group-hover/msg:opacity-100 transition-opacity">
                     <button className="p-1 text-zinc-600 hover:text-white"><MoreHorizontal size={14} /></button>
-                    <div className="absolute right-0 top-full mt-1 w-32 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl hidden group-hover:block z-50 p-1">
+                    <div className="absolute right-0 top-full mt-1 w-40 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl hidden group-hover:block z-50 p-1">
+                      {msg.userId === user.uid ? (
+                        <button 
+                          onClick={() => handleDeleteMessage(msg.id)}
+                          className="w-full text-left px-3 py-1.5 text-[10px] text-red-500 hover:bg-red-500/10 rounded-lg mb-1"
+                        >
+                          Delete Message
+                        </button>
+                      ) : (
+                        <>
+                          <button 
+                            onClick={() => handleHideUser(msg.userId)}
+                            className="w-full text-left px-3 py-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 rounded-lg mb-1"
+                          >
+                            Hide User
+                          </button>
+                          <button 
+                            onClick={() => handleBlockUser(msg.userId)}
+                            className="w-full text-left px-3 py-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 rounded-lg mb-1"
+                          >
+                            Block User
+                          </button>
+                          <button 
+                            onClick={() => reportUser(msg.userId, msg.id, 'Inappropriate content')}
+                            className="w-full text-left px-3 py-1.5 text-[10px] text-red-500 hover:bg-red-500/10 rounded-lg mb-1"
+                          >
+                            Report Content
+                          </button>
+                        </>
+                      )}
                       <button 
-                        onClick={async () => {
-                          const userRef = doc(db, 'users', user.uid);
-                          await updateDoc(userRef, {
-                            blockedUsers: arrayUnion(msg.userId)
-                          });
+                        onClick={() => {
+                          setSelectedMsgForNote(msg);
+                          setIsNoteModalOpen(true);
                         }}
-                        className="w-full text-left px-3 py-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 rounded-lg mb-1"
+                        className="w-full text-left px-3 py-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 rounded-lg"
                       >
-                        Block User
-                      </button>
-                      <button 
-                        onClick={() => reportUser(msg.userId, msg.id, 'Inappropriate content')}
-                        className="w-full text-left px-3 py-1.5 text-[10px] text-red-500 hover:bg-red-500/10 rounded-lg"
-                      >
-                        Report User
+                        Save to Notes
                       </button>
                     </div>
                   </div>
                 </div>
                 <div className="p-4 bg-zinc-900 border border-zinc-800 rounded-2xl rounded-tl-none space-y-3">
+                  {msg.replyToMessageId && (
+                    <div className="p-2 bg-zinc-800/50 border-l-2 border-white/20 rounded-lg mb-2 text-[10px] opacity-60">
+                      {messages.find(m => m.id === msg.replyToMessageId)?.content || "Original message deleted"}
+                    </div>
+                  )}
                   {msg.content && <p className="text-zinc-300 leading-relaxed">{msg.content}</p>}
                   
                   {msg.mediaUrl && (
@@ -245,8 +415,23 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
                   )}
                 </div>
                 <div className="flex items-center gap-4 mt-2 px-1">
-                  <button className="text-zinc-600 hover:text-white flex items-center gap-1 text-xs"><Heart size={14} /> 0</button>
-                  <button className="text-zinc-600 hover:text-white flex items-center gap-1 text-xs"><MessageCircle size={14} /> Reply</button>
+                  <div className="flex items-center gap-1">
+                    {['❤️', '🔥', '👏', '💡'].map(emoji => (
+                      <button 
+                        key={emoji}
+                        onClick={() => handleReaction(msg.id, emoji)}
+                        className="text-zinc-600 hover:text-white flex items-center gap-1 text-[10px] bg-zinc-900/50 px-2 py-1 rounded-full border border-zinc-800 hover:border-zinc-700 transition-all"
+                      >
+                        {emoji} {msg.reactions?.[emoji] || 0}
+                      </button>
+                    ))}
+                  </div>
+                  <button 
+                    onClick={() => setReplyingTo(msg)}
+                    className="text-zinc-600 hover:text-white flex items-center gap-1 text-xs"
+                  >
+                    <MessageCircle size={14} /> Reply
+                  </button>
                 </div>
               </div>
             </div>
@@ -255,6 +440,22 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
       </div>
 
       <div className="fixed bottom-24 left-6 right-6 max-w-2xl mx-auto">
+        {replyingTo && (
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-2 p-3 bg-zinc-900 border border-zinc-800 rounded-2xl flex items-center justify-between"
+          >
+            <div className="flex items-center gap-2 overflow-hidden">
+              <div className="w-1 h-8 bg-white/20 rounded-full flex-shrink-0" />
+              <div className="truncate">
+                <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Replying to User {replyingTo.userId.slice(0, 4)}</p>
+                <p className="text-xs text-zinc-400 truncate">{replyingTo.content}</p>
+              </div>
+            </div>
+            <button onClick={() => setReplyingTo(null)} className="p-1 text-zinc-500 hover:text-white"><X size={14} /></button>
+          </motion.div>
+        )}
         {isMediaModalOpen && (
           <motion.div 
             initial={{ opacity: 0, y: 20 }}
@@ -372,6 +573,53 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
           </button>
         </div>
       </div>
+
+      <NoteModal 
+        isOpen={isNoteModalOpen}
+        onClose={() => setIsNoteModalOpen(false)}
+        onSave={handleSaveToNotes}
+        comment={noteComment}
+        setComment={setNoteComment}
+        message={selectedMsgForNote}
+      />
     </motion.div>
+  );
+}
+
+function NoteModal({ isOpen, onClose, onSave, comment, setComment, message }: { isOpen: boolean, onClose: () => void, onSave: () => void, comment: string, setComment: (v: string) => void, message: CommunityMessage | null }) {
+  if (!isOpen || !message) return null;
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-zinc-900 border border-zinc-800 rounded-3xl w-full max-w-md p-6 space-y-6 shadow-2xl"
+      >
+        <div className="flex justify-between items-center">
+          <h3 className="text-xl font-bold">Save to Notes</h3>
+          <button onClick={onClose} className="p-2 text-zinc-500 hover:text-white"><X size={20} /></button>
+        </div>
+        
+        <div className="p-4 bg-zinc-800/50 rounded-2xl border border-zinc-800">
+          <p className="text-xs text-zinc-500 uppercase tracking-widest mb-2">Message Content</p>
+          <p className="text-sm text-zinc-300 italic">"{message.content}"</p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs text-zinc-500 uppercase tracking-widest">Personal Comment (Optional)</label>
+          <textarea 
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Why is this message useful?"
+            className="w-full bg-zinc-800 border-none rounded-2xl p-4 text-sm focus:ring-1 focus:ring-white/20 min-h-[100px] resize-none"
+          />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="flex-1 py-4 rounded-2xl bg-zinc-800 font-semibold hover:bg-zinc-700 transition-colors">Cancel</button>
+          <button onClick={onSave} className="flex-1 py-4 rounded-2xl bg-white text-black font-semibold hover:bg-zinc-200 transition-colors">Save Note</button>
+        </div>
+      </motion.div>
+    </div>
   );
 }

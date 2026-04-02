@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch } from 'firebase/firestore';
-import { Goal, GoalTask, User } from './types';
+import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, updateDoc, getDocs } from 'firebase/firestore';
+import { Goal, GoalTask, User, Group } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { 
@@ -86,6 +86,7 @@ export default function App() {
   const [dbUser, setDbUser] = useState<User | null>(null);
   const [currentScreen, setCurrentScreen] = useState<Screen>('auth');
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [allReminders, setAllReminders] = useState<{task: GoalTask, goal: Goal, reminderAt: string, noteText?: string}[]>([]);
@@ -165,6 +166,11 @@ export default function App() {
           // Remove optimistic goals that now exist in the real goals list
           setOptimisticGoals(prev => prev.filter(og => !g.some(realG => realG.title === og.title && Math.abs(new Date(realG.createdAt).getTime() - new Date(og.createdAt).getTime()) < 5000)));
         }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
+
+        const groupsUnsubscribe = onSnapshot(collection(db, 'groups'), (snapshot) => {
+          const grps = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Group));
+          setGroups(grps);
+        }, (err) => handleFirestoreError(err, OperationType.GET, 'groups'));
 
       } else {
         setDbUser(null);
@@ -273,6 +279,26 @@ export default function App() {
     updateOptimisticGoal(tempId, { savingStatus: 'saving' });
 
     try {
+      // Generate embedding first
+      let embedding: number[] | undefined;
+      try {
+        const idToken = await user.getIdToken();
+        const embRes = await fetch("/api/generate-embedding", {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken}`
+          },
+          body: JSON.stringify({ text: structuredGoal.normalizedMatchingText })
+        });
+        if (embRes.ok) {
+          const embData = await embRes.json();
+          embedding = embData.embedding;
+        }
+      } catch (embErr) {
+        console.error("Failed to generate embedding during save:", embErr);
+      }
+
       const goalData = {
         ownerId: user.uid,
         title: structuredGoal.goalTitle,
@@ -285,6 +311,14 @@ export default function App() {
         visibility: structuredGoal.privacy,
         publicFields: structuredGoal.privacy === 'public' ? ['title', 'description', 'tasks', 'progress'] : [],
         createdAt: goal.createdAt,
+        sourceText: structuredGoal.transcript,
+        normalizedMatchingText: structuredGoal.normalizedMatchingText,
+        embedding,
+        embeddingUpdatedAt: embedding ? new Date().toISOString() : undefined,
+        matchingMetadata: {
+          age: dbUser?.age ?? null,
+          locality: dbUser?.locality ?? null
+        }
       };
 
       const goalRef = await addDoc(collection(db, 'goals'), goalData);
@@ -305,6 +339,74 @@ export default function App() {
 
       await batch.commit();
       updateOptimisticGoal(tempId, { savingStatus: 'success' });
+
+      // 3. Assign to group
+      if (embedding) {
+        try {
+          const idToken = await user.getIdToken();
+          const assignRes = await fetch("/api/groups/assign", {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${idToken}`
+            },
+            body: JSON.stringify({
+              goal: { id: goalRef.id, ...goalData, embedding }
+            })
+          });
+
+          if (assignRes.ok) {
+            const assignData = await assignRes.json();
+            if (assignData.action === 'assigned') {
+              await updateDoc(doc(db, 'goals', goalRef.id), { groupId: assignData.groupId });
+              await updateDoc(doc(db, 'groups', assignData.groupId), { memberCount: (groups.find(g => g.id === assignData.groupId)?.memberCount || 0) + 1 });
+              // Add user to members subcollection
+              await setDoc(doc(db, 'groups', assignData.groupId, 'members', user.uid), {
+                userId: user.uid,
+                joinedAt: new Date().toISOString()
+              });
+            } else if (assignData.action === 'create') {
+              const newGroupRef = await addDoc(collection(db, 'groups'), {
+                derivedGoalTheme: assignData.groupName,
+                memberCount: assignData.memberGoalIds.length,
+                maxMembers: 70,
+                representativeEmbedding: assignData.representativeEmbedding,
+                matchingCriteria: assignData.matchingCriteria,
+                createdAt: new Date().toISOString()
+              });
+              
+              // Update all goals in the cluster
+              const updateBatch = writeBatch(db);
+              assignData.memberGoalIds.forEach((gid: string) => {
+                updateBatch.update(doc(db, 'goals', gid), { groupId: newGroupRef.id });
+              });
+
+              // Add all cluster members to members subcollection
+              // Note: assignData.memberGoalIds are IDs of goals, we need to find their owners.
+              // For simplicity, we'll add the current user now, and others will be added when they save or via backfill.
+              updateBatch.set(doc(db, 'groups', newGroupRef.id, 'members', user.uid), {
+                userId: user.uid,
+                joinedAt: new Date().toISOString()
+              });
+              
+              // Add welcome message
+              const msgRef = collection(db, 'groups', newGroupRef.id, 'messages');
+              updateBatch.set(doc(msgRef), {
+                groupId: newGroupRef.id,
+                userId: 'system',
+                content: `Welcome to the ${assignData.groupName} community! We've grouped you together because of your similar goals.`,
+                contentType: 'text',
+                reactions: {},
+                createdAt: new Date().toISOString()
+              });
+
+              await updateBatch.commit();
+            }
+          }
+        } catch (assignErr) {
+          console.error("Failed to assign group:", assignErr);
+        }
+      }
     } catch (err) {
       console.error('Save error:', err);
       updateOptimisticGoal(tempId, { savingStatus: 'error' });
@@ -393,7 +495,7 @@ export default function App() {
         )}
 
         {currentScreen === 'profile' && (
-          <ProfileScreen user={user} />
+          <ProfileScreen user={user} dbUser={dbUser} />
         )}
       </AnimatePresence>
 

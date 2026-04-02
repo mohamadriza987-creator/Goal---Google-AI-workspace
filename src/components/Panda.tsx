@@ -1,18 +1,20 @@
 import React from 'react';
 import { motion } from 'motion/react';
+import { cn } from '../lib/utils';
 
 interface PandaProps {
   isListening: boolean;
   onClick?: () => void;
+  className?: string;
 }
 
-export function Panda({ isListening, onClick }: PandaProps) {
+export function Panda({ isListening, onClick, className }: PandaProps) {
   return (
     <motion.div
-      className="relative w-64 h-64 cursor-pointer"
+      className={cn("relative cursor-pointer", className)}
       onClick={onClick}
       animate={{
-        y: [0, -5, 0],
+        y: [0, -2, 0],
         rotate: isListening ? [0, 1, -1, 0] : [0, 0.5, -0.5, 0],
       }}
       transition={{

@@ -10,6 +10,7 @@ export interface User {
   lat?: number;
   lng?: number;
   preferredLanguage?: string;
+  role?: 'admin' | 'user';
   hiddenUsers?: string[];
   blockedUsers?: string[];
   trustSignals?: Record<string, any>;
@@ -37,6 +38,19 @@ export interface Goal {
   updatedAt?: string;
   savingStatus?: 'saving' | 'success' | 'error';
   draftData?: any;
+  sourceText?: string;
+  normalizedMatchingText?: string;
+  timeHorizon?: string;
+  tags?: string[];
+  embedding?: number[];
+  embeddingUpdatedAt?: string;
+  matchingMetadata?: {
+    age?: number;
+    locality?: string;
+    skillLevel?: string;
+    subFocus?: string;
+    [key: string]: any;
+  };
 }
 
 export interface TaskNote {
@@ -82,6 +96,12 @@ export interface Group {
   targetRegion?: string;
   memberCount: number;
   maxMembers: number;
+  representativeEmbedding?: number[];
+  matchingCriteria?: {
+    category?: string;
+    timeHorizon?: string;
+    privacy?: 'public' | 'group';
+  };
   createdAt: string;
   updatedAt?: string;
 }

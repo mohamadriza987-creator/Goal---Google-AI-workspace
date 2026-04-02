@@ -8,6 +8,7 @@ export interface StructuredGoal {
   timeHorizon: string;
   privacy: 'private' | 'group' | 'public';
   language: string;
+  normalizedMatchingText: string;
 }
 
 export interface UserContext {
@@ -15,12 +16,13 @@ export interface UserContext {
   locality?: string;
 }
 
-export async function transcribeAudio(audioBase64: string, mimeType: string): Promise<string> {
+export async function transcribeAudio(audioBase64: string, mimeType: string, idToken: string): Promise<string> {
   console.log('Calling backend to transcribe audio...', { mimeType, size: audioBase64.length });
   const response = await fetch("/api/transcribe", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${idToken}`
     },
     body: JSON.stringify({ audioBase64, mimeType }),
   });
@@ -35,12 +37,13 @@ export async function transcribeAudio(audioBase64: string, mimeType: string): Pr
   return result.transcript;
 }
 
-export async function generateGoalFromTranscript(transcript: string, userContext?: UserContext): Promise<StructuredGoal> {
+export async function generateGoalFromTranscript(transcript: string, idToken: string, userContext?: UserContext): Promise<StructuredGoal> {
   console.log('Calling backend to generate goal from transcript...', { transcript: transcript.substring(0, 50) + '...', userContext });
   const response = await fetch("/api/generate-goal", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${idToken}`
     },
     body: JSON.stringify({ transcript, userContext }),
   });
@@ -55,12 +58,13 @@ export async function generateGoalFromTranscript(transcript: string, userContext
   return result as StructuredGoal;
 }
 
-export async function structureGoalFromAudio(audioBase64: string, mimeType: string, userContext?: UserContext): Promise<StructuredGoal> {
+export async function structureGoalFromAudio(audioBase64: string, mimeType: string, idToken: string, userContext?: UserContext): Promise<StructuredGoal> {
   console.log('Calling backend to process audio...', { mimeType, size: audioBase64.length, userContext });
   const response = await fetch("/api/process-audio", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${idToken}`
     },
     body: JSON.stringify({ audioBase64, mimeType, userContext }),
   });

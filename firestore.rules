@@ -101,6 +101,15 @@ service cloud.firestore {
       return authorDoc == null || !('blockedUsers' in authorDoc.data) || !(request.auth.uid in authorDoc.data.blockedUsers);
     }
 
+    function isNotHiddenBy(authorId) {
+      let authorDoc = get(/databases/$(database)/documents/users/$(authorId));
+      return authorDoc == null || !('hiddenUsers' in authorDoc.data) || !(request.auth.uid in authorDoc.data.hiddenUsers);
+    }
+
+    function isGroupMember(groupId) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
     match /users/{userId} {
       allow read: if isAuthenticated();
       allow create: if isUserDoc(userId) && isValidUser(request.resource.data) && hasOnlyAllowedFields(['displayName', 'username', 'avatarUrl', 'bio', 'locality', 'geohash', 'lat', 'lng', 'preferredLanguage', 'hiddenUsers', 'blockedUsers', 'trustSignals', 'createdAt', 'updatedAt']);
@@ -114,8 +123,8 @@ service cloud.firestore {
 
     match /goals/{goalId} {
       allow read: if isAuthenticated() && 
-                    (resource.data.visibility == 'public' || resource.data.visibility == 'group' || resource.data.ownerId == request.auth.uid);
-      allow create: if isAuthenticated() && isValidGoal(request.resource.data);
+                    (resource.data.visibility == 'public' || resource.data.visibility == 'group' || resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidGoal(request.resource.data) && request.resource.data.ownerId == request.auth.uid;
       allow update: if isAuthenticated() && (resource.data.ownerId == request.auth.uid) && isValidGoal(request.resource.data);
       allow delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
 
@@ -128,7 +137,7 @@ service cloud.firestore {
 
       match /notes/{noteId} {
         allow read: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
-        allow create: if isAuthenticated() && isValidNote(request.resource.data);
+        allow create: if isAuthenticated() && isValidNote(request.resource.data) && request.resource.data.ownerId == request.auth.uid;
         allow update: if isAuthenticated() && resource.data.ownerId == request.auth.uid && isValidNote(request.resource.data);
         allow delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
       }
@@ -146,15 +155,22 @@ service cloud.firestore {
       }
 
       match /messages/{messageId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-        allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
-        allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+        allow read: if isGroupMember(groupId) && isNotBlockedBy(resource.data.userId);
+        allow create: if isGroupMember(groupId) && 
+                      request.resource.data.userId == request.auth.uid &&
+                      request.resource.data.content is string &&
+                      request.resource.data.content.size() > 0 &&
+                      request.resource.data.content.size() < 2000;
+        allow update: if isGroupMember(groupId) && resource.data.userId == request.auth.uid && 
+                      request.resource.data.content is string &&
+                      request.resource.data.content.size() > 0 &&
+                      request.resource.data.content.size() < 2000;
+        allow delete: if (isGroupMember(groupId) && resource.data.userId == request.auth.uid) || isAdmin();
       }
     }
 
     match /moderation_events/{eventId} {
-      allow read: if false;
+      allow read: if isAdmin();
       allow create: if isAuthenticated() && request.resource.data.actorUserId == request.auth.uid;
     }
 
