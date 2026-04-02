@@ -4,7 +4,7 @@ import { db } from '../firebase';
 import { CommunityMessage, Group, User } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import { motion } from 'motion/react';
-import { Filter, MoreHorizontal, MessageSquare, Heart, MessageCircle, Plus, Mic, Send, Eye, EyeOff, X } from 'lucide-react';
+import { Filter, MoreHorizontal, MessageSquare, Heart, MessageCircle, Plus, Mic, Send, Eye, EyeOff, X, Users } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -21,6 +21,8 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
   const { t } = useTranslation();
   const [messages, setMessages] = useState<CommunityMessage[]>([]);
   const [userGroups, setUserGroups] = useState<Group[]>([]);
+  const [allGroups, setAllGroups] = useState<Group[]>([]);
+  const [allUsers, setAllUsers] = useState<Record<string, User>>({});
   const [activeGroup, setActiveGroup] = useState<Group | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'image' | 'video' | 'link' | 'thread'>('all');
   const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
@@ -58,20 +60,25 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
     const unsubscribeGoals = onSnapshot(gq, async (snap) => {
       const groupIds = Array.from(new Set(snap.docs.map(d => d.data().groupId).filter(Boolean)));
       
-      if (groupIds.length > 0) {
-        const grpsSnap = await getDocs(collection(db, 'groups'));
-        const grps = grpsSnap.docs
-          .map(d => ({ id: d.id, ...d.data() } as Group))
-          .filter(g => groupIds.includes(g.id));
-        
-        setUserGroups(grps);
-        if (!activeGroup && grps.length > 0) {
-          setActiveGroup(grps[0]);
-        }
-      } else {
-        setUserGroups([]);
-        setActiveGroup(null);
+      const grpsSnap = await getDocs(collection(db, 'groups'));
+      const grps = grpsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Group));
+      
+      setAllGroups(grps);
+      const myGrps = grps.filter(g => groupIds.includes(g.id));
+      setUserGroups(myGrps);
+      
+      if (!activeGroup && myGrps.length > 0) {
+        setActiveGroup(myGrps[0]);
       }
+    });
+
+    // 2. Fetch all users for names
+    getDocs(collection(db, 'users')).then(snap => {
+      const users: Record<string, User> = {};
+      snap.docs.forEach(d => {
+        users[d.id] = { id: d.id, ...d.data() } as User;
+      });
+      setAllUsers(users);
     });
 
     return () => unsubscribeGoals();
@@ -286,6 +293,53 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
             </div>
           </div>
           <button className="p-2 text-zinc-500 hover:text-white"><MoreHorizontal size={20} /></button>
+        </div>
+      </div>
+
+      {/* Community Cluster Section */}
+      <div className="mb-12">
+        <div className="flex items-center gap-2 mb-4">
+          <Users size={18} className="text-white" />
+          <h2 className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500">Community Clusters</h2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {allGroups.map(group => (
+            <motion.div 
+              key={group.id}
+              whileHover={{ scale: 1.02 }}
+              className={cn(
+                "p-5 rounded-3xl border transition-all cursor-pointer",
+                activeGroup?.id === group.id ? "bg-white/10 border-white/20" : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+              )}
+              onClick={() => {
+                if (userGroups.some(g => g.id === group.id)) {
+                  setActiveGroup(group);
+                } else {
+                  alert("You are not a member of this cluster yet. Join by creating a similar goal!");
+                }
+              }}
+            >
+              <h3 className="text-sm font-bold mb-3">{group.derivedGoalTheme}</h3>
+              <div className="flex flex-wrap gap-2">
+                {group.members?.slice(0, 5).map((member: any) => (
+                  <div key={member.userId} className="flex items-center gap-1.5 bg-zinc-800/50 px-2 py-1 rounded-full border border-zinc-700/50">
+                    <div className="w-4 h-4 rounded-full bg-zinc-700" />
+                    <span className="text-[10px] text-zinc-400">
+                      {allUsers[member.userId]?.displayName || `User ${member.userId.slice(0, 4)}`}
+                    </span>
+                  </div>
+                ))}
+                {(group.members?.length || 0) > 5 && (
+                  <span className="text-[10px] text-zinc-600 self-center">+{group.members.length - 5} more</span>
+                )}
+              </div>
+            </motion.div>
+          ))}
+          {allGroups.length === 0 && (
+            <div className="col-span-full p-8 border border-dashed border-zinc-800 rounded-3xl text-center">
+              <p className="text-zinc-600 text-xs uppercase tracking-widest">No clusters formed yet</p>
+            </div>
+          )}
         </div>
       </div>
 

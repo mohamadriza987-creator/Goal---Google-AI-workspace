@@ -401,6 +401,24 @@ export default function App() {
               await updateBatch.commit();
             }
           }
+
+          // 4. Precompute similarity
+          try {
+            const idToken = await user.getIdToken();
+            await fetch("/api/goals/precompute", {
+              method: "POST",
+              headers: { 
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${idToken}`
+              },
+              body: JSON.stringify({
+                goalId: goalRef.id,
+                embedding
+              })
+            });
+          } catch (precomputeErr) {
+            console.error("Failed to precompute similarity:", precomputeErr);
+          }
         } catch (assignErr) {
           console.error("Failed to assign group:", assignErr);
         }

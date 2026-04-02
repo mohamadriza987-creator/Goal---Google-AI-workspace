@@ -1,7 +1,7 @@
 import React from 'react';
 import { Goal } from '../types';
 import { motion } from 'motion/react';
-import { Target, ChevronRight, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Target, ChevronRight, Loader2, AlertCircle, RefreshCw, Users } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface GoalCardProps {
@@ -14,6 +14,7 @@ export function GoalCard({ goal, onClick, onRetry }: GoalCardProps) {
   const isOptimistic = goal.id.startsWith('temp-');
   const isSaving = goal.savingStatus === 'saving';
   const isError = goal.savingStatus === 'error';
+  const similarCount = goal.similarGoals?.length || 0;
 
   return (
     <motion.div
@@ -26,6 +27,14 @@ export function GoalCard({ goal, onClick, onRetry }: GoalCardProps) {
         isSaving ? "cursor-wait opacity-80" : "cursor-pointer"
       )}
     >
+      {/* Similar Goals Badge */}
+      {similarCount > 0 && (
+        <div className="absolute top-6 left-6 z-10 flex items-center gap-1.5 px-3 py-1 bg-white/10 backdrop-blur-md rounded-full border border-white/10">
+          <Users size={12} className="text-white" />
+          <span className="text-[10px] font-bold text-white tracking-widest">{similarCount} Similar</span>
+        </div>
+      )}
+
       {/* Saving Overlay */}
       {isSaving && (
         <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] flex items-center justify-center z-10">

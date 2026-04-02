@@ -309,13 +309,15 @@ export async function generateGroupName(goals: { title: string, description: str
     contents: {
       parts: [
         {
-          text: `Create a short, clean, and natural community name for a group of users with these goals:
+          text: `Create a highly specific, clean, and natural community name for a group of users with these similar goals:
           
           ${goals.map((g, i) => `${i+1}. ${g.title}: ${g.description}`).join('\n')}
           
-          The name should be 2-4 words maximum. 
-          Avoid robotic names like "Group 1" or "Similarity Cluster". 
-          Example: "5K Runners", "Language Learners", "Mindful Morning", "Tech Career Growth".
+          CRITICAL INSTRUCTIONS:
+          1. Be Specific: The name must reflect the EXACT shared theme of these goals. 
+          2. Avoid Generic Trash: Do NOT use generic category names like "Learning & Growth", "Personal Development", "General Goals", or "Global".
+          3. Natural & Human: Use 2-4 words maximum. Make it sound like a real club or community.
+          4. Examples: "Marathon Finishers", "React Developers", "Urban Gardeners", "Early Risers Club", "Budget Travelers".
           
           Return ONLY the name string.`
         }

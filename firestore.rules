@@ -28,6 +28,36 @@
 //
 // ===============================================================
 
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: /users/{userId}
+// Fields: id, displayName, username, avatarUrl, bio, locality, geohash, lat, lng, preferredLanguage, hiddenUsers, blockedUsers, trustSignals, createdAt, updatedAt
+//
+// Collection: /goals/{goalId}
+// Fields: id, ownerId, title, description, originalVoiceTranscript, originalLanguage, aiGeneratedTitle, aiGeneratedDescription, visibility, publicFields, category, status, progressPercent, likesCount, groupId, createdAt, updatedAt
+//
+// Collection: /goals/{goalId}/tasks/{taskId}
+// Fields: id, goalId, text, source, order, isDone, completedAt, createdAt
+//
+// Collection: /goals/{goalId}/notes/{noteId}
+// Fields: id, goalId, ownerId, sourceType, sourceMessageId, text, privateComment, reminderAt, createdAt
+//
+// Collection: /groups/{groupId}
+// Fields: id, derivedGoalTheme, localityCenter, geohash, lat, lng, radiusUsed, targetRegion, memberCount, maxMembers, createdAt, updatedAt
+//
+// Collection: /groups/{groupId}/members/{memberId}
+// Fields: id, groupId, userId, goalId, joinedAt
+//
+// Collection: /groups/{groupId}/messages/{messageId}
+// Fields: id, groupId, userId, content, contentType, replyToMessageId, threadRootId, reactions, attachmentMetadata, createdAt
+//
+// Collection: /reports/{reportId}
+// Fields: id, reporterId, reportedUserId, messageId, reason, status, createdAt
+//
+// ===============================================================
+
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -86,10 +116,8 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
       return isAuthenticated() &&
-        ((userDoc != null && 'role' in userDoc.data && userDoc.data.role == 'admin') ||
-          (request.auth.token.email == "mohamadriza987@gmail.com" && request.auth.token.email_verified == true));
+        (request.auth.token.email == "mohamadriza987@gmail.com" && request.auth.token.email_verified == true);
     }
 
     // ===============================================================
@@ -158,7 +186,7 @@ service cloud.firestore {
       }
 
       match /messages/{messageId} {
-        allow read: if (isGroupMember(groupId) && isNotBlockedBy(resource.data.userId)) || isAdmin();
+        allow read: if isGroupMember(groupId) || isAdmin();
         allow create: if isGroupMember(groupId) && 
                       request.resource.data.userId == request.auth.uid &&
                       request.resource.data.content is string &&

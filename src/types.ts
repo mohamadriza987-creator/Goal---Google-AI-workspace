@@ -44,6 +44,14 @@ export interface Goal {
   tags?: string[];
   embedding?: number[];
   embeddingUpdatedAt?: string;
+  similarGoals?: {
+    goalId: string;
+    userId: string;
+    goalTitle: string;
+    similarityScore: number;
+    groupId?: string;
+    description?: string;
+  }[];
   matchingMetadata?: {
     age?: number;
     locality?: string;

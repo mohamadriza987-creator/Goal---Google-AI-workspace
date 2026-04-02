@@ -63,77 +63,24 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
 
   const handleFullSync = async () => {
     if (!user || isSyncing) return;
-    const confirm = window.confirm("This will synchronize all goals: Normalization -> Embedding -> Grouping. This ensures everyone is connected. Continue?");
+    const confirm = window.confirm("This will reconcile all goals: Normalization -> Embedding -> Similarity -> Grouping. This ensures everyone is connected. Continue?");
     if (!confirm) return;
 
     setIsSyncing(true);
     try {
       const idToken = await user.getIdToken();
-      const goalsSnap = await getDocs(collection(db, 'goals'));
-      const goals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
+      const res = await fetch("/api/admin/reconcile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` }
+      });
       
-      setSyncTotal(goals.length);
-      setSyncProgress(0);
-
-      for (const goal of goals) {
-        try {
-          // 1. Normalize if missing
-          let normalizedText = goal.normalizedMatchingText;
-          if (!normalizedText) {
-            const normRes = await fetch("/api/normalize-goal", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
-              body: JSON.stringify({
-                goalData: {
-                  title: goal.title,
-                  description: goal.description,
-                  category: goal.category || 'other',
-                  tags: goal.tags || [],
-                  timeHorizon: goal.timeHorizon || 'unknown',
-                  privacy: goal.visibility,
-                  sourceText: goal.sourceText || `${goal.title}: ${goal.description}`
-                }
-              })
-            });
-            if (normRes.ok) {
-              const data = await normRes.json();
-              normalizedText = data.normalizedMatchingText;
-              await updateDoc(firestoreDoc(db, 'goals', goal.id), { 
-                normalizedMatchingText: normalizedText,
-                sourceText: goal.sourceText || `${goal.title}: ${goal.description}`
-              });
-            }
-          }
-
-          // 2. Embed if missing
-          let embedding = goal.embedding;
-          if (!embedding && normalizedText) {
-            const embRes = await fetch("/api/generate-embedding", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
-              body: JSON.stringify({ text: normalizedText })
-            });
-            if (embRes.ok) {
-              const data = await embRes.json();
-              embedding = data.embedding;
-              await updateDoc(firestoreDoc(db, 'goals', goal.id), { embedding });
-            }
-          }
-
-          // 3. Assign Group if missing
-          if (!goal.groupId && embedding) {
-            await fetch("/api/groups/assign", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
-              body: JSON.stringify({ goal: { ...goal, embedding, normalizedMatchingText: normalizedText } })
-            });
-          }
-        } catch (err) {
-          console.error(`Error syncing goal ${goal.id}:`, err);
-        }
-        setSyncProgress(prev => prev + 1);
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Reconciliation complete! Processed ${data.processed} goals.`);
+      } else {
+        const errData = await res.json();
+        alert("Reconciliation failed: " + (errData.error || "Unknown error"));
       }
-      alert("Synchronization complete!");
     } catch (err) {
       console.error("Sync error:", err);
       alert("Sync failed.");
