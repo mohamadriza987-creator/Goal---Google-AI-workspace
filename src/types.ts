@@ -104,6 +104,11 @@ export interface Group {
   targetRegion?: string;
   memberCount: number;
   maxMembers: number;
+  members?: {
+    goalId: string;
+    userId: string;
+    joinedAt: string;
+  }[];
   representativeEmbedding?: number[];
   matchingCriteria?: {
     category?: string;

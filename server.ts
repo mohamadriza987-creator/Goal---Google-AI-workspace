@@ -119,21 +119,23 @@ async function findOrCreateGroupForGoal(goalId: string) {
     const groupName = await generateGroupName(clusterGoals.map(g => ({ title: g.title, description: g.description })));
     
     const groupData = {
-      derivedGoalTheme: groupName,
-      representativeEmbedding: goal.embedding,
-      members: clusterGoals.map(g => ({ 
-        goalId: g.id, 
-        userId: g.ownerId,
-        joinedAt: new Date().toISOString()
-      })),
-      memberCount: clusterGoals.length,
-      matchingCriteria: {
-        category: goal.category,
-        timeHorizon: goal.timeHorizon,
-        privacy: (goal.visibility === 'private' || goal.privacy === 'private') ? 'private' : 'public'
-      },
-      createdAt: new Date().toISOString()
-    };
+  derivedGoalTheme: groupName,
+  representativeEmbedding: goal.embedding,
+  localityCenter: goal.matchingMetadata?.locality || 'Global',
+  maxMembers: 70,
+  members: clusterGoals.map(g => ({
+    goalId: g.id,
+    userId: g.ownerId,
+    joinedAt: new Date().toISOString()
+  })),
+  memberCount: clusterGoals.length,
+  matchingCriteria: {
+    category: goal.category,
+    timeHorizon: goal.timeHorizon,
+    privacy: (goal.visibility === 'private' || goal.privacy === 'private') ? 'private' : 'public'
+  },
+  createdAt: new Date().toISOString()
+};
     
     const groupRef = await db.collection('groups').add(groupData);
     
@@ -156,33 +158,29 @@ async function findOrCreateGroupForGoal(goalId: string) {
 
 // Helper to cleanup broken/duplicate groups with only 1 member
 async function cleanupBrokenGroups() {
-  console.log("Cleaning up broken/duplicate groups...");
+  console.log("Cleaning up seed/broken groups with no representativeEmbedding...");
   const groupsSnap = await db.collection('groups').get();
   const goalsSnap = await db.collection('goals').get();
   const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
   for (const groupDoc of groupsSnap.docs) {
     const group = { id: groupDoc.id, ...groupDoc.data() } as any;
-    const members = group.members || [];
-    
-    // If group has 0 or 1 members, it's a candidate for cleanup
-    if (members.length <= 1) {
-      console.log(`Cleaning up group ${group.id} ("${group.derivedGoalTheme}") with ${members.length} members.`);
-      
-      // Clear groupId for any goals pointing to this group
+
+    if (!group.representativeEmbedding) {
+      console.log(`Deleting broken seed group ${group.id} ("${group.derivedGoalTheme}")`);
+
       const batch = db.batch();
+
       const goalsInGroup = allGoals.filter(g => g.groupId === group.id);
       for (const g of goalsInGroup) {
         batch.update(db.collection('goals').doc(g.id), { groupId: null });
       }
-      
-      // Delete the group
+
       batch.delete(groupDoc.ref);
       await batch.commit();
     }
   }
 }
-
 // Global Reconciliation Function
 async function reconcileAllGoals() {
   try {
@@ -230,44 +228,42 @@ async function reconcileAllGoals() {
   }
 }
 
-import { initializeApp as initializeClientApp } from 'firebase/app';
-import { getFirestore as getClientFirestore, collection as getClientCollection, getDocs as getClientDocs, deleteDoc as deleteClientDoc, doc as deleteClientDocRef, updateDoc as updateClientDoc, query as getClientQuery, where as getClientWhere } from 'firebase/firestore';
-
-const clientApp = initializeClientApp({
-  apiKey: firebaseConfig.apiKey,
-  authDomain: firebaseConfig.authDomain,
-  projectId: firebaseConfig.projectId,
-  appId: firebaseConfig.appId
-});
-const clientDb = getClientFirestore(clientApp); // Use default database
-
-// Hard Reset Groups Function using Client SDK
 async function hardResetGroups() {
   try {
-    console.log("!!! STARTING HARD RESET OF GROUPS (CLIENT SDK) !!!");
-    
-    // 1. Delete all groups
-    const groupsSnap = await getClientDocs(getClientCollection(clientDb, 'groups'));
-    console.log(`Deleting ${groupsSnap.size} groups...`);
-    for (const groupDoc of groupsSnap.docs) {
-      await deleteClientDoc(groupDoc.ref);
-    }
-    
-    // 2. Clear groupId from all goals
-    const goalsSnap = await getClientDocs(getClientCollection(clientDb, 'goals'));
-    console.log(`Clearing groupId from ${goalsSnap.size} goals...`);
+    console.log("!!! HARD RESET GROUPS START !!!");
+
+    // Delete groups collection including subcollections like members/messages
+    await db.recursiveDelete(db.collection('groups'));
+
+    // Clear groupId from all goals
+    const goalsSnap = await db.collection('goals').get();
+
+    let batch = db.batch();
+    let opCount = 0;
+
     for (const goalDoc of goalsSnap.docs) {
-      await updateClientDoc(goalDoc.ref, { groupId: null });
+      batch.update(goalDoc.ref, {
+        groupId: admin.firestore.FieldValue.delete(),
+      });
+      opCount++;
+
+      if (opCount === 400) {
+        await batch.commit();
+        batch = db.batch();
+        opCount = 0;
+      }
     }
-    
-    console.log("Hard reset complete. Rebuilding groups...");
-    
-    // 3. Rebuild groups
+
+    if (opCount > 0) {
+      await batch.commit();
+    }
+
+    // Rebuild groups cleanly
     await reconcileAllGoals();
-    
-    console.log("!!! HARD RESET AND REBUILD FINISHED !!!");
+
+    console.log("!!! HARD RESET GROUPS DONE !!!");
   } catch (err) {
-    console.error("Error during hard reset:", err);
+    console.error("Hard reset failed:", err);
     throw err;
   }
 }
@@ -767,7 +763,7 @@ async function startServer() {
   (async () => {
     try {
       console.log("Startup diagnostic: Dumping goals and reconciling...");
-      const goalsSnap = await getClientDocs(getClientCollection(clientDb, 'goals'));
+      const goalsSnap = await db.collection('goals').get();
       const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
       const recentGoals = allGoals
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())

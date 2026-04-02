@@ -357,48 +357,41 @@ export default function App() {
 
           if (assignRes.ok) {
             const assignData = await assignRes.json();
-            if (assignData.action === 'assigned') {
-              await updateDoc(doc(db, 'goals', goalRef.id), { groupId: assignData.groupId });
-              await updateDoc(doc(db, 'groups', assignData.groupId), { memberCount: (groups.find(g => g.id === assignData.groupId)?.memberCount || 0) + 1 });
-              // Add user to members subcollection
-              await setDoc(doc(db, 'groups', assignData.groupId, 'members', user.uid), {
-                userId: user.uid,
-                joinedAt: new Date().toISOString()
-              });
-            } else if (assignData.action === 'create') {
-              const newGroupRef = await addDoc(collection(db, 'groups'), {
-                derivedGoalTheme: assignData.groupName,
-                memberCount: assignData.members.length,
-                maxMembers: 70,
-                representativeEmbedding: assignData.representativeEmbedding,
-                matchingCriteria: assignData.matchingCriteria,
-                createdAt: new Date().toISOString()
-              });
-              
-              // Update all goals in the cluster
-              const updateBatch = writeBatch(db);
-              assignData.members.forEach((m: { goalId: string, ownerId: string }) => {
-                updateBatch.update(doc(db, 'goals', m.goalId), { groupId: newGroupRef.id });
-                
-                // Add each user to members subcollection
-                updateBatch.set(doc(db, 'groups', newGroupRef.id, 'members', m.ownerId), {
-                  userId: m.ownerId,
+            if (assignData.action === 'assigned' || assignData.action === 'create') {
+              if (assignData.groupId) {
+                await updateDoc(doc(db, 'goals', goalRef.id), { groupId: assignData.groupId });
+
+                // Add current user to members subcollection for community access
+                await setDoc(doc(db, 'groups', assignData.groupId, 'members', user.uid), {
+                  userId: user.uid,
                   joinedAt: new Date().toISOString()
                 });
-              });
-              
-              // Add welcome message
-              const msgRef = collection(db, 'groups', newGroupRef.id, 'messages');
-              updateBatch.set(doc(msgRef), {
-                groupId: newGroupRef.id,
-                userId: 'system',
-                content: `Welcome to the ${assignData.groupName} community! We've grouped you together because of your similar goals.`,
-                contentType: 'text',
-                reactions: {},
-                createdAt: new Date().toISOString()
-              });
 
-              await updateBatch.commit();
+                // Update all goals in the cluster
+                const updateBatch = writeBatch(db);
+                assignData.members.forEach((m: { goalId: string, ownerId: string }) => {
+                  updateBatch.update(doc(db, 'goals', m.goalId), { groupId: assignData.groupId });
+                  
+                  // Add each user to members subcollection
+                  updateBatch.set(doc(db, 'groups', assignData.groupId, 'members', m.ownerId), {
+                    userId: m.ownerId,
+                    joinedAt: new Date().toISOString()
+                  });
+                });
+                
+                // Add welcome message
+                const msgRef = collection(db, 'groups', assignData.groupId, 'messages');
+                updateBatch.set(doc(msgRef), {
+                  groupId: assignData.groupId,
+                  userId: 'system',
+                  content: `Welcome to the ${assignData.groupName} community! We've grouped you together because of your similar goals.`,
+                  contentType: 'text',
+                  reactions: {},
+                  createdAt: new Date().toISOString()
+                });
+
+                await updateBatch.commit();
+              }
             }
           }
 
