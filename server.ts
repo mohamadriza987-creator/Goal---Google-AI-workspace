@@ -1,179 +1,299 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
-import { fileURLToPath } from "url";
+import { createServer as createViteServer, loadEnv } from "vite";
 import session from "express-session";
 import cookieParser from "cookie-parser";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import { structureGoalFromAudio, transcribeAudio, generateGoalFromTranscript, normalizeGoal, generateEmbedding, generateGroupName } from "./server/gemini.ts";
+import {
+  structureGoalFromAudio,
+  transcribeAudio,
+  generateGoalFromTranscript,
+  normalizeGoal,
+  generateEmbedding,
+  generateGroupName,
+} from "./server/gemini.ts";
 import { z } from "zod";
-
+import { StreamChat } from "stream-chat";
 import fs from "fs";
 
 const configPath = path.join(process.cwd(), "firebase-applet-config.json");
 const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
-// Force re-initialization to ensure correct project ID
 process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
 
-if (admin.apps.length) {
-  for (const app of admin.apps) {
-    if (app) await app.delete();
-  }
+const firebaseApp =
+  admin.apps.length > 0
+    ? admin.app()
+    : admin.initializeApp({
+        projectId: firebaseConfig.projectId,
+      });
+
+console.log("Admin SDK initialized. Project ID:", firebaseApp.options.projectId);
+
+const db = firebaseConfig.firestoreDatabaseId
+  ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId)
+  : getFirestore(firebaseApp);
+
+console.log(
+  `Firestore initialized for database: ${firebaseConfig.firestoreDatabaseId || "(default)"}`,
+);
+
+type GoalDoc = {
+  id: string;
+  ownerId?: string;
+  title?: string;
+  description?: string;
+  category?: string;
+  timeHorizon?: string;
+  visibility?: string;
+  privacy?: string;
+  groupId?: string | null;
+  groupJoined?: boolean;
+  joinedAt?: string;
+  eligibleAt?: string;
+  normalizedMatchingText?: string;
+  embedding?: number[];
+  matchingMetadata?: {
+    locality?: string;
+  };
+  tags?: string[];
+  createdAt?: string;
+  [key: string]: any;
+};
+
+type GroupDoc = {
+  id: string;
+  derivedGoalTheme?: string;
+  representativeEmbedding?: number[];
+  localityCenter?: string;
+  maxMembers?: number;
+  memberCount?: number;
+  members?: Array<{
+    goalId: string;
+    userId: string;
+    joinedAt: string;
+  }>;
+  eligibleGoalIds?: string[];
+  matchingCriteria?: {
+    category?: string;
+    timeHorizon?: string;
+    privacy?: string;
+  };
+  createdAt?: string;
+  [key: string]: any;
+};
+
+const nowIso = () => new Date().toISOString();
+
+function isPrivateGoal(goal: GoalDoc) {
+  return goal.visibility === "private" || goal.privacy === "private";
 }
 
-console.log("Initializing Admin SDK...");
-admin.initializeApp({
-  projectId: firebaseConfig.projectId,
-});
+function uniqueStrings(values: Array<string | undefined | null>) {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
 
-const currentProjectId = admin.app().options.projectId;
-console.log("Admin SDK Final Project ID:", currentProjectId);
+async function isAdminRequest(req: any) {
+  const userDoc = await db.collection("users").doc(req.userId).get();
+  return (
+    userDoc.data()?.role === "admin" ||
+    req.user?.email === "mohamadriza987@gmail.com"
+  );
+}
 
-// Try default database first
-const db = getFirestore(admin.app());
-console.log("Firestore initialized for default database");
+// Helper for cosine similarity
+function cosineSimilarity(vecA: number[], vecB: number[]) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) {
+    return 0;
+  }
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+
+  const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+  if (magnitude === 0) return 0;
+
+  return dotProduct / magnitude;
+}
 
 // Helper to find or create a group for a goal
 async function findOrCreateGroupForGoal(goalId: string) {
   try {
     console.log(`Attempting to find or create group for goal ${goalId}...`);
-    // Re-fetch goal to ensure we have latest groupId and embedding
-    const goalDoc = await db.collection('goals').doc(goalId).get();
+
+    const goalDoc = await db.collection("goals").doc(goalId).get();
     if (!goalDoc.exists) {
       console.warn(`Goal ${goalId} not found.`);
       return null;
     }
-  const goal = { id: goalDoc.id, ...goalDoc.data() } as any;
 
-  if (!goal.embedding || goal.groupId) return null;
+    const goal = { id: goalDoc.id, ...goalDoc.data() } as GoalDoc;
 
-  const groupsSnap = await db.collection('groups').get();
-  const allGroups = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-
-  const SIMILARITY_THRESHOLD_EXISTING = 0.78; // Slightly lower to encourage joining
-  const SIMILARITY_THRESHOLD_NEW = 0.72;
-
-  let bestGroup = null;
-  let maxScore = -1;
-
-  for (const group of allGroups) {
-    if (!group.representativeEmbedding) continue;
-    
-    // Privacy must match
-    const goalIsPrivate = goal.visibility === 'private' || goal.privacy === 'private';
-    const groupIsPrivate = group.matchingCriteria?.privacy === 'private';
-    if (goalIsPrivate !== groupIsPrivate) continue;
-
-    const score = cosineSimilarity(goal.embedding, group.representativeEmbedding);
-    if (score > maxScore) {
-      maxScore = score;
-      bestGroup = group;
+    if (!goal.embedding || goal.groupId) {
+      return null;
     }
-  }
 
-  // 1. Join existing group if strong match
-  if (bestGroup && maxScore >= SIMILARITY_THRESHOLD_EXISTING) {
-    console.log(`Goal ${goal.id} joining existing group ${bestGroup.id} (score: ${maxScore.toFixed(3)})`);
-    
-    const groupRef = db.collection('groups').doc(bestGroup.id);
-    const goalRef = db.collection('goals').doc(goal.id);
+    const groupsSnap = await db.collection("groups").get();
+    const allGroups = groupsSnap.docs.map(
+      (d) => ({ id: d.id, ...d.data() }) as GroupDoc,
+    );
 
-    await db.runTransaction(async (transaction) => {
-      const gDoc = await transaction.get(groupRef);
-      const gData = gDoc.data() as any;
-      const members = gData.members || [];
-      
-      if (!members.find((m: any) => m.goalId === goal.id)) {
-        transaction.update(groupRef, {
-          members: admin.firestore.FieldValue.arrayUnion({ 
-            goalId: goal.id, 
-            userId: goal.ownerId,
-            joinedAt: new Date().toISOString()
-          }),
-          memberCount: admin.firestore.FieldValue.increment(1)
+    const SIMILARITY_THRESHOLD_EXISTING = 0.78;
+    const SIMILARITY_THRESHOLD_NEW = 0.72;
+
+    let bestGroup: GroupDoc | null = null;
+    let maxScore = -1;
+
+    for (const group of allGroups) {
+      if (!group.representativeEmbedding) continue;
+
+      const goalIsPrivate = isPrivateGoal(goal);
+      const groupIsPrivate = group.matchingCriteria?.privacy === "private";
+      if (goalIsPrivate !== groupIsPrivate) continue;
+
+      const score = cosineSimilarity(goal.embedding, group.representativeEmbedding);
+      if (score > maxScore) {
+        maxScore = score;
+        bestGroup = group;
+      }
+    }
+
+    if (bestGroup && maxScore >= SIMILARITY_THRESHOLD_EXISTING) {
+      console.log(
+        `Goal ${goal.id} is eligible for existing group ${bestGroup.id} (score: ${maxScore.toFixed(3)})`,
+      );
+
+      const groupRef = db.collection("groups").doc(bestGroup.id);
+      const goalRef = db.collection("goals").doc(goal.id);
+      const eligibleAt = nowIso();
+
+      await db.runTransaction(async (transaction) => {
+        transaction.update(goalRef, {
+          groupId: bestGroup!.id,
+          groupJoined: false,
+          eligibleAt,
+          joinedAt: admin.firestore.FieldValue.delete(),
+        });
+
+        transaction.set(
+          groupRef,
+          {
+            eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goal.id),
+          },
+          { merge: true },
+        );
+      });
+
+      return {
+        action: "assigned",
+        groupId: bestGroup.id,
+        groupName: bestGroup.derivedGoalTheme,
+      };
+    }
+
+    const goalsSnap = await db.collection("goals").get();
+    const allGoals = goalsSnap.docs.map(
+      (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
+    );
+
+    const goalIsPrivate = isPrivateGoal(goal);
+    const ungroupedGoals = allGoals.filter(
+      (g) =>
+        !g.groupId &&
+        g.id !== goal.id &&
+        Array.isArray(g.embedding) &&
+        isPrivateGoal(g) === goalIsPrivate,
+    );
+
+    const potentialMatches = ungroupedGoals
+      .map((g) => ({ goal: g, score: cosineSimilarity(goal.embedding!, g.embedding!) }))
+      .filter((m) => m.score >= SIMILARITY_THRESHOLD_NEW)
+      .sort((a, b) => b.score - a.score);
+
+    if (potentialMatches.length >= 1) {
+      const clusterGoals = [goal, ...potentialMatches.slice(0, 5).map((m) => m.goal)];
+      console.log(`Creating new group for ${clusterGoals.length} goals...`);
+
+      const groupName = await generateGroupName(
+        clusterGoals.map((g) => ({ title: g.title, description: g.description })),
+      );
+
+      const eligibleGoalIds = uniqueStrings(clusterGoals.map((g) => g.id));
+      const eligibleAt = nowIso();
+
+      const groupData = {
+        derivedGoalTheme: groupName,
+        representativeEmbedding: goal.embedding,
+        localityCenter: goal.matchingMetadata?.locality || "Global",
+        maxMembers: 70,
+        members: [],
+        eligibleGoalIds,
+        memberCount: 0,
+        matchingCriteria: {
+          category: goal.category,
+          timeHorizon: goal.timeHorizon,
+          privacy: goalIsPrivate ? "private" : "public",
+        },
+        createdAt: eligibleAt,
+      };
+
+      const groupRef = await db.collection("groups").add(groupData);
+
+      const batch = db.batch();
+      for (const g of clusterGoals) {
+        batch.update(db.collection("goals").doc(g.id), {
+          groupId: groupRef.id,
+          groupJoined: false,
+          eligibleAt,
+          joinedAt: admin.firestore.FieldValue.delete(),
         });
       }
-      transaction.update(goalRef, { groupId: bestGroup.id });
-    });
+      await batch.commit();
 
-    return { action: 'assigned', groupId: bestGroup.id, groupName: bestGroup.derivedGoalTheme };
-  }
-
-  // 2. Create new group if suitable ungrouped matches found
-  const goalsSnap = await db.collection('goals').get();
-  const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-  
-  const ungroupedGoals = allGoals.filter(g => !g.groupId && g.id !== goal.id && g.embedding);
-  const potentialMatches = ungroupedGoals
-    .map(g => ({ goal: g, score: cosineSimilarity(goal.embedding, g.embedding) }))
-    .filter(m => m.score >= SIMILARITY_THRESHOLD_NEW)
-    .sort((a, b) => b.score - a.score);
-
-  if (potentialMatches.length >= 1) {
-    // We found at least one other similar ungrouped goal
-    const clusterGoals = [goal, ...potentialMatches.slice(0, 5).map(m => m.goal)];
-    console.log(`Creating new group for ${clusterGoals.length} goals...`);
-    
-    const groupName = await generateGroupName(clusterGoals.map(g => ({ title: g.title, description: g.description })));
-    
-    const groupData = {
-  derivedGoalTheme: groupName,
-  representativeEmbedding: goal.embedding,
-  localityCenter: goal.matchingMetadata?.locality || 'Global',
-  maxMembers: 70,
-  members: clusterGoals.map(g => ({
-    goalId: g.id,
-    userId: g.ownerId,
-    joinedAt: new Date().toISOString()
-  })),
-  memberCount: clusterGoals.length,
-  matchingCriteria: {
-    category: goal.category,
-    timeHorizon: goal.timeHorizon,
-    privacy: (goal.visibility === 'private' || goal.privacy === 'private') ? 'private' : 'public'
-  },
-  createdAt: new Date().toISOString()
-};
-    
-    const groupRef = await db.collection('groups').add(groupData);
-    
-    // Update all goals in the cluster
-    const batch = db.batch();
-    for (const g of clusterGoals) {
-      batch.update(db.collection('goals').doc(g.id), { groupId: groupRef.id });
+      return { action: "create", groupId: groupRef.id, groupName };
     }
-    await batch.commit();
 
-    return { action: 'create', groupId: groupRef.id, groupName };
-  }
-
-  return null;
+    return null;
   } catch (error) {
     console.error(`Error in findOrCreateGroupForGoal for ${goalId}:`, error);
     throw error;
   }
 }
 
-// Helper to cleanup broken/duplicate groups with only 1 member
+// Helper to cleanup broken groups with no representativeEmbedding
 async function cleanupBrokenGroups() {
-  console.log("Cleaning up seed/broken groups with no representativeEmbedding...");
-  const groupsSnap = await db.collection('groups').get();
-  const goalsSnap = await db.collection('goals').get();
-  const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+  console.log("Cleaning up broken groups with no representativeEmbedding...");
+
+  const groupsSnap = await db.collection("groups").get();
+  const goalsSnap = await db.collection("goals").get();
+  const allGoals = goalsSnap.docs.map(
+    (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
+  );
 
   for (const groupDoc of groupsSnap.docs) {
-    const group = { id: groupDoc.id, ...groupDoc.data() } as any;
+    const group = { id: groupDoc.id, ...groupDoc.data() } as GroupDoc;
 
     if (!group.representativeEmbedding) {
-      console.log(`Deleting broken seed group ${group.id} ("${group.derivedGoalTheme}")`);
+      console.log(`Deleting broken group ${group.id} ("${group.derivedGoalTheme}")`);
 
       const batch = db.batch();
+      const goalsInGroup = allGoals.filter((g) => g.groupId === group.id);
 
-      const goalsInGroup = allGoals.filter(g => g.groupId === group.id);
       for (const g of goalsInGroup) {
-        batch.update(db.collection('goals').doc(g.id), { groupId: null });
+        batch.update(db.collection("goals").doc(g.id), {
+          groupId: admin.firestore.FieldValue.delete(),
+          groupJoined: false,
+          eligibleAt: admin.firestore.FieldValue.delete(),
+          joinedAt: admin.firestore.FieldValue.delete(),
+        });
       }
 
       batch.delete(groupDoc.ref);
@@ -181,47 +301,101 @@ async function cleanupBrokenGroups() {
     }
   }
 }
-// Global Reconciliation Function
+
+async function computeAndStoreSimilarGoals(
+  goalId: string,
+  embedding: number[],
+  ownerId: string,
+) {
+  try {
+    console.log(`Computing similar goals for ${goalId}...`);
+
+    const goalsSnap = await db.collection("goals").get();
+    const allGoals = goalsSnap.docs.map(
+      (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
+    );
+
+    const matches = allGoals
+      .filter((g) => g.id !== goalId && g.embedding && g.ownerId !== ownerId)
+      .map((g) => {
+        const score = cosineSimilarity(embedding, g.embedding!);
+        return {
+          goalId: g.id,
+          userId: g.ownerId,
+          goalTitle: g.title,
+          similarityScore: score,
+          groupId: g.groupId,
+          description: g.description,
+        };
+      })
+      .filter((m) => m.similarityScore >= 0.7)
+      .sort((a, b) => b.similarityScore - a.similarityScore)
+      .slice(0, 5);
+
+    await db.collection("goals").doc(goalId).update({
+      similarGoals: matches,
+      similarityComputedAt: nowIso(),
+    });
+
+    const currentGoalDoc = await db.collection("goals").doc(goalId).get();
+    const currentGoal = { id: goalId, ...currentGoalDoc.data() } as GoalDoc;
+
+    if (currentGoal && !currentGoal.groupId) {
+      console.log(`Goal ${goalId} has no group. Attempting auto-assignment...`);
+      await findOrCreateGroupForGoal(goalId);
+    }
+
+    return matches;
+  } catch (error) {
+    console.error("Error in computeAndStoreSimilarGoals:", error);
+    throw error;
+  }
+}
+
 async function reconcileAllGoals() {
   try {
     console.log("Starting global goal reconciliation...");
-    
-    // 0. Cleanup broken groups first
+
     await cleanupBrokenGroups();
 
-    const goalsSnap = await db.collection('goals').get();
+    const goalsSnap = await db.collection("goals").get();
     console.log(`Found ${goalsSnap.size} goals to reconcile.`);
-    
+
     for (const goalDoc of goalsSnap.docs) {
-      const goal = { id: goalDoc.id, ...goalDoc.data() } as any;
-      
-      // 1. Normalize if missing
+      const goal = { id: goalDoc.id, ...goalDoc.data() } as GoalDoc;
+
       if (!goal.normalizedMatchingText) {
-        const normalizedText = await normalizeGoal(goal, { age: null, locality: null });
+        const normalizedText = await normalizeGoal({
+          title: goal.title || "Untitled Goal",
+          description: goal.description || "",
+          category: goal.category || "other",
+          tags: goal.tags || [],
+          timeHorizon: goal.timeHorizon || "unknown",
+          privacy: goal.privacy || goal.visibility || "private",
+          sourceText: goal.originalVoiceTranscript || ""
+        }, { age: null, locality: null });
         await goalDoc.ref.update({ normalizedMatchingText: normalizedText });
         goal.normalizedMatchingText = normalizedText;
       }
 
-      // 2. Embed if missing
       if (!goal.embedding && goal.normalizedMatchingText) {
         const embedding = await generateEmbedding(goal.normalizedMatchingText);
-        await goalDoc.ref.update({ 
-          embedding, 
-          embeddingUpdatedAt: new Date().toISOString() 
+        await goalDoc.ref.update({
+          embedding,
+          embeddingUpdatedAt: nowIso(),
         });
         goal.embedding = embedding;
       }
 
-      // 3. Compute Similarity
       if (goal.embedding) {
-        await computeAndStoreSimilarGoals(goal.id, goal.embedding, goal.ownerId);
+        await computeAndStoreSimilarGoals(goal.id, goal.embedding, goal.ownerId || "");
       }
 
-      // 4. Assign Group if missing
       if (goal.embedding && !goal.groupId) {
         await findOrCreateGroupForGoal(goal.id);
       }
     }
+
     console.log("Global reconciliation complete.");
   } catch (err) {
     console.error("Error during global reconciliation:", err);
@@ -232,18 +406,18 @@ async function hardResetGroups() {
   try {
     console.log("!!! HARD RESET GROUPS START !!!");
 
-    // Delete groups collection including subcollections like members/messages
-    await db.recursiveDelete(db.collection('groups'));
+    await db.recursiveDelete(db.collection("groups"));
 
-    // Clear groupId from all goals
-    const goalsSnap = await db.collection('goals').get();
-
+    const goalsSnap = await db.collection("goals").get();
     let batch = db.batch();
     let opCount = 0;
 
     for (const goalDoc of goalsSnap.docs) {
       batch.update(goalDoc.ref, {
         groupId: admin.firestore.FieldValue.delete(),
+        groupJoined: false,
+        eligibleAt: admin.firestore.FieldValue.delete(),
+        joinedAt: admin.firestore.FieldValue.delete(),
       });
       opCount++;
 
@@ -258,7 +432,6 @@ async function hardResetGroups() {
       await batch.commit();
     }
 
-    // Rebuild groups cleanly
     await reconcileAllGoals();
 
     console.log("!!! HARD RESET GROUPS DONE !!!");
@@ -268,95 +441,31 @@ async function hardResetGroups() {
   }
 }
 
-import { loadEnv } from "vite";
-
-// Helper for cosine similarity
-function cosineSimilarity(vecA: number[], vecB: number[]) {
-  if (!vecA || !vecB || vecA.length !== vecB.length) {
-    return 0;
-  }
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < vecA.length; i++) {
-    dotProduct += vecA[i] * vecB[i];
-    normA += vecA[i] * vecA[i];
-    normB += vecB[i] * vecB[i];
-  }
-  const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
-  if (magnitude === 0) return 0;
-  return dotProduct / magnitude;
-}
-
-// Helper to compute and store similar goals
-async function computeAndStoreSimilarGoals(goalId: string, embedding: number[], ownerId: string) {
-  try {
-    console.log(`Computing similar goals for ${goalId}...`);
-    const goalsSnap = await db.collection('goals').get();
-    const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-
-  const matches = allGoals
-    .filter((g: any) => g.id !== goalId && g.embedding && g.ownerId !== ownerId)
-    .map((g: any) => {
-      const score = cosineSimilarity(embedding, g.embedding);
-      return {
-        goalId: g.id,
-        userId: g.ownerId,
-        goalTitle: g.title,
-        similarityScore: score,
-        groupId: g.groupId,
-        description: g.description
-      };
-    })
-    .filter((m: any) => m.similarityScore >= 0.70)
-    .sort((a: any, b: any) => b.similarityScore - a.similarityScore)
-    .slice(0, 5);
-
-  await db.collection('goals').doc(goalId).update({
-    similarGoals: matches,
-    similarityComputedAt: new Date().toISOString()
-  });
-
-  // If goal has no group, try to assign one
-  const currentGoalDoc = await db.collection('goals').doc(goalId).get();
-  const currentGoal = { id: goalId, ...currentGoalDoc.data() } as any;
-  if (currentGoal && !currentGoal.groupId) {
-    console.log(`Goal ${goalId} has no group. Attempting auto-assignment...`);
-    await findOrCreateGroupForGoal(goalId);
-  }
-  
-  return matches;
-  } catch (error) {
-    console.error("Error in computeAndStoreSimilarGoals:", error);
-    throw error;
-  }
-}
-
 // Simple in-memory rate limiter
 const rateLimitMap = new Map<string, { count: number; lastReset: number }>();
-const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const MAX_REQUESTS_PER_WINDOW = 10; // 10 requests per minute for AI endpoints
+const RATE_LIMIT_WINDOW = 60 * 1000;
+const MAX_REQUESTS_PER_WINDOW = 10;
 
 function checkRateLimit(userId: string) {
   const now = Date.now();
   const limit = rateLimitMap.get(userId);
-  
-  if (!limit || (now - limit.lastReset) > RATE_LIMIT_WINDOW) {
+
+  if (!limit || now - limit.lastReset > RATE_LIMIT_WINDOW) {
     rateLimitMap.set(userId, { count: 1, lastReset: now });
     return true;
   }
-  
+
   if (limit.count >= MAX_REQUESTS_PER_WINDOW) {
     return false;
   }
-  
+
   limit.count++;
   return true;
 }
 
 // Zod Schemas for validation
 const TranscribeSchema = z.object({
-  audioBase64: z.string().min(1).max(50 * 1024 * 1024), // 50MB max
+  audioBase64: z.string().min(1).max(50 * 1024 * 1024),
   mimeType: z.string().min(1).max(100),
 });
 
@@ -375,45 +484,55 @@ const EmbeddingSchema = z.object({
 });
 
 const SimilarGoalsSchema = z.object({
-  goalId: z.string().optional(),
+  goalId: z.string().min(1),
   embedding: z.array(z.number()).min(1),
 });
 
 const GroupAssignSchema = z.object({
-  goal: z.any(),
+  goalId: z.string().min(1),
 });
 
-// Load environment variables
+const GroupJoinSchema = z.object({
+  goalId: z.string().min(1),
+  groupId: z.string().min(1),
+});
+
+const MediaUploadSchema = z.object({
+  groupId: z.string().min(1),
+  type: z.enum(["image", "video"]),
+  data: z.string().min(1),
+  duration: z.number().optional(),
+});
+
 const env = loadEnv("", process.cwd(), "");
 const gemfree = process.env.gemfree || env.gemfree;
 
 if (gemfree) {
   console.log('Panda Status: Using "gemfree" secret path.');
-  // Ensure it's available in process.env for the gemini service
   process.env.gemfree = gemfree;
 } else {
   console.log('Panda Status: "gemfree" secret NOT FOUND.');
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
 
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  app.set("trust proxy", 1);
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.use(cookieParser());
-  
-  // Firebase Auth middleware to verify ID tokens
+
   const authMiddleware = async (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized: Missing or invalid Authorization header" });
+      return res
+        .status(401)
+        .json({ error: "Unauthorized: Missing or invalid Authorization header" });
     }
 
-    const idToken = authHeader.split("Bearer ")[1];
+    const idToken = authHeader.slice("Bearer ".length).trim();
+
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
       req.userId = decodedToken.uid;
@@ -429,27 +548,29 @@ async function startServer() {
     session({
       secret: process.env.SESSION_SECRET || "goal-app-secret",
       resave: false,
-      saveUninitialized: true,
-      cookie: { 
+      saveUninitialized: false,
+      cookie: {
         secure: process.env.NODE_ENV === "production",
-        sameSite: "none"
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        httpOnly: true,
       },
-    })
+    }),
   );
 
-  // API Routes
-  app.get("/api/health", async (req, res) => {
+  app.get("/api/health", async (_req, res) => {
     try {
-      // Test Firestore connection
-      await db.collection('test').doc('health').get();
+      await db.collection("test").doc("health").get();
       res.json({ status: "ok", firestore: "connected" });
     } catch (error: any) {
       console.error("Health check Firestore error:", error);
-      res.json({ status: "ok", firestore: "error", details: error.message });
+      res.status(500).json({
+        status: "error",
+        firestore: "error",
+        details: error.message,
+      });
     }
   });
-  
-  // Fast Transcription Endpoint
+
   app.post("/api/transcribe", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
@@ -458,7 +579,9 @@ async function startServer() {
 
       const validation = TranscribeSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { audioBase64, mimeType } = validation.data;
@@ -466,14 +589,13 @@ async function startServer() {
       res.json({ transcript });
     } catch (error: any) {
       console.error("Transcription error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Failed to transcribe audio",
-        details: error.message || String(error)
+        details: error.message || String(error),
       });
     }
   });
 
-  // Goal Generation from Transcript Endpoint
   app.post("/api/generate-goal", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
@@ -482,7 +604,9 @@ async function startServer() {
 
       const validation = GenerateGoalSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { transcript, userContext } = validation.data;
@@ -490,14 +614,13 @@ async function startServer() {
       res.json(structuredGoal);
     } catch (error: any) {
       console.error("Goal generation error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Failed to generate goal from transcript",
-        details: error.message || String(error)
+        details: error.message || String(error),
       });
     }
   });
 
-  // Goal Normalization Endpoint
   app.post("/api/normalize-goal", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
@@ -506,7 +629,9 @@ async function startServer() {
 
       const validation = NormalizeGoalSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { goalData, userContext } = validation.data;
@@ -514,14 +639,13 @@ async function startServer() {
       res.json({ normalizedMatchingText: normalizedText });
     } catch (error: any) {
       console.error("Goal normalization error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Failed to normalize goal",
-        details: error.message || String(error)
+        details: error.message || String(error),
       });
     }
   });
 
-  // Generate Embedding Endpoint
   app.post("/api/generate-embedding", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
@@ -530,7 +654,9 @@ async function startServer() {
 
       const validation = EmbeddingSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { text } = validation.data;
@@ -538,26 +664,23 @@ async function startServer() {
       res.json({ embedding });
     } catch (error: any) {
       console.error("Embedding generation error:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Failed to generate embedding",
-        details: error.message || String(error)
+        details: error.message || String(error),
       });
     }
   });
 
-  // Precompute Similarity Endpoint
   app.post("/api/goals/precompute", authMiddleware, async (req: any, res) => {
     try {
       const validation = SimilarGoalsSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { goalId, embedding } = validation.data;
-      if (!goalId || !embedding) {
-        return res.status(400).json({ error: "goalId and embedding are required" });
-      }
-
       const matches = await computeAndStoreSimilarGoals(goalId, embedding, req.userId);
       res.json({ success: true, matches });
     } catch (error: any) {
@@ -566,51 +689,59 @@ async function startServer() {
     }
   });
 
-  // Admin Reconcile Endpoint
   app.post("/api/admin/reconcile", authMiddleware, async (req: any, res) => {
     try {
-      // Check if user is admin
-      const userDoc = await db.collection('users').doc(req.userId).get();
-      const isAdmin = userDoc.data()?.role === 'admin' || req.user.email === "mohamadriza987@gmail.com";
-      
-      if (!isAdmin) {
+      if (!(await isAdminRequest(req))) {
         return res.status(403).json({ error: "Forbidden: Admin access required" });
       }
 
-      const goalsSnap = await db.collection('goals').get();
+      const goalsSnap = await db.collection("goals").get();
       const results = [];
 
       for (const goalDoc of goalsSnap.docs) {
-        const goal = { id: goalDoc.id, ...goalDoc.data() } as any;
+        const goal = { id: goalDoc.id, ...goalDoc.data() } as GoalDoc;
         let updated = false;
         let currentEmbedding = goal.embedding;
         let currentNormalizedText = goal.normalizedMatchingText;
 
         try {
-          // 1. Normalize if missing
           if (!currentNormalizedText) {
-            currentNormalizedText = await normalizeGoal(goal, { age: null, locality: null });
+            currentNormalizedText = await normalizeGoal({
+              title: goal.title || "Untitled Goal",
+              description: goal.description || "",
+              category: goal.category || "other",
+              tags: goal.tags || [],
+              timeHorizon: goal.timeHorizon || "unknown",
+              privacy: goal.privacy || goal.visibility || "private",
+              sourceText: goal.originalVoiceTranscript || ""
+            }, { age: null, locality: null });
             await goalDoc.ref.update({ normalizedMatchingText: currentNormalizedText });
             updated = true;
           }
 
-          // 2. Embed if missing
           if (!currentEmbedding && currentNormalizedText) {
             currentEmbedding = await generateEmbedding(currentNormalizedText);
-            await goalDoc.ref.update({ embedding: currentEmbedding, embeddingUpdatedAt: new Date().toISOString() });
+            await goalDoc.ref.update({
+              embedding: currentEmbedding,
+              embeddingUpdatedAt: nowIso(),
+            });
             updated = true;
           }
 
-          // 3. Precompute similarity
           if (currentEmbedding) {
-            await computeAndStoreSimilarGoals(goal.id, currentEmbedding, goal.ownerId);
+            await computeAndStoreSimilarGoals(goal.id, currentEmbedding, goal.ownerId || "");
             updated = true;
           }
 
-          results.push({ id: goal.id, title: goal.title, status: 'success', updated });
+          results.push({ id: goal.id, title: goal.title, status: "success", updated });
         } catch (goalErr: any) {
           console.error(`Error reconciling goal ${goal.id}:`, goalErr);
-          results.push({ id: goal.id, title: goal.title, status: 'error', error: goalErr.message });
+          results.push({
+            id: goal.id,
+            title: goal.title,
+            status: "error",
+            error: goalErr.message,
+          });
         }
       }
 
@@ -621,20 +752,13 @@ async function startServer() {
     }
   });
 
-  // Admin Hard Reset Groups Endpoint
   app.post("/api/admin/hard-reset-groups", authMiddleware, async (req: any, res) => {
     try {
-      // Check if user is admin
-      const userDoc = await db.collection('users').doc(req.userId).get();
-      const isAdmin = userDoc.data()?.role === 'admin' || req.user.email === "mohamadriza987@gmail.com";
-      
-      if (!isAdmin) {
+      if (!(await isAdminRequest(req))) {
         return res.status(403).json({ error: "Forbidden: Admin access required" });
       }
 
-      // Run hard reset in background to avoid timeout
-      hardResetGroups().catch(err => console.error("Background hard reset failed:", err));
-      
+      hardResetGroups().catch((err) => console.error("Background hard reset failed:", err));
       res.json({ success: true, message: "Hard reset and rebuild started in background." });
     } catch (error: any) {
       console.error("Hard reset error:", error);
@@ -642,32 +766,252 @@ async function startServer() {
     }
   });
 
-  // Group Assignment Endpoint
   app.post("/api/groups/assign", authMiddleware, async (req: any, res) => {
     try {
       const validation = GroupAssignSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
-      const { goal } = validation.data;
-      if (!goal.id) {
-        return res.status(400).json({ error: "Goal ID is required" });
-      }
+      const { goalId } = validation.data;
+      const result = await findOrCreateGroupForGoal(goalId);
 
-      const result = await findOrCreateGroupForGoal(goal.id);
       if (result) {
         return res.json(result);
       }
 
-      res.json({ action: 'none', reason: 'No suitable group or cluster found' });
+      res.json({ action: "none", reason: "No suitable group or cluster found" });
     } catch (error: any) {
       console.error("Group assignment error:", error);
       res.status(500).json({ error: "Failed to assign group", details: error.message });
     }
   });
 
-  // Panda Processing Endpoint (Legacy/Fallback)
+  app.post("/api/groups/join", authMiddleware, async (req: any, res) => {
+    try {
+      const validation = GroupJoinSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
+      }
+
+      const { goalId, groupId } = validation.data;
+      const userId = req.userId;
+
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists || goalDoc.data()?.ownerId !== userId || goalDoc.data()?.groupId !== groupId) {
+        return res.status(403).json({ error: "Not eligible for this group" });
+      }
+
+      const groupRef = db.collection("groups").doc(groupId);
+      const goalRef = db.collection("goals").doc(goalId);
+
+      await db.runTransaction(async (transaction) => {
+        const gDoc = await transaction.get(groupRef);
+        if (!gDoc.exists) throw new Error("Group not found");
+
+        const gData = gDoc.data() as GroupDoc;
+        const members = gData.members || [];
+        const eligibleGoalIds = gData.eligibleGoalIds || [];
+        const alreadyMember = members.some((m) => m.goalId === goalId);
+
+        if (!eligibleGoalIds.includes(goalId)) {
+          throw new Error("Goal is not eligible for this group");
+        }
+
+        if (!alreadyMember) {
+          const currentMemberCount = typeof gData.memberCount === "number" ? gData.memberCount : members.length;
+          if (typeof gData.maxMembers === "number" && currentMemberCount >= gData.maxMembers) {
+            throw new Error("Group is full");
+          }
+
+          transaction.update(groupRef, {
+            members: admin.firestore.FieldValue.arrayUnion({
+              goalId,
+              userId,
+              joinedAt: nowIso(),
+            }),
+            memberCount: admin.firestore.FieldValue.increment(1),
+          });
+        }
+
+        transaction.update(goalRef, {
+          groupJoined: true,
+          joinedAt: nowIso(),
+        });
+      });
+
+      const apiKey = process.env.STREAM_API_KEY || env.STREAM_API_KEY;
+      const apiSecret = process.env.STREAM_API_SECRET || env.STREAM_API_SECRET;
+
+      if (apiKey && apiSecret) {
+        const serverClient = StreamChat.getInstance(apiKey, apiSecret);
+        const channel = serverClient.channel("messaging", groupId);
+        await channel.watch().catch(() => undefined);
+        await channel.addMembers([userId]).catch(() => undefined);
+      }
+
+      res.json({ success: true, groupId });
+    } catch (error: any) {
+      console.error("Join group error:", error);
+      res.status(500).json({ error: "Failed to join group", details: error.message });
+    }
+  });
+
+  app.get("/api/groups/joined", authMiddleware, async (req: any, res) => {
+    try {
+      const userId = req.userId;
+      const goalsSnap = await db
+        .collection("goals")
+        .where("ownerId", "==", userId)
+        .where("groupJoined", "==", true)
+        .get();
+
+      const joinedGroups = [];
+
+      for (const goalDoc of goalsSnap.docs) {
+        const goalData = goalDoc.data() as GoalDoc;
+        if (!goalData.groupId) continue;
+
+        const groupDoc = await db.collection("groups").doc(goalData.groupId).get();
+        if (groupDoc.exists) {
+          joinedGroups.push({
+            groupId: goalData.groupId,
+            goalId: goalDoc.id,
+            goalTitle: goalData.title,
+            joinedAt: goalData.joinedAt,
+            memberCount: groupDoc.data()?.memberCount || 0,
+          });
+        }
+      }
+
+      res.json({ joinedGroups });
+    } catch (error: any) {
+      console.error("Fetch joined groups error:", error);
+      res.status(500).json({ error: "Failed to fetch joined groups" });
+    }
+  });
+
+  app.post("/api/stream/token", authMiddleware, async (req: any, res) => {
+    try {
+      const apiKey = process.env.STREAM_API_KEY || env.STREAM_API_KEY;
+      const apiSecret = process.env.STREAM_API_SECRET || env.STREAM_API_SECRET;
+
+      if (!apiKey || !apiSecret) {
+        return res.status(500).json({ error: "Stream API keys not configured" });
+      }
+
+      const serverClient = StreamChat.getInstance(apiKey, apiSecret);
+      const userDoc = await db.collection("users").doc(req.userId).get();
+      const userData = userDoc.data();
+
+      await serverClient.upsertUser({
+        id: req.userId,
+        name: userData?.displayName || req.user.name || "User",
+        image: userData?.avatarUrl || req.user.picture,
+      });
+
+      const token = serverClient.createToken(req.userId);
+      res.json({ token, apiKey });
+    } catch (error: any) {
+      console.error("Stream token error:", error);
+      res.status(500).json({ error: "Failed to generate Stream token" });
+    }
+  });
+
+  // NOTE: This still stores base64 in Firestore because switching to object storage
+  // requires bucket/storage setup outside this file.
+  app.post("/api/media/upload", authMiddleware, async (req: any, res) => {
+    try {
+      const validation = MediaUploadSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
+      }
+
+      const { groupId, type, data, duration } = validation.data;
+      const userId = req.userId;
+
+      if (type === "video" && (duration || 0) > 10) {
+        return res.status(400).json({ error: "Video must be max 10 seconds" });
+      }
+
+      const goalSnap = await db
+        .collection("goals")
+        .where("ownerId", "==", userId)
+        .where("groupId", "==", groupId)
+        .where("groupJoined", "==", true)
+        .limit(1)
+        .get();
+
+      if (goalSnap.empty) {
+        return res.status(403).json({ error: "Must join group to upload media" });
+      }
+
+      const mediaRef = await db.collection("one_time_media").add({
+        groupId,
+        senderId: userId,
+        type,
+        data,
+        createdAt: nowIso(),
+        consumedBy: [],
+      });
+
+      res.json({ mediaId: mediaRef.id });
+    } catch (error: any) {
+      console.error("Media upload error:", error);
+      res.status(500).json({ error: "Failed to upload media" });
+    }
+  });
+
+  app.get("/api/media/open/:mediaId", authMiddleware, async (req: any, res) => {
+    try {
+      const { mediaId } = req.params;
+      const userId = req.userId;
+
+      const mediaDoc = await db.collection("one_time_media").doc(mediaId).get();
+      if (!mediaDoc.exists) {
+        return res.status(404).json({ error: "Media not found" });
+      }
+
+      const mediaData = mediaDoc.data() as any;
+
+      const goalSnap = await db
+        .collection("goals")
+        .where("ownerId", "==", userId)
+        .where("groupId", "==", mediaData.groupId)
+        .where("groupJoined", "==", true)
+        .limit(1)
+        .get();
+
+      if (goalSnap.empty) {
+        return res.status(403).json({ error: "Must join group to view media" });
+      }
+
+      const consumedBy = mediaData.consumedBy ?? [];
+      if (consumedBy.includes(userId)) {
+        return res.status(410).json({ error: "Media already viewed and expired" });
+      }
+
+      await mediaDoc.ref.update({
+        consumedBy: admin.firestore.FieldValue.arrayUnion(userId),
+      });
+
+      res.json({
+        type: mediaData.type,
+        data: mediaData.data,
+        expiresIn: 30,
+      });
+    } catch (error: any) {
+      console.error("Media open error:", error);
+      res.status(500).json({ error: "Failed to open media" });
+    }
+  });
+
   app.post("/api/process-audio", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
@@ -675,7 +1019,6 @@ async function startServer() {
       }
 
       const { audioBase64, mimeType, userContext } = req.body;
-      
       if (!audioBase64 || !mimeType) {
         return res.status(400).json({ error: "Missing audio data or mime type" });
       }
@@ -684,36 +1027,24 @@ async function startServer() {
       res.json(structuredGoal);
     } catch (error: any) {
       console.error("Error processing audio with Panda:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Failed to process audio with Panda",
-        details: error.message || String(error)
+        details: error.message || String(error),
       });
     }
   });
 
-  // Group Matching Logic (Placeholder for now, will be called from client)
-  app.post("/api/groups/match", authMiddleware, async (req: any, res) => {
-    const { goalId, category, lat, lng } = req.body;
-    const userId = req.userId;
-    // In a real app, this would query Firestore for nearby groups with similar themes
-    // and return a groupId or create a new one.
-    // For now, we'll return a mock success.
+  app.post("/api/groups/match", authMiddleware, async (_req: any, res) => {
     res.json({ success: true, message: "Matching logic triggered" });
   });
 
-  // Moderation Logic
-  app.post("/api/moderation/signal", authMiddleware, async (req: any, res) => {
-    const { actorId, targetId, type } = req.body;
-    // Track trust signals internally
+  app.post("/api/moderation/signal", authMiddleware, async (_req: any, res) => {
     res.json({ success: true });
   });
 
   app.get("/api/admin/reports", authMiddleware, async (req: any, res) => {
     try {
-      const userDoc = await db.collection('users').doc(req.userId).get();
-      const userData = userDoc.data();
-      
-      if (!userData || userData.role !== 'admin') {
+      if (!(await isAdminRequest(req))) {
         return res.status(403).json({ error: "Forbidden: Admin access required" });
       }
 
@@ -724,7 +1055,24 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
+  app.get("/api/debug/inspect-goals", authMiddleware, async (req: any, res) => {
+    try {
+      if (!(await isAdminRequest(req))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const goalsSnap = await db.collection("goals").get();
+      const allGoals = goalsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as GoalDoc));
+      const recentGoals = allGoals
+        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+        .slice(0, 15);
+
+      res.json({ goals: recentGoals });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -734,53 +1082,10 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
-
-  // Diagnostic Endpoint (Temporary)
-  app.get("/api/debug/inspect-goals", async (req, res) => {
-    try {
-      const emails = ["mohamadriza987@gmail.com", "riza9987@gmail.com", "ai.riza71242704@gmail.com"];
-      const goalsSnap = await db.collection('goals').get();
-      const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      
-      // We don't have user emails directly in goals, so we'll just return all goals
-      // and filter them by the titles/descriptions you mentioned if possible, 
-      // or just return the last 10 goals.
-      const recentGoals = allGoals
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-        .slice(0, 15);
-
-      res.json({ goals: recentGoals });
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // Diagnostic: Dump goals to a file
-  (async () => {
-    try {
-      console.log("Startup diagnostic: Dumping goals and reconciling...");
-      const goalsSnap = await db.collection('goals').get();
-      const allGoals = goalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      const recentGoals = allGoals
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-        .slice(0, 15);
-      
-      fs.writeFileSync("debug_goals.json", JSON.stringify(recentGoals, null, 2));
-      console.log("Goals dumped to debug_goals.json");
-      
-      // ONE-TIME HARD RESET AS REQUESTED
-      // Using client SDK for hard reset
-      // await hardResetGroups();
-      
-    } catch (err: any) {
-      console.error("Failed to dump or reconcile goals at startup:", err);
-      fs.writeFileSync("debug_error.txt", `Startup Error: ${err.message}\nStack: ${err.stack}`);
-    }
-  })();
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

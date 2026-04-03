@@ -34,6 +34,9 @@ export interface Goal {
   progressPercent: number;
   likesCount: number;
   groupId?: string;
+  groupJoined?: boolean;
+  joinedAt?: string;
+  eligibleAt?: string;
   createdAt: string;
   updatedAt?: string;
   savingStatus?: 'saving' | 'success' | 'error';

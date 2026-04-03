@@ -138,6 +138,10 @@ service cloud.firestore {
       return isAuthenticated() && (exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)) || isAdmin());
     }
 
+    match /test/{docId} {
+      allow read: if true;
+    }
+
     match /users/{userId} {
       allow read: if isAuthenticated();
       allow create: if isUserDoc(userId) && isValidUser(request.resource.data) && hasOnlyAllowedFields(['id', 'displayName', 'username', 'avatarUrl', 'bio', 'locality', 'geohash', 'lat', 'lng', 'preferredLanguage', 'hiddenUsers', 'blockedUsers', 'trustSignals', 'createdAt', 'updatedAt', 'role']);

@@ -34,7 +34,7 @@ export interface UserContext {
   locality?: string;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 1000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDelay = 2000): Promise<T> {
   let lastError: any;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -48,7 +48,8 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay =
                           error.message?.includes("RESOURCE_EXHAUSTED");
       
       if (isRetryable && i < maxRetries - 1) {
-        let delay = initialDelay * Math.pow(2, i);
+        // Exponential backoff with jitter
+        let delay = initialDelay * Math.pow(2.5, i) + Math.random() * 1500;
         
         // Try to extract retryDelay from the error message if it's a 429
         try {
@@ -56,14 +57,14 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay =
             const match = error.message.match(/"retryDelay":\s*"(\d+)s"/);
             if (match && match[1]) {
               const apiDelay = parseInt(match[1], 10) * 1000;
-              delay = Math.max(delay, apiDelay + 500); // Add a small buffer
+              delay = Math.max(delay, apiDelay + 2000); // Add a buffer
             }
           }
         } catch (e) {
           // Ignore parsing errors
         }
 
-        console.log(`Panda is busy or rate limited. Retrying in ${delay}ms... (Attempt ${i + 1}/${maxRetries})`);
+        console.log(`Panda is busy or rate limited. Retrying in ${Math.round(delay)}ms... (Attempt ${i + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -82,29 +83,68 @@ export async function transcribeAudio(audioBase64: string, mimeType: string): Pr
 
   const ai = getAI();
 
-  const response = await withRetry(() => ai.models.generateContent({
-    model: "gemini-3.1-flash-lite-preview",
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            mimeType: mimeType,
-            data: audioBase64,
+  const transcribeWithModel = async (modelName: string) => {
+    return await withRetry(() => ai.models.generateContent({
+      model: modelName,
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: audioBase64,
+            },
           },
-        },
-        {
-          text: "Transcribe the provided audio accurately. Return ONLY the transcription text in the original language. Do not add any commentary or formatting."
-        }
-      ]
-    },
-    config: {
-      systemInstruction: "You are a fast and accurate transcription engine. Your only job is to convert audio to text in the original language spoken.",
+          {
+            text: "Transcribe the provided audio accurately. Return ONLY the transcription text in the original language. Do not add any commentary or formatting."
+          }
+        ]
+      },
+      config: {
+        systemInstruction: "You are a fast and accurate transcription engine. Your only job is to convert audio to text in the original language spoken.",
+      }
+    }));
+  };
+
+  let response;
+  const models = ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview"];
+  let lastError: any;
+
+  for (const model of models) {
+    try {
+      console.log(`Attempting transcription with model: ${model}`);
+      response = await transcribeWithModel(model);
+      if (response) break;
+    } catch (error: any) {
+      lastError = error;
+      const isQuotaError = error.message?.includes("429") || error.message?.includes("RESOURCE_EXHAUSTED");
+      if (isQuotaError) {
+        console.warn(`${model} transcription quota exceeded. Falling back...`);
+        continue;
+      } else {
+        throw error;
+      }
     }
-  }));
+  }
+
+  if (!response) throw lastError;
 
   const text = response.text;
   if (!text) throw new Error("No transcription response from AI");
   return text.trim();
+}
+
+function cleanJson(text: string): string {
+  // Remove markdown code blocks if present
+  let cleaned = text.trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.substring(7);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.substring(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.substring(0, cleaned.length - 3);
+  }
+  return cleaned.trim();
 }
 
 export async function generateGoalFromTranscript(transcript: string, userContext?: UserContext): Promise<StructuredGoal> {
@@ -203,7 +243,7 @@ export async function generateGoalFromTranscript(transcript: string, userContext
 
   for (const model of models) {
     try {
-      console.log(`Attempting with model: ${model}`);
+      console.log(`Attempting goal generation with model: ${model}`);
       response = await generateWithModel(model);
       if (response) break;
     } catch (error: any) {
@@ -222,7 +262,14 @@ export async function generateGoalFromTranscript(transcript: string, userContext
 
   const text = response.text;
   if (!text) throw new Error("No response from AI");
-  return JSON.parse(text) as StructuredGoal;
+  
+  try {
+    const cleaned = cleanJson(text);
+    return JSON.parse(cleaned) as StructuredGoal;
+  } catch (parseError) {
+    console.error("Failed to parse AI response as JSON:", text);
+    throw new Error("AI returned an invalid response format. Please try again.");
+  }
 }
 
 export async function normalizeGoal(goalData: { title: string, description: string, category: string, tags: string[], timeHorizon: string, privacy: string, sourceText?: string }, userContext?: UserContext): Promise<string> {
@@ -241,35 +288,60 @@ export async function normalizeGoal(goalData: { title: string, description: stri
   - Locality: ${userContext.locality || 'Not provided'}
   ` : '';
 
-  const response = await withRetry(() => ai.models.generateContent({
-    model: "gemini-3.1-flash-lite-preview",
-    contents: {
-      parts: [
-        {
-          text: `Create a normalized matching text for the following goal. 
-          
-          Goal Data:
-          - Title: ${goalData.title}
-          - Description: ${goalData.description}
-          - Category: ${goalData.category}
-          - Tags: ${goalData.tags.join(', ')}
-          - Time Horizon: ${goalData.timeHorizon}
-          - Privacy: ${goalData.privacy}
-          ${goalData.sourceText ? `- Source Text: ${goalData.sourceText}` : ''}
-          
-          ${contextPrompt}
-          
-          Return ONLY a clean, comma-separated string for backend matching. 
-          Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
-          Remove filler words. Keep only core meaning.
-          Do not invent facts. If age/locality aren't in the provided context, ignore them.`
-        }
-      ]
-    },
-    config: {
-      systemInstruction: "You are a data normalization engine. Your job is to extract the core meaning of a goal into a standardized format for similarity matching.",
+  const generateWithModel = async (modelName: string) => {
+    return await withRetry(() => ai.models.generateContent({
+      model: modelName,
+      contents: {
+        parts: [
+          {
+            text: `Create a normalized matching text for the following goal. 
+            
+            Goal Data:
+            - Title: ${goalData.title}
+            - Description: ${goalData.description}
+            - Category: ${goalData.category}
+            - Tags: ${goalData.tags.join(', ')}
+            - Time Horizon: ${goalData.timeHorizon}
+            - Privacy: ${goalData.privacy}
+            ${goalData.sourceText ? `- Source Text: ${goalData.sourceText}` : ''}
+            
+            ${contextPrompt}
+            
+            Return ONLY a clean, comma-separated string for backend matching. 
+            Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
+            Remove filler words. Keep only core meaning.
+            Do not invent facts. If age/locality aren't in the provided context, ignore them.`
+          }
+        ]
+      },
+      config: {
+        systemInstruction: "You are a data normalization engine. Your job is to extract the core meaning of a goal into a standardized format for similarity matching.",
+      }
+    }));
+  };
+
+  let response;
+  const models = ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview"];
+  let lastError: any;
+
+  for (const model of models) {
+    try {
+      console.log(`Attempting normalization with model: ${model}`);
+      response = await generateWithModel(model);
+      if (response) break;
+    } catch (error: any) {
+      lastError = error;
+      const isQuotaError = error.message?.includes("429") || error.message?.includes("RESOURCE_EXHAUSTED");
+      if (isQuotaError) {
+        console.warn(`${model} normalization quota exceeded. Falling back...`);
+        continue;
+      } else {
+        throw error;
+      }
     }
-  }));
+  }
+
+  if (!response) throw lastError;
 
   const text = response.text;
   if (!text) throw new Error("No response from AI");
@@ -449,7 +521,13 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
 
     const text = response.text;
     if (!text) throw new Error("No response from AI");
-    return JSON.parse(text) as StructuredGoal;
+    try {
+      const cleaned = cleanJson(text);
+      return JSON.parse(cleaned) as StructuredGoal;
+    } catch (parseError) {
+      console.error("Failed to parse AI response as JSON:", text);
+      throw new Error("AI returned an invalid response format. Please try again.");
+    }
   } catch (error: any) {
     console.error("Panda API Error:", error);
     

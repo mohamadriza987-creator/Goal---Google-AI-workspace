@@ -6,6 +6,8 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+console.log('Initializing Firestore with database ID:', firebaseConfig.firestoreDatabaseId);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
@@ -13,9 +15,14 @@ export const googleProvider = new GoogleAuthProvider();
 // Connection test
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
+    console.log('Testing Firestore connection...');
+    const testDoc = await getDocFromServer(doc(db, 'test', 'connection'));
+    console.log('Firestore connection test successful:', testDoc.exists());
+  } catch (error: any) {
+    console.error("Firestore connection test failed:", error);
+    if (error.message?.includes('Missing or insufficient permissions')) {
+      console.warn("Firestore permissions check: The 'test' collection might not be ready yet or rules are still propagating.");
+    } else if (error.message?.includes('the client is offline')) {
       console.error("Please check your Firebase configuration. The client appears to be offline.");
     }
   }

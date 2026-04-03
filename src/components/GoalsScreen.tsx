@@ -150,6 +150,28 @@ export function GoalsScreen({
     }
   };
 
+  const handleJoinGroup = async (goal: Goal) => {
+    if (!goal.groupId) return;
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/groups/join', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ groupId: goal.groupId, goalId: goal.id })
+      });
+
+      if (!res.ok) throw new Error('Failed to join group');
+      
+      // Navigate to community
+      setCurrentScreen({ name: 'community', groupId: goal.groupId });
+    } catch (err) {
+      handleFirestoreError(err, 'update', `groups/${goal.groupId}/join`);
+    }
+  };
+
   const filteredGoals = React.useMemo(() => {
     return goals.filter(g => categoryFilter === 'all' || g.category === categoryFilter);
   }, [goals, categoryFilter]);
@@ -444,6 +466,7 @@ export function GoalsScreen({
                 goal={goal} 
                 onClick={() => setActiveGoal(goal)} 
                 onRetry={onRetrySave}
+                onJoinGroup={handleJoinGroup}
               />
             ))}
           </div>
@@ -471,19 +494,22 @@ function SimilarGoalsSection({
     if (!auth.currentUser) return;
     setJoining(groupId);
     try {
-      // Add user to members subcollection
-      await setDoc(doc(db, 'groups', groupId, 'members', auth.currentUser.uid), {
-        userId: auth.currentUser.uid,
-        joinedAt: new Date().toISOString()
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch('/api/groups/join', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ groupId, goalId: goal.id })
       });
-      
-      // Update goal to point to this group
-      await updateDoc(doc(db, 'goals', goal.id), { groupId });
+
+      if (!res.ok) throw new Error('Failed to join group');
       
       // Navigate to community
       setCurrentScreen({ name: 'community', groupId });
     } catch (err) {
-      handleFirestoreError(err, 'update', `groups/${groupId}/members`);
+      handleFirestoreError(err, 'update', `groups/${groupId}/join`);
     } finally {
       setJoining(null);
     }

@@ -50,6 +50,11 @@ import { NavButton } from './components/NavButton';
 
 type Screen = 'auth' | 'home' | 'goals' | 'community' | 'calendar' | 'profile';
 
+interface ScreenState {
+  name: Screen;
+  groupId?: string;
+}
+
 enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -84,7 +89,7 @@ export default function App() {
   const { t, setLanguage, language } = useTranslation();
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [dbUser, setDbUser] = useState<User | null>(null);
-  const [currentScreen, setCurrentScreen] = useState<Screen>('auth');
+  const [currentScreen, setCurrentScreen] = useState<ScreenState>({ name: 'auth' });
   const [goals, setGoals] = useState<Goal[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
@@ -157,7 +162,7 @@ export default function App() {
           }
         }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
 
-        if (currentScreen === 'auth') setCurrentScreen('home');
+        if (currentScreen.name === 'auth') setCurrentScreen({ name: 'home' });
         
         const q = query(collection(db, 'goals'), where('ownerId', '==', u.uid), orderBy('createdAt', 'desc'));
         goalsUnsubscribe = onSnapshot(q, (snapshot) => {
@@ -174,7 +179,7 @@ export default function App() {
 
       } else {
         setDbUser(null);
-        setCurrentScreen('auth');
+        setCurrentScreen({ name: 'auth' });
         if (userUnsubscribe) userUnsubscribe();
         if (goalsUnsubscribe) goalsUnsubscribe();
       }
@@ -189,7 +194,7 @@ export default function App() {
 
   // Fetch all reminders for calendar
   useEffect(() => {
-    if (!user || currentScreen !== 'calendar') return;
+    if (!user || currentScreen.name !== 'calendar') return;
 
     const fetchAllReminders = async () => {
       try {
@@ -359,38 +364,11 @@ export default function App() {
             const assignData = await assignRes.json();
             if (assignData.action === 'assigned' || assignData.action === 'create') {
               if (assignData.groupId) {
-                await updateDoc(doc(db, 'goals', goalRef.id), { groupId: assignData.groupId });
-
-                // Add current user to members subcollection for community access
-                await setDoc(doc(db, 'groups', assignData.groupId, 'members', user.uid), {
-                  userId: user.uid,
-                  joinedAt: new Date().toISOString()
-                });
-
-                // Update all goals in the cluster
-                const updateBatch = writeBatch(db);
-                assignData.members.forEach((m: { goalId: string, ownerId: string }) => {
-                  updateBatch.update(doc(db, 'goals', m.goalId), { groupId: assignData.groupId });
-                  
-                  // Add each user to members subcollection
-                  updateBatch.set(doc(db, 'groups', assignData.groupId, 'members', m.ownerId), {
-                    userId: m.ownerId,
-                    joinedAt: new Date().toISOString()
-                  });
-                });
-                
-                // Add welcome message
-                const msgRef = collection(db, 'groups', assignData.groupId, 'messages');
-                updateBatch.set(doc(msgRef), {
+                await updateDoc(doc(db, 'goals', goalRef.id), { 
                   groupId: assignData.groupId,
-                  userId: 'system',
-                  content: `Welcome to the ${assignData.groupName} community! We've grouped you together because of your similar goals.`,
-                  contentType: 'text',
-                  reactions: {},
-                  createdAt: new Date().toISOString()
+                  eligibleAt: new Date().toISOString(),
+                  groupJoined: false
                 });
-
-                await updateBatch.commit();
               }
             }
           }
@@ -429,7 +407,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-white selection:text-black">
       {/* Top Bar for Language Toggle */}
-      {currentScreen !== 'auth' && language !== 'en' && (
+      {currentScreen.name !== 'auth' && language !== 'en' && (
         <div className="fixed top-0 left-0 right-0 z-[60] p-2 flex justify-center">
           <button 
             onClick={() => setLanguage('en')}
@@ -441,7 +419,7 @@ export default function App() {
       )}
 
       <AnimatePresence mode="wait">
-        {currentScreen === 'auth' && (
+        {currentScreen.name === 'auth' && (
           <motion.div
             key="auth"
             initial={{ opacity: 0 }}
@@ -460,18 +438,18 @@ export default function App() {
           </motion.div>
         )}
 
-        {currentScreen === 'home' && (
+        {currentScreen.name === 'home' && (
           <HomeScreen 
             user={user} 
             dbUser={dbUser} 
-            setCurrentScreen={setCurrentScreen} 
+            setCurrentScreen={(s) => setCurrentScreen(typeof s === 'string' ? { name: s } : s)} 
             handleFirestoreError={handleFirestoreError}
             addOptimisticGoal={addOptimisticGoal}
             performSaveGoal={performSaveGoal}
           />
         )}
 
-        {currentScreen === 'goals' && (
+        {currentScreen.name === 'goals' && (
           <GoalsScreen 
             goals={displayGoals} 
             activeGoal={activeGoal} 
@@ -479,12 +457,12 @@ export default function App() {
             focusedTaskId={focusedTaskId} 
             setFocusedTaskId={setFocusedTaskId} 
             handleFirestoreError={handleFirestoreError} 
-            setCurrentScreen={setCurrentScreen}
+            setCurrentScreen={(s) => setCurrentScreen(typeof s === 'string' ? { name: s } : s)}
             onRetrySave={performSaveGoal}
           />
         )}
 
-        {currentScreen === 'community' && user && (
+        {currentScreen.name === 'community' && user && (
           <CommunityScreen 
             user={user} 
             dbUser={dbUser} 
@@ -493,22 +471,22 @@ export default function App() {
           />
         )}
 
-        {currentScreen === 'calendar' && (
+        {currentScreen.name === 'calendar' && (
           <CalendarScreen 
             allReminders={allReminders} 
             goals={goals} 
             setActiveGoal={setActiveGoal} 
             setFocusedTaskId={setFocusedTaskId} 
-            setCurrentScreen={setCurrentScreen} 
+            setCurrentScreen={(s) => setCurrentScreen(typeof s === 'string' ? { name: s } : s)} 
           />
         )}
 
-        {currentScreen === 'profile' && (
+        {currentScreen.name === 'profile' && (
           <ProfileScreen user={user} dbUser={dbUser} />
         )}
       </AnimatePresence>
 
-      {currentScreen !== 'auth' && (
+      {currentScreen.name !== 'auth' && (
         <motion.div 
           className="fixed bottom-3 left-1/2 -translate-x-1/2 z-50 w-full max-w-[260px] px-4"
           initial={false}
@@ -525,28 +503,28 @@ export default function App() {
         >
           <nav className="bg-zinc-900/70 backdrop-blur-2xl border border-white/5 rounded-full p-1 flex items-center justify-between shadow-[0_8px_24px_rgba(0,0,0,0.6)]">
             <NavButton 
-              active={currentScreen === 'calendar'} 
+              active={currentScreen.name === 'calendar'} 
               icon={<CalendarIcon size={13} />} 
-              onClick={() => setCurrentScreen('calendar')} 
+              onClick={() => setCurrentScreen({ name: 'calendar' })} 
             />
             <NavButton 
-              active={currentScreen === 'community'} 
+              active={currentScreen.name === 'community'} 
               icon={<Users size={13} />} 
-              onClick={() => setCurrentScreen('community')} 
+              onClick={() => setCurrentScreen({ name: 'community' })} 
             />
             
             <div className="relative">
               <button
-                onClick={() => setCurrentScreen('home')}
+                onClick={() => setCurrentScreen({ name: 'home' })}
                 className={cn(
                   "group relative flex items-center justify-center w-8 h-8 rounded-full transition-all duration-500 shadow-xl",
-                  currentScreen === 'home' 
+                  currentScreen.name === 'home' 
                     ? "bg-white text-black scale-110" 
                     : "bg-zinc-800/90 text-zinc-400 hover:bg-zinc-700 hover:text-white"
                 )}
               >
-                <PandaIcon size={16} active={currentScreen === 'home'} />
-                {currentScreen === 'home' && (
+                <PandaIcon size={16} active={currentScreen.name === 'home'} />
+                {currentScreen.name === 'home' && (
                   <motion.div
                     layoutId="active-glow"
                     className="absolute inset-0 rounded-full bg-white/40 blur-md -z-10"
@@ -558,14 +536,14 @@ export default function App() {
             </div>
 
             <NavButton 
-              active={currentScreen === 'goals'} 
+              active={currentScreen.name === 'goals'} 
               icon={<FootballIcon size={13} />} 
-              onClick={() => setCurrentScreen('goals')} 
+              onClick={() => setCurrentScreen({ name: 'goals' })} 
             />
             <NavButton 
-              active={currentScreen === 'profile'} 
+              active={currentScreen.name === 'profile'} 
               icon={<Settings size={13} />} 
-              onClick={() => setCurrentScreen('profile')} 
+              onClick={() => setCurrentScreen({ name: 'profile' })} 
             />
           </nav>
         </motion.div>

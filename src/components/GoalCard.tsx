@@ -8,13 +8,15 @@ interface GoalCardProps {
   goal: Goal;
   onClick: () => void;
   onRetry?: (goal: Goal) => void;
+  onJoinGroup?: (goal: Goal) => void;
 }
 
-export function GoalCard({ goal, onClick, onRetry }: GoalCardProps) {
+export function GoalCard({ goal, onClick, onRetry, onJoinGroup }: GoalCardProps) {
   const isOptimistic = goal.id.startsWith('temp-');
   const isSaving = goal.savingStatus === 'saving';
   const isError = goal.savingStatus === 'error';
   const similarCount = goal.similarGoals?.length || 0;
+  const isEligible = goal.groupId && !goal.groupJoined;
 
   return (
     <motion.div
@@ -82,6 +84,24 @@ export function GoalCard({ goal, onClick, onRetry }: GoalCardProps) {
       <h3 className="text-xl font-bold mb-2 group-hover:translate-x-1 transition-transform break-words">{goal.title}</h3>
       <p className="text-zinc-500 text-sm mb-8 leading-relaxed break-words">{goal.description}</p>
       
+      {isEligible && (
+        <div className="mb-8 p-4 bg-white/5 border border-white/10 rounded-2xl flex flex-col gap-3">
+          <div className="flex items-center gap-2 text-white/60">
+            <Users size={14} />
+            <span className="text-[10px] font-bold uppercase tracking-widest">A group with similar-interest people is ready</span>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onJoinGroup?.(goal);
+            }}
+            className="w-full py-3 bg-white text-black rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-200 transition-all active:scale-95"
+          >
+            Join Group
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className={cn(
