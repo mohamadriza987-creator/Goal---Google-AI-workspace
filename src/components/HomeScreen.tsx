@@ -405,9 +405,21 @@ export function HomeScreen({
                         {processingState === 'transcribing' ? 'Transcribing audio...' : 'Generating your goal...'}
                       </span>
                     </div>
-                    <p className="text-[10px] text-zinc-500 uppercase tracking-widest animate-pulse">
-                      {processingState === 'transcribing' ? 'Step 1 of 2' : 'Step 2 of 2'}
-                    </p>
+                    <div className="flex flex-col items-center gap-2">
+                      <p className="text-[10px] text-zinc-500 uppercase tracking-widest animate-pulse">
+                        {processingState === 'transcribing' ? 'Step 1 of 2' : 'Step 2 of 2'}
+                      </p>
+                      <button 
+                        onClick={() => {
+                          setLoading(false);
+                          setProcessingState('idle');
+                          setProcessingError('Process cancelled by user');
+                        }}
+                        className="text-[10px] text-zinc-500 hover:text-white underline transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 )}
                 {(recorderError || processingError) && (

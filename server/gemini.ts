@@ -4,13 +4,15 @@ let aiInstance: GoogleGenAI | null = null;
 
 function getAI() {
   if (!aiInstance) {
-    const apiKey = process.env.gemfree;
+    const apiKey = process.env.gemfree || process.env.GEMINI_API_KEY;
     
     if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-      throw new Error("The 'gemfree' secret is missing or invalid. Please ensure it is configured in the Settings menu.");
+      console.error("Gemini API key is missing. Checked 'gemfree' and 'GEMINI_API_KEY' environment variables.");
+      throw new Error("Gemini API key is missing. Please ensure it is configured in the Settings menu as 'gemfree' or 'GEMINI_API_KEY'.");
     }
     
-    console.log('Backend initializing Panda with "gemfree" secret path (prefix: ' + apiKey.substring(0, 4) + '...)');
+    const keySource = process.env.gemfree ? "gemfree" : "GEMINI_API_KEY";
+    console.log(`Backend initializing Panda with "${keySource}" secret (prefix: ${apiKey.substring(0, 4)}...)`);
     aiInstance = new GoogleGenAI({ apiKey });
   }
   return aiInstance;
@@ -102,7 +104,7 @@ export async function transcribeAudio(audioBase64: string, mimeType: string): Pr
       config: {
         systemInstruction: "You are a fast and accurate transcription engine. Your only job is to convert audio to text in the original language spoken.",
       }
-    }));
+    }), 2, 1000); // Reduce retries and delay for transcription to avoid proxy timeouts
   };
 
   let response;
@@ -234,7 +236,7 @@ export async function generateGoalFromTranscript(transcript: string, userContext
           required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"]
         }
       }
-    }));
+    }), 2, 1000); // Reduce retries for goal generation
   };
 
   let response;
@@ -317,7 +319,7 @@ export async function normalizeGoal(goalData: { title: string, description: stri
       config: {
         systemInstruction: "You are a data normalization engine. Your job is to extract the core meaning of a goal into a standardized format for similarity matching.",
       }
-    }));
+    }), 2, 1000); // Reduce retries for normalization
   };
 
   let response;
@@ -492,7 +494,7 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
           required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"]
         }
       }
-    }));
+    }), 2, 1000); // Reduce retries for audio processing
   };
 
   try {

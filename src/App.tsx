@@ -356,7 +356,7 @@ export default function App() {
               "Authorization": `Bearer ${idToken}`
             },
             body: JSON.stringify({
-              goal: { id: goalRef.id, ...goalData, embedding }
+              goalId: goalRef.id
             })
           });
 

@@ -55,9 +55,10 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
         });
         if (!res.ok) throw new Error('Failed to fetch joined groups');
         const data = await res.json();
-        setJoinedGroups(data);
-        if (data.length > 0 && !activeGroupId) {
-          setActiveGroupId(data[0].groupId);
+        const groups = data.joinedGroups || [];
+        setJoinedGroups(groups);
+        if (groups.length > 0 && !activeGroupId) {
+          setActiveGroupId(groups[0].groupId);
         }
       } catch (err) {
         console.error(err);

@@ -33,8 +33,8 @@ export async function transcribeAudio(audioBase64: string, mimeType: string, idT
     throw new Error(errorData.error || "Failed to transcribe audio");
   }
 
-  const result = await response.json();
-  return result.transcript;
+  const result = await response.json().catch(() => ({}));
+  return result.transcript || "";
 }
 
 export async function generateGoalFromTranscript(transcript: string, idToken: string, userContext?: UserContext): Promise<StructuredGoal> {
@@ -54,7 +54,7 @@ export async function generateGoalFromTranscript(transcript: string, idToken: st
     throw new Error(errorData.error || "Failed to generate goal from transcript");
   }
 
-  const result = await response.json();
+  const result = await response.json().catch(() => ({}));
   return result as StructuredGoal;
 }
 
@@ -75,7 +75,7 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
     throw new Error(errorData.error || "Failed to process audio with Panda");
   }
 
-  const result = await response.json();
+  const result = await response.json().catch(() => ({}));
   console.log('Backend result received:', result);
   return result as StructuredGoal;
 }

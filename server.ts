@@ -506,12 +506,15 @@ const MediaUploadSchema = z.object({
 
 const env = loadEnv("", process.cwd(), "");
 const gemfree = process.env.gemfree || env.gemfree;
+const geminiApiKey = process.env.GEMINI_API_KEY || env.GEMINI_API_KEY;
 
-if (gemfree) {
-  console.log('Panda Status: Using "gemfree" secret path.');
-  process.env.gemfree = gemfree;
+if (gemfree || geminiApiKey) {
+  const source = gemfree ? "gemfree" : "GEMINI_API_KEY";
+  console.log(`Panda Status: Using "${source}" secret path.`);
+  if (gemfree) process.env.gemfree = gemfree;
+  if (geminiApiKey) process.env.GEMINI_API_KEY = geminiApiKey;
 } else {
-  console.log('Panda Status: "gemfree" secret NOT FOUND.');
+  console.log('Panda Status: Gemini API secret NOT FOUND (checked "gemfree" and "GEMINI_API_KEY").');
 }
 
 async function startServer() {
@@ -519,8 +522,8 @@ async function startServer() {
   const PORT = Number(process.env.PORT || 3000);
 
   app.set("trust proxy", 1);
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  app.use(express.json({ limit: "100mb" }));
+  app.use(express.urlencoded({ limit: "100mb", extended: true }));
   app.use(cookieParser());
 
   const authMiddleware = async (req: any, res: any, next: any) => {
@@ -573,22 +576,27 @@ async function startServer() {
 
   app.post("/api/transcribe", authMiddleware, async (req: any, res) => {
     try {
+      console.log(`[API] /api/transcribe - Received request. Content-Length: ${req.headers['content-length']} bytes`);
       if (!checkRateLimit(req.userId)) {
+        console.warn(`[API] /api/transcribe - Rate limit exceeded for user ${req.userId}`);
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
       const validation = TranscribeSchema.safeParse(req.body);
       if (!validation.success) {
+        console.warn(`[API] /api/transcribe - Invalid payload:`, validation.error.format());
         return res
           .status(400)
           .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { audioBase64, mimeType } = validation.data;
+      console.log(`[API] /api/transcribe - Starting transcription for user ${req.userId}...`);
       const transcript = await transcribeAudio(audioBase64, mimeType);
+      console.log(`[API] /api/transcribe - Transcription successful for user ${req.userId}. Length: ${transcript.length}`);
       res.json({ transcript });
     } catch (error: any) {
-      console.error("Transcription error:", error);
+      console.error(`[API] /api/transcribe - Error for user ${req.userId}:`, error);
       res.status(500).json({
         error: "Failed to transcribe audio",
         details: error.message || String(error),
@@ -599,21 +607,25 @@ async function startServer() {
   app.post("/api/generate-goal", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
+        console.warn(`[API] /api/generate-goal - Rate limit exceeded for user ${req.userId}`);
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
       const validation = GenerateGoalSchema.safeParse(req.body);
       if (!validation.success) {
+        console.warn(`[API] /api/generate-goal - Invalid payload:`, validation.error.format());
         return res
           .status(400)
           .json({ error: "Invalid payload", details: validation.error.format() });
       }
 
       const { transcript, userContext } = validation.data;
+      console.log(`[API] /api/generate-goal - Starting goal generation for user ${req.userId}...`);
       const structuredGoal = await generateGoalFromTranscript(transcript, userContext);
+      console.log(`[API] /api/generate-goal - Goal generation successful for user ${req.userId}: ${structuredGoal.goalTitle}`);
       res.json(structuredGoal);
     } catch (error: any) {
-      console.error("Goal generation error:", error);
+      console.error(`[API] /api/generate-goal - Error for user ${req.userId}:`, error);
       res.status(500).json({
         error: "Failed to generate goal from transcript",
         details: error.message || String(error),
@@ -1015,18 +1027,22 @@ async function startServer() {
   app.post("/api/process-audio", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
+        console.warn(`[API] /api/process-audio - Rate limit exceeded for user ${req.userId}`);
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
       const { audioBase64, mimeType, userContext } = req.body;
       if (!audioBase64 || !mimeType) {
+        console.warn(`[API] /api/process-audio - Missing audio data or mime type`);
         return res.status(400).json({ error: "Missing audio data or mime type" });
       }
 
+      console.log(`[API] /api/process-audio - Starting audio processing for user ${req.userId}...`);
       const structuredGoal = await structureGoalFromAudio(audioBase64, mimeType, userContext);
+      console.log(`[API] /api/process-audio - Audio processing successful for user ${req.userId}: ${structuredGoal.goalTitle}`);
       res.json(structuredGoal);
     } catch (error: any) {
-      console.error("Error processing audio with Panda:", error);
+      console.error(`[API] /api/process-audio - Error for user ${req.userId}:`, error);
       res.status(500).json({
         error: "Failed to process audio with Panda",
         details: error.message || String(error),
@@ -1071,6 +1087,11 @@ async function startServer() {
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
+  });
+
+  app.use("/api/*", (req, res) => {
+    console.warn(`Unmatched API request: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ error: "API endpoint not found" });
   });
 
   if (process.env.NODE_ENV !== "production") {
