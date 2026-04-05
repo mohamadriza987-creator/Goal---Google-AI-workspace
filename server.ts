@@ -22,12 +22,18 @@ const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
 process.env.GOOGLE_CLOUD_PROJECT = firebaseConfig.projectId;
 
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
+  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+  : null;
+
 const firebaseApp =
   admin.apps.length > 0
     ? admin.app()
     : admin.initializeApp({
         projectId: firebaseConfig.projectId,
-        credential: admin.credential.applicationDefault(),
+        credential: serviceAccount
+          ? admin.credential.cert(serviceAccount)
+          : admin.credential.applicationDefault(),
       });
 
 console.log("Admin SDK initialized. Project ID:", firebaseApp.options.projectId);
@@ -37,16 +43,8 @@ const db = getFirestore(firebaseApp, dbId);
 
 console.log(`Firestore initialized for database: ${dbId}`);
 
-// FIX: nowIso must be defined BEFORE it is used anywhere.
-// Previously it was defined at line ~103 but called at line ~46 inside
-// the startup health check, causing a ReferenceError on boot.
 const nowIso = () => new Date().toISOString();
 
-// Lightweight startup connectivity check — just a read, no write needed.
-// A write to _health was causing PERMISSION_DENIED because the Firestore
-// rules don't grant the client write access to that collection.
-// The Admin SDK has full access, but the rules still apply to admin writes
-// in some configurations. A read is safer and enough to confirm connectivity.
 (async () => {
   try {
     console.log(`Testing Firestore connection for database: ${dbId}...`);
@@ -116,12 +114,9 @@ function uniqueStrings(values: Array<string | undefined | null>) {
 }
 
 async function isAdminRequest(req: any) {
-  // Check email from the verified Firebase ID token — do NOT trust a
-  // writable Firestore 'role' field for admin authorization.
   return req.user?.email === "mohamadriza987@gmail.com" && req.user?.email_verified === true;
 }
 
-// Helper for cosine similarity
 function cosineSimilarity(vecA: number[], vecB: number[]) {
   if (!vecA || !vecB || vecA.length !== vecB.length) {
     return 0;
@@ -143,7 +138,6 @@ function cosineSimilarity(vecA: number[], vecB: number[]) {
   return dotProduct / magnitude;
 }
 
-// Helper to find or create a group for a goal
 async function findOrCreateGroupForGoal(goalId: string) {
   try {
     console.log(`Attempting to find or create group for goal ${goalId}...`);
@@ -287,7 +281,6 @@ async function findOrCreateGroupForGoal(goalId: string) {
   }
 }
 
-// Helper to cleanup broken groups with no representativeEmbedding
 async function cleanupBrokenGroups() {
   console.log("Cleaning up broken groups with no representativeEmbedding...");
 
@@ -460,7 +453,6 @@ async function hardResetGroups() {
   }
 }
 
-// Simple in-memory rate limiter
 const rateLimitMap = new Map<string, { count: number; lastReset: number }>();
 const RATE_LIMIT_WINDOW = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 10;
@@ -482,7 +474,6 @@ function checkRateLimit(userId: string) {
   return true;
 }
 
-// Zod Schemas for validation
 const TranscribeSchema = z.object({
   audioBase64: z.string().min(1).max(50 * 1024 * 1024),
   mimeType: z.string().min(1).max(100),
@@ -587,7 +578,7 @@ async function startServer() {
         status: "ok",
         firestore: "connected",
         stream: streamKey ? "configured" : "missing",
-        database: firebaseConfig.firestoreDatabaseId || "(default)"
+        database: dbId
       });
     } catch (error: any) {
       console.error("Health check Firestore error:", error);
