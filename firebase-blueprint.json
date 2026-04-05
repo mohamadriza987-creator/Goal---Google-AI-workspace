@@ -43,6 +43,8 @@
         "progressPercent": { "type": "number" },
         "likesCount": { "type": "integer" },
         "groupId": { "type": "string" },
+        "embedding": { "type": "array", "items": { "type": "number" } },
+        "matchingMetadata": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -94,6 +96,8 @@
         "lng": { "type": "number" },
         "radiusUsed": { "type": "number" },
         "targetRegion": { "type": "string" },
+        "representativeEmbedding": { "type": "array", "items": { "type": "number" } },
+        "matchingCriteria": { "type": "object" },
         "memberCount": { "type": "integer" },
         "maxMembers": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },

@@ -27,17 +27,33 @@ const firebaseApp =
     ? admin.app()
     : admin.initializeApp({
         projectId: firebaseConfig.projectId,
+        credential: admin.credential.applicationDefault(),
       });
 
 console.log("Admin SDK initialized. Project ID:", firebaseApp.options.projectId);
 
-const db = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(firebaseApp);
+const dbId = firebaseConfig.firestoreDatabaseId;
+const db = getFirestore(firebaseApp, dbId);
 
 console.log(
-  `Firestore initialized for database: ${firebaseConfig.firestoreDatabaseId || "(default)"}`,
+  `Firestore initialized for database: ${dbId}`,
 );
+
+// Test Firestore connection
+(async () => {
+  try {
+    console.log(`Testing Firestore connection for database: ${dbId}...`);
+    await db.collection("_health").doc("check").set({ lastCheck: nowIso() });
+    console.log("Firestore connection test successful.");
+  } catch (error) {
+    console.error("Firestore connection test failed:", error);
+    if (error instanceof Error && error.message.includes("PERMISSION_DENIED")) {
+      console.warn("Permission denied. This might be due to missing IAM roles or incorrect database ID.");
+      console.warn("Current Project ID:", firebaseConfig.projectId);
+      console.warn("Current Database ID:", dbId);
+    }
+  }
+})();
 
 type GoalDoc = {
   id: string;
@@ -563,7 +579,14 @@ async function startServer() {
   app.get("/api/health", async (_req, res) => {
     try {
       await db.collection("test").doc("health").get();
-      res.json({ status: "ok", firestore: "connected" });
+      const streamKey = process.env.STREAM_API_KEY || "";
+      const streamSecret = process.env.STREAM_API_SECRET || "";
+      res.json({ 
+        status: "ok", 
+        firestore: "connected", 
+        stream: streamKey ? "configured" : "missing",
+        database: firebaseConfig.firestoreDatabaseId || "(default)"
+      });
     } catch (error: any) {
       console.error("Health check Firestore error:", error);
       res.status(500).json({

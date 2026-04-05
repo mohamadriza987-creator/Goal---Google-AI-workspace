@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Goal, GoalTask } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, CheckCircle2, Circle, X, MessageCircle, Bell, Trash2, Plus, Mic, Calendar as CalendarIcon, Edit2, Users, Loader2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Circle, X, MessageCircle, Bell, Trash2, Plus, Calendar as CalendarIcon, Users, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { GoalCard } from './GoalCard';
 
@@ -47,9 +47,7 @@ export function GoalsScreen({
       });
     };
     
-    // Initial adjustment with a small delay
     const timeoutId = setTimeout(adjustHeights, 50);
-    
     window.addEventListener('resize', adjustHeights);
     return () => {
       clearTimeout(timeoutId);
@@ -81,7 +79,8 @@ export function GoalsScreen({
       
       const updatedTasks = activeGoalTasks.map(t => t.id === taskId ? { ...t, isDone: !isDone } : t);
       const doneCount = updatedTasks.filter(t => t.isDone).length;
-      const progress = Math.round((doneCount / updatedTasks.length) * 100);
+      const total = updatedTasks.length;
+      const progress = total > 0 ? Math.round((doneCount / total) * 100) : 0;
       
       await updateDoc(doc(db, 'goals', goalId), { progressPercent: progress });
     } catch (err) {
@@ -164,8 +163,6 @@ export function GoalsScreen({
       });
 
       if (!res.ok) throw new Error('Failed to join group');
-      
-      // Navigate to community
       setCurrentScreen({ name: 'community', groupId: goal.groupId });
     } catch (err) {
       handleFirestoreError(err, 'update', `groups/${goal.groupId}/join`);
@@ -288,11 +285,6 @@ export function GoalsScreen({
                                   e.target.style.height = 'auto';
                                   e.target.style.height = e.target.scrollHeight + 'px';
                                 }}
-                                onInput={(e) => {
-                                  const target = e.target as HTMLTextAreaElement;
-                                  target.style.height = 'auto';
-                                  target.style.height = target.scrollHeight + 'px';
-                                }}
                                 onBlur={() => editNoteInTask(activeGoal.id, focusedTaskId!, note.id, editingNoteText)}
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -353,11 +345,6 @@ export function GoalsScreen({
                                 setNewNote(e.target.value);
                                 e.target.style.height = 'auto';
                                 e.target.style.height = e.target.scrollHeight + 'px';
-                              }}
-                              onInput={(e) => {
-                                const target = e.target as HTMLTextAreaElement;
-                                target.style.height = 'auto';
-                                target.style.height = target.scrollHeight + 'px';
                               }}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -505,8 +492,6 @@ function SimilarGoalsSection({
       });
 
       if (!res.ok) throw new Error('Failed to join group');
-      
-      // Navigate to community
       setCurrentScreen({ name: 'community', groupId });
     } catch (err) {
       handleFirestoreError(err, 'update', `groups/${groupId}/join`);
@@ -515,12 +500,13 @@ function SimilarGoalsSection({
     }
   };
 
+  // FIX: was sending { goal: { ...goal } } which the server rejects.
+  // Server's GroupAssignSchema expects { goalId: string }.
   const handleStartConversation = async (otherGoal: any) => {
     if (!auth.currentUser) return;
     setJoining(otherGoal.goalId);
     try {
       const idToken = await auth.currentUser.getIdToken();
-      // Use the group assignment API to create a cluster
       const res = await fetch("/api/groups/assign", {
         method: "POST",
         headers: { 
@@ -528,7 +514,7 @@ function SimilarGoalsSection({
           "Authorization": `Bearer ${idToken}`
         },
         body: JSON.stringify({
-          goal: { ...goal, embedding: goal.embedding }
+          goalId: goal.id
         })
       });
 
@@ -549,13 +535,11 @@ function SimilarGoalsSection({
 
   if (similarMatches.length === 0) return null;
 
-  // Check for very strong matches
   const strongMatch = similarMatches.find(m => m.similarityScore >= 0.90);
   const groupMatch = similarMatches.find(m => m.groupId);
 
   return (
     <div className="mb-12 space-y-6">
-      {/* Direct Connection Logic Prompts */}
       {strongMatch && !goal.groupId && (
         <div className="p-6 bg-white/5 border border-white/10 rounded-[2rem] flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-4">

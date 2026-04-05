@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, updateDoc, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, updateDoc } from 'firebase/firestore';
 import { Goal, GoalTask, User, Group } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -84,6 +84,10 @@ interface FirestoreErrorInfo {
 }
 
 import { useTranslation } from './contexts/LanguageContext';
+
+// FIX: groupsUnsubscribe is hoisted outside the effect so it can be
+// properly cleaned up on logout and on effect teardown.
+let groupsUnsubscribe: (() => void) | null = null;
 
 export default function App() {
   const { t, setLanguage, language } = useTranslation();
@@ -172,7 +176,9 @@ export default function App() {
           setOptimisticGoals(prev => prev.filter(og => !g.some(realG => realG.title === og.title && Math.abs(new Date(realG.createdAt).getTime() - new Date(og.createdAt).getTime()) < 5000)));
         }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
 
-        const groupsUnsubscribe = onSnapshot(collection(db, 'groups'), (snapshot) => {
+        // FIX: Use the hoisted groupsUnsubscribe variable so it can be
+        // cleaned up properly on logout and effect teardown.
+        groupsUnsubscribe = onSnapshot(collection(db, 'groups'), (snapshot) => {
           const grps = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Group));
           setGroups(grps);
         }, (err) => handleFirestoreError(err, OperationType.GET, 'groups'));
@@ -182,6 +188,11 @@ export default function App() {
         setCurrentScreen({ name: 'auth' });
         if (userUnsubscribe) userUnsubscribe();
         if (goalsUnsubscribe) goalsUnsubscribe();
+        // FIX: Clean up groups listener on logout
+        if (groupsUnsubscribe) {
+          groupsUnsubscribe();
+          groupsUnsubscribe = null;
+        }
       }
     });
 
@@ -189,54 +200,85 @@ export default function App() {
       unsubscribeAuth();
       if (userUnsubscribe) userUnsubscribe();
       if (goalsUnsubscribe) goalsUnsubscribe();
+      // FIX: Clean up groups listener on effect teardown
+      if (groupsUnsubscribe) {
+        groupsUnsubscribe();
+        groupsUnsubscribe = null;
+      }
     };
   }, []);
 
-  // Fetch all reminders for calendar
+  // FIX: Reminders effect completely rewritten.
+  // Old code used "await onSnapshot(...)" which is wrong — onSnapshot returns
+  // an unsubscribe function, not a Promise. It also created a nested onSnapshot
+  // with no cleanup, causing zombie listeners to stack on every calendar visit.
+  //
+  // New code: two separate onSnapshot calls, each properly cleaned up in the
+  // effect's return function. State is merged in a shared recompute function.
   useEffect(() => {
     if (!user || currentScreen.name !== 'calendar') return;
 
-    const fetchAllReminders = async () => {
-      try {
-        const tasksQuery = query(collectionGroup(db, 'tasks'), where('reminderAt', '!=', null));
-        const tasksSnap = await onSnapshot(tasksQuery, (snapshot) => {
-          const reminders: any[] = [];
-          snapshot.docs.forEach(taskDoc => {
-            const taskData = taskDoc.data() as GoalTask;
-            const goalId = taskDoc.ref.parent.parent?.id;
-            const goal = goals.find(g => g.id === goalId);
-            if (goal && taskData.reminderAt) {
-              reminders.push({ task: { id: taskDoc.id, ...taskData }, goal, reminderAt: taskData.reminderAt });
-            }
-          });
+    let latestTaskReminders: {task: GoalTask, goal: Goal, reminderAt: string}[] = [];
+    let latestNoteReminders: {task: GoalTask, goal: Goal, reminderAt: string, noteText: string}[] = [];
 
-          // Also fetch notes with reminders
-          const notesQuery = query(collectionGroup(db, 'notes'), where('reminderAt', '!=', null));
-          onSnapshot(notesQuery, (notesSnap) => {
-            notesSnap.docs.forEach(noteDoc => {
-              const noteData = noteDoc.data();
-              const taskRef = noteDoc.ref.parent.parent;
-              const goalRef = taskRef?.parent.parent;
-              const goal = goals.find(g => g.id === goalRef?.id);
-              if (goal && noteData.reminderAt) {
-                reminders.push({ 
-                  task: { id: taskRef?.id, text: 'Note Reminder' } as any, 
-                  goal, 
-                  reminderAt: noteData.reminderAt,
-                  noteText: noteData.text 
-                });
-              }
-            });
-            setAllReminders(reminders.sort((a, b) => new Date(a.reminderAt).getTime() - new Date(b.reminderAt).getTime()));
-          });
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.GET, 'reminders');
-      }
+    const recompute = () => {
+      const merged = [...latestTaskReminders, ...latestNoteReminders];
+      merged.sort((a, b) => new Date(a.reminderAt).getTime() - new Date(b.reminderAt).getTime());
+      setAllReminders(merged);
     };
 
-    fetchAllReminders();
-  }, [user, currentScreen, goals]);
+    const tasksQuery = query(
+      collectionGroup(db, 'tasks'),
+      where('reminderAt', '!=', null)
+    );
+
+    const unsubTasks = onSnapshot(tasksQuery, (snapshot) => {
+      latestTaskReminders = [];
+      snapshot.docs.forEach(taskDoc => {
+        const taskData = taskDoc.data() as GoalTask;
+        const goalId = taskDoc.ref.parent.parent?.id;
+        const goal = goals.find(g => g.id === goalId);
+        if (goal && taskData.reminderAt) {
+          latestTaskReminders.push({
+            task: { id: taskDoc.id, ...taskData },
+            goal,
+            reminderAt: taskData.reminderAt
+          });
+        }
+      });
+      recompute();
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
+
+    const notesQuery = query(
+      collectionGroup(db, 'notes'),
+      where('reminderAt', '!=', null)
+    );
+
+    const unsubNotes = onSnapshot(notesQuery, (notesSnap) => {
+      latestNoteReminders = [];
+      notesSnap.docs.forEach(noteDoc => {
+        const noteData = noteDoc.data();
+        const taskRef = noteDoc.ref.parent.parent;
+        const goalRef = taskRef?.parent.parent;
+        const goal = goals.find(g => g.id === goalRef?.id);
+        if (goal && noteData.reminderAt) {
+          latestNoteReminders.push({
+            task: { id: taskRef?.id, text: 'Note Reminder' } as any,
+            goal,
+            reminderAt: noteData.reminderAt,
+            noteText: noteData.text
+          });
+        }
+      });
+      recompute();
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/notes'));
+
+    // FIX: Both listeners are properly cleaned up when screen changes or user logs out.
+    return () => {
+      unsubTasks();
+      unsubNotes();
+    };
+  }, [user, currentScreen.name, goals]);
 
   const handleLogin = async () => {
     try {
@@ -284,7 +326,7 @@ export default function App() {
     updateOptimisticGoal(tempId, { savingStatus: 'saving' });
 
     try {
-      // Generate embedding first
+      // 1. Generate embedding
       let embedding: number[] | undefined;
       try {
         const idToken = await user.getIdToken();
@@ -304,6 +346,7 @@ export default function App() {
         console.error("Failed to generate embedding during save:", embErr);
       }
 
+      // 2. Save goal document
       const goalData = {
         ownerId: user.uid,
         title: structuredGoal.goalTitle,
@@ -328,6 +371,7 @@ export default function App() {
 
       const goalRef = await addDoc(collection(db, 'goals'), goalData);
       
+      // 3. Save tasks
       const batch = writeBatch(db);
       const allTasks = [...structuredGoal.suggestedTasks, ...manualTasks];
       
@@ -345,11 +389,11 @@ export default function App() {
       await batch.commit();
       updateOptimisticGoal(tempId, { savingStatus: 'success' });
 
-      // 3. Assign to group
+      // 4. Assign to group (server handles all writes — no client updateDoc needed)
       if (embedding) {
         try {
           const idToken = await user.getIdToken();
-          const assignRes = await fetch("/api/groups/assign", {
+          await fetch("/api/groups/assign", {
             method: "POST",
             headers: { 
               "Content-Type": "application/json",
@@ -359,28 +403,19 @@ export default function App() {
               goalId: goalRef.id
             })
           });
+          // FIX: Removed the duplicate client-side updateDoc that used to follow here.
+          // The server's /api/groups/assign already writes groupId, eligibleAt, and
+          // groupJoined atomically inside a transaction. The old client write was
+          // a non-transactional overwrite that could race with the server.
 
-          if (assignRes.ok) {
-            const assignData = await assignRes.json();
-            if (assignData.action === 'assigned' || assignData.action === 'create') {
-              if (assignData.groupId) {
-                await updateDoc(doc(db, 'goals', goalRef.id), { 
-                  groupId: assignData.groupId,
-                  eligibleAt: new Date().toISOString(),
-                  groupJoined: false
-                });
-              }
-            }
-          }
-
-          // 4. Precompute similarity
+          // 5. Precompute similarity
           try {
-            const idToken = await user.getIdToken();
+            const idToken2 = await user.getIdToken();
             await fetch("/api/goals/precompute", {
               method: "POST",
               headers: { 
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${idToken}`
+                "Authorization": `Bearer ${idToken2}`
               },
               body: JSON.stringify({
                 goalId: goalRef.id,

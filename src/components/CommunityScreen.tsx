@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Group, User } from '../types';
+import { User } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import { motion } from 'motion/react';
-import { MoreHorizontal, X, Users, Loader2, MessageCircle } from 'lucide-react';
+import { Users, Loader2, MessageCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { StreamChat } from 'stream-chat';
 import {
@@ -55,6 +54,7 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
         });
         if (!res.ok) throw new Error('Failed to fetch joined groups');
         const data = await res.json();
+        // FIX: data is { joinedGroups: [...] } — parse correctly
         const groups = data.joinedGroups || [];
         setJoinedGroups(groups);
         if (groups.length > 0 && !activeGroupId) {
@@ -71,7 +71,13 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
   }, [user]);
 
   // 2. Initialize Stream Chat
+  // FIX: Use a local `activeClient` variable inside the effect instead of
+  // reading from React state (chatClient) in the cleanup function.
+  // React state may not be set yet when cleanup runs if the component
+  // unmounts quickly, which would silently skip the disconnect call.
   useEffect(() => {
+    let activeClient: StreamChat | null = null;
+
     const initChat = async () => {
       try {
         const idToken = await user.getIdToken();
@@ -94,6 +100,9 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
           },
           token
         );
+
+        // Store in local variable first, then update state
+        activeClient = client;
         setChatClient(client);
       } catch (err) {
         console.error('Stream init error:', err);
@@ -106,8 +115,10 @@ export function CommunityScreen({ user, dbUser, handleFirestoreError, reportUser
     }
 
     return () => {
-      if (chatClient) {
-        chatClient.disconnectUser();
+      // FIX: Use the local variable — always reliable, never stale
+      if (activeClient) {
+        activeClient.disconnectUser().catch(console.error);
+        activeClient = null;
       }
     };
   }, [user, dbUser]);
