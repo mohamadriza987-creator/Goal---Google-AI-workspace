@@ -32,7 +32,7 @@ const firebaseApp =
 
 console.log("Admin SDK initialized. Project ID:", firebaseApp.options.projectId);
 
-const dbId = firebaseConfig.firestoreDatabaseId;
+const dbId = 'ai-studio-a88ce025-f109-4cce-bf43-4c096c19e5dd';
 const db = getFirestore(firebaseApp, dbId);
 
 console.log(`Firestore initialized for database: ${dbId}`);
