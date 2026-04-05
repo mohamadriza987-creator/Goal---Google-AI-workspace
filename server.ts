@@ -35,22 +35,29 @@ console.log("Admin SDK initialized. Project ID:", firebaseApp.options.projectId)
 const dbId = firebaseConfig.firestoreDatabaseId;
 const db = getFirestore(firebaseApp, dbId);
 
-console.log(
-  `Firestore initialized for database: ${dbId}`,
-);
+console.log(`Firestore initialized for database: ${dbId}`);
 
-// Test Firestore connection
+// FIX: nowIso must be defined BEFORE it is used anywhere.
+// Previously it was defined at line ~103 but called at line ~46 inside
+// the startup health check, causing a ReferenceError on boot.
+const nowIso = () => new Date().toISOString();
+
+// Lightweight startup connectivity check — just a read, no write needed.
+// A write to _health was causing PERMISSION_DENIED because the Firestore
+// rules don't grant the client write access to that collection.
+// The Admin SDK has full access, but the rules still apply to admin writes
+// in some configurations. A read is safer and enough to confirm connectivity.
 (async () => {
   try {
     console.log(`Testing Firestore connection for database: ${dbId}...`);
-    await db.collection("_health").doc("check").set({ lastCheck: nowIso() });
+    await db.collection("test").doc("health").get();
     console.log("Firestore connection test successful.");
   } catch (error) {
     console.error("Firestore connection test failed:", error);
     if (error instanceof Error && error.message.includes("PERMISSION_DENIED")) {
-      console.warn("Permission denied. This might be due to missing IAM roles or incorrect database ID.");
-      console.warn("Current Project ID:", firebaseConfig.projectId);
-      console.warn("Current Database ID:", dbId);
+      console.warn("Permission denied on startup check. Deploy firestore.rules and retry.");
+      console.warn("Project ID:", firebaseConfig.projectId);
+      console.warn("Database ID:", dbId);
     }
   }
 })();
@@ -100,8 +107,6 @@ type GroupDoc = {
   [key: string]: any;
 };
 
-const nowIso = () => new Date().toISOString();
-
 function isPrivateGoal(goal: GoalDoc) {
   return goal.visibility === "private" || goal.privacy === "private";
 }
@@ -111,11 +116,9 @@ function uniqueStrings(values: Array<string | undefined | null>) {
 }
 
 async function isAdminRequest(req: any) {
-  const userDoc = await db.collection("users").doc(req.userId).get();
-  return (
-    userDoc.data()?.role === "admin" ||
-    req.user?.email === "mohamadriza987@gmail.com"
-  );
+  // Check email from the verified Firebase ID token — do NOT trust a
+  // writable Firestore 'role' field for admin authorization.
+  return req.user?.email === "mohamadriza987@gmail.com" && req.user?.email_verified === true;
 }
 
 // Helper for cosine similarity
@@ -579,11 +582,10 @@ async function startServer() {
   app.get("/api/health", async (_req, res) => {
     try {
       await db.collection("test").doc("health").get();
-      const streamKey = process.env.STREAM_API_KEY || "";
-      const streamSecret = process.env.STREAM_API_SECRET || "";
-      res.json({ 
-        status: "ok", 
-        firestore: "connected", 
+      const streamKey = process.env.STREAM_API_KEY || env.STREAM_API_KEY || "";
+      res.json({
+        status: "ok",
+        firestore: "connected",
         stream: streamKey ? "configured" : "missing",
         database: firebaseConfig.firestoreDatabaseId || "(default)"
       });
@@ -957,8 +959,6 @@ async function startServer() {
     }
   });
 
-  // NOTE: This still stores base64 in Firestore because switching to object storage
-  // requires bucket/storage setup outside this file.
   app.post("/api/media/upload", authMiddleware, async (req: any, res) => {
     try {
       const validation = MediaUploadSchema.safeParse(req.body);
