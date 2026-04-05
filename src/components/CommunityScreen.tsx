@@ -142,10 +142,11 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="flex flex-col h-screen pb-20"
+      className="flex flex-col"
+      style={{ height: 'calc(100dvh - 80px)' }}
     >
-      {/* Header with group switcher */}
-      <div className="flex-shrink-0 px-4 pt-12 pb-3 border-b border-zinc-800 relative">
+      {/* Sticky header with group switcher */}
+      <div className="flex-shrink-0 px-4 pt-12 pb-3 border-b border-zinc-800 bg-black sticky top-0 z-10 relative">
         <button
           onClick={() => setShowDropdown(v => !v)}
           className="flex items-center gap-2 mx-auto"
@@ -159,7 +160,6 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
           )}
         </button>
 
-        {/* Dropdown to switch groups */}
         {showDropdown && joinedGroups.length > 1 && (
           <div className="absolute top-full left-4 right-4 z-50 mt-1 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
             {joinedGroups.map(g => (
@@ -178,14 +178,17 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
         )}
       </div>
 
-      {/* Full-screen chat */}
-      <div className="flex-1 overflow-hidden">
+      {/* Chat area — fills remaining height exactly, no overflow under nav */}
+      <div className="flex-1 min-h-0">
         {channel ? (
           <Chat client={chatClient} theme="str-chat__theme-dark">
             <Channel channel={channel}>
               <Window>
                 <MessageList />
-                <MessageInput focus />
+                <MessageInput
+                  audioRecordingEnabled
+                  focus
+                />
               </Window>
               <Thread />
             </Channel>
