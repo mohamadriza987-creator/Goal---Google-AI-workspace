@@ -523,7 +523,7 @@ export default function App() {
 
       {currentScreen.name !== 'auth' && (
         <motion.div 
-          className="fixed bottom-3 left-1/2 -translate-x-1/2 z-50 w-full max-w-[260px] px-4"
+          className="fixed bottom-3 left-1/2 -translate-x-1/2 z-50 w-full max-w-[320px] px-4"
           initial={false}
           animate={{ 
             y: isVisible ? 0 : 100,
@@ -536,15 +536,15 @@ export default function App() {
             damping: 30 
           }}
         >
-          <nav className="bg-zinc-900/70 backdrop-blur-2xl border border-white/5 rounded-full p-1 flex items-center justify-between shadow-[0_8px_24px_rgba(0,0,0,0.6)]">
+          <nav className="bg-zinc-900/70 backdrop-blur-2xl border border-white/5 rounded-full p-1.5 flex items-center justify-between shadow-[0_8px_24px_rgba(0,0,0,0.6)]">
             <NavButton 
               active={currentScreen.name === 'calendar'} 
-              icon={<CalendarIcon size={13} />} 
+              icon={<CalendarIcon size={18} />} 
               onClick={() => setCurrentScreen({ name: 'calendar' })} 
             />
             <NavButton 
               active={currentScreen.name === 'community'} 
-              icon={<Users size={13} />} 
+              icon={<Users size={18} />} 
               onClick={() => setCurrentScreen({ name: 'community' })} 
             />
             
@@ -552,13 +552,13 @@ export default function App() {
               <button
                 onClick={() => setCurrentScreen({ name: 'home' })}
                 className={cn(
-                  "group relative flex items-center justify-center w-8 h-8 rounded-full transition-all duration-500 shadow-xl",
+                  "group relative flex items-center justify-center w-11 h-11 rounded-full transition-all duration-500 shadow-xl",
                   currentScreen.name === 'home' 
                     ? "bg-white text-black scale-110" 
                     : "bg-zinc-800/90 text-zinc-400 hover:bg-zinc-700 hover:text-white"
                 )}
               >
-                <PandaIcon size={16} active={currentScreen.name === 'home'} />
+                <PandaIcon size={22} active={currentScreen.name === 'home'} />
                 {currentScreen.name === 'home' && (
                   <motion.div
                     layoutId="active-glow"
@@ -572,12 +572,12 @@ export default function App() {
 
             <NavButton 
               active={currentScreen.name === 'goals'} 
-              icon={<FootballIcon size={13} />} 
+              icon={<FootballIcon size={18} />} 
               onClick={() => setCurrentScreen({ name: 'goals' })} 
             />
             <NavButton 
               active={currentScreen.name === 'profile'} 
-              icon={<Settings size={13} />} 
+              icon={<Settings size={18} />} 
               onClick={() => setCurrentScreen({ name: 'profile' })} 
             />
           </nav>

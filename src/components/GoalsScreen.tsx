@@ -423,28 +423,40 @@ export function GoalsScreen({
         </div>
       ) : (
         <>
-          <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-6">
-            <h1 className="text-3xl font-bold tracking-tight">{t('myGoals')}</h1>
-            <div className="flex items-center gap-4">
-              <div className="flex bg-zinc-900 border border-zinc-800 p-1 rounded-2xl">
-                {(['all', 'health', 'learning', 'personal', 'business'] as const).map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setCategoryFilter(cat)}
-                    className={cn(
-                      "px-4 py-2 rounded-xl text-xs font-medium capitalize transition-all",
-                      categoryFilter === cat ? "bg-white text-black shadow-lg" : "text-zinc-500 hover:text-white"
-                    )}
-                  >
-                    {t(cat) || cat}
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setCurrentScreen('home')} className="p-3 bg-zinc-900 rounded-full border border-zinc-800 hover:bg-zinc-800">
-                <Plus size={24} />
-              </button>
-            </div>
-          </div>
+          <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-4">
+  <h1 className="text-3xl font-bold tracking-tight">{t('myGoals')}</h1>
+  <div className="flex items-center gap-3">
+    {/* Mobile: dropdown */}
+    <select
+      value={categoryFilter}
+      onChange={(e) => setCategoryFilter(e.target.value)}
+      className="md:hidden flex-1 bg-zinc-900 border border-zinc-800 rounded-2xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-zinc-600 capitalize"
+    >
+      {(['all', 'health', 'learning', 'personal', 'business'] as const).map((cat) => (
+        <option key={cat} value={cat}>{cat.charAt(0).toUpperCase() + cat.slice(1)}</option>
+      ))}
+    </select>
+    {/* Desktop: pills */}
+    <div className="hidden md:flex bg-zinc-900 border border-zinc-800 p-1 rounded-2xl">
+      {(['all', 'health', 'learning', 'personal', 'business'] as const).map((cat) => (
+        <button
+          key={cat}
+          onClick={() => setCategoryFilter(cat)}
+          className={cn(
+            "px-4 py-2 rounded-xl text-xs font-medium capitalize transition-all",
+            categoryFilter === cat ? "bg-white text-black shadow-lg" : "text-zinc-500 hover:text-white"
+          )}
+        >
+          {t(cat) || cat}
+        </button>
+      ))}
+    </div>
+    <button onClick={() => setCurrentScreen('home')} className="p-3 bg-zinc-900 rounded-full border border-zinc-800 hover:bg-zinc-800 flex-shrink-0">
+      <Plus size={24} />
+    </button>
+  </div>
+</div>
+
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {filteredGoals.map(goal => (
