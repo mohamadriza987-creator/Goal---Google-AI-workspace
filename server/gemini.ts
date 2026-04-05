@@ -79,8 +79,8 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDelay =
 export async function transcribeAudio(audioBase64: string, mimeType: string): Promise<string> {
   console.log(`Transcribing audio: ${mimeType}, size: ${audioBase64.length}`);
   
-  if (!process.env.gemfree) {
-    throw new Error("The 'gemfree' secret is not set in the environment");
+  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
+    throw new Error("The 'gemfree' or 'GEMINI_API_KEY' secret is not set in the environment");
   }
 
   const ai = getAI();
@@ -152,8 +152,8 @@ function cleanJson(text: string): string {
 export async function generateGoalFromTranscript(transcript: string, userContext?: UserContext): Promise<StructuredGoal> {
   console.log(`Generating goal from transcript: "${transcript.substring(0, 50)}..."`);
   
-  if (!process.env.gemfree) {
-    throw new Error("The 'gemfree' secret is not set in the environment");
+  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
+    throw new Error("The 'gemfree' or 'GEMINI_API_KEY' secret is not set in the environment");
   }
 
   const ai = getAI();
@@ -278,7 +278,7 @@ export async function normalizeGoal(goalData: { title: string, description: stri
   console.log(`Normalizing goal: "${goalData.title}"`);
   console.log(`User Context: ${JSON.stringify(userContext)}`);
   
-  if (!process.env.gemfree) {
+  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
     throw new Error("The 'gemfree' secret is not set in the environment");
   }
 
@@ -353,7 +353,7 @@ export async function normalizeGoal(goalData: { title: string, description: stri
 export async function generateEmbedding(text: string): Promise<number[]> {
   console.log(`Generating embedding for text: "${text.substring(0, 50)}..."`);
   
-  if (!process.env.gemfree) {
+  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
     throw new Error("The 'gemfree' secret is not set in the environment");
   }
 
@@ -373,7 +373,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 export async function generateGroupName(goals: { title: string, description: string }[]): Promise<string> {
   console.log(`Generating group name for ${goals.length} goals...`);
   
-  if (!process.env.gemfree) {
+  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
     throw new Error("The 'gemfree' secret is not set in the environment");
   }
 
@@ -407,7 +407,7 @@ export async function generateGroupName(goals: { title: string, description: str
 export async function structureGoalFromAudio(audioBase64: string, mimeType: string, userContext?: UserContext): Promise<StructuredGoal> {
   console.log(`Processing audio: ${mimeType}, size: ${audioBase64.length}, prefix: ${audioBase64.substring(0, 50)}...`);
   
-  if (!process.env.gemfree) {
+  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
     throw new Error("The 'gemfree' secret is not set in the environment");
   }
 
