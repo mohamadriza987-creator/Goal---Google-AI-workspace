@@ -17,6 +17,11 @@ import { z } from "zod";
 import { StreamChat } from "stream-chat";
 import fs from "fs";
 
+// Alias gemfree → GEMINI_API_KEY so both secret names work
+if (process.env.gemfree && !process.env.GEMINI_API_KEY) {
+  process.env.GEMINI_API_KEY = process.env.gemfree;
+}
+
 const configPath = path.join(process.cwd(), "firebase-applet-config.json");
 const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
