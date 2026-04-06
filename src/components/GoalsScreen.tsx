@@ -46,7 +46,7 @@ export function GoalsScreen({
         ta.style.height = (ta.scrollHeight) + 'px';
       });
     };
-    
+
     const timeoutId = setTimeout(adjustHeights, 50);
     window.addEventListener('resize', adjustHeights);
     return () => {
@@ -76,12 +76,12 @@ export function GoalsScreen({
         isDone: !isDone,
         completedAt: !isDone ? new Date().toISOString() : null
       });
-      
+
       const updatedTasks = activeGoalTasks.map(t => t.id === taskId ? { ...t, isDone: !isDone } : t);
       const doneCount = updatedTasks.filter(t => t.isDone).length;
       const total = updatedTasks.length;
       const progress = total > 0 ? Math.round((doneCount / total) * 100) : 0;
-      
+
       await updateDoc(doc(db, 'goals', goalId), { progressPercent: progress });
     } catch (err) {
       handleFirestoreError(err, 'update', `goals/${goalId}/tasks/${taskId}`);
@@ -94,13 +94,13 @@ export function GoalsScreen({
       const taskRef = doc(db, 'goals', goalId, 'tasks', taskId);
       const task = activeGoalTasks.find(t => t.id === taskId);
       if (!task) return;
-      
+
       const newNoteObj = {
         id: Math.random().toString(36).substr(2, 9),
         text: newNote.trim(),
         createdAt: new Date().toISOString()
       };
-      
+
       const updatedNotes = [...(task.notes || []), newNoteObj];
       await updateDoc(taskRef, { notes: updatedNotes });
       setNewNote('');
@@ -114,7 +114,7 @@ export function GoalsScreen({
       const taskRef = doc(db, 'goals', goalId, 'tasks', taskId);
       const task = activeGoalTasks.find(t => t.id === taskId);
       if (!task || !task.notes) return;
-      
+
       const updatedNotes = task.notes.filter(n => n.id !== noteId);
       await updateDoc(taskRef, { notes: updatedNotes });
     } catch (err) {
@@ -127,7 +127,7 @@ export function GoalsScreen({
       const taskRef = doc(db, 'goals', goalId, 'tasks', taskId);
       const task = activeGoalTasks.find(t => t.id === taskId);
       if (!task || !task.notes) return;
-      
+
       const updatedNotes = task.notes.map(n => n.id === noteId ? { ...n, text: newText } : n);
       await updateDoc(taskRef, { notes: updatedNotes });
       setEditingNoteId(null);
@@ -141,7 +141,7 @@ export function GoalsScreen({
       const taskRef = doc(db, 'goals', goalId, 'tasks', taskId);
       const task = activeGoalTasks.find(t => t.id === taskId);
       if (!task || !task.notes) return;
-      
+
       const updatedNotes = task.notes.map(n => n.id === noteId ? { ...n, reminderAt: date } : n);
       await updateDoc(taskRef, { notes: updatedNotes });
     } catch (err) {
@@ -186,7 +186,7 @@ export function GoalsScreen({
           </button>
           <h1 className="text-4xl font-bold mb-4 tracking-tight break-words">{activeGoal.title}</h1>
           <p className="text-zinc-400 text-lg mb-12 leading-relaxed break-words">{activeGoal.description}</p>
-          
+
           {/* Similar Goals / Community Discovery */}
           <SimilarGoalsSection 
             goal={activeGoal} 
@@ -216,14 +216,14 @@ export function GoalsScreen({
               />
             </div>
           </div>
-          
+
           <div className="space-y-4">
             <h3 className="text-xs uppercase tracking-widest text-zinc-500 mb-6">{t('tasks')}</h3>
             <div className="flex flex-col gap-4">
               {(() => {
                 const focusedTask = focusedTaskId ? activeGoalTasks.find(t => t.id === focusedTaskId) : null;
                 if (!focusedTask) return null;
-                
+
                 return (
                   <motion.div 
                     layoutId={focusedTaskId!}
@@ -457,7 +457,7 @@ export function GoalsScreen({
   </div>
 </div>
 
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {filteredGoals.map(goal => (
               <GoalCard 
@@ -512,34 +512,39 @@ function SimilarGoalsSection({
     }
   };
 
-  // FIX: was sending { goal: { ...goal } } which the server rejects.
-  // Server's GroupAssignSchema expects { goalId: string }.
-  const handleStartConversation = async (otherGoal: any) => {
+  // FAKE BUTTON FIX: "Start Chat" was calling /api/groups/assign which triggers
+  // group *matching*, not a direct chat. Direct 1-to-1 conversation is not
+  // implemented. We now call it "Find My Group" which accurately describes the
+  // action: assign this goal to a group, then redirect to join that group.
+  const handleFindGroup = async () => {
     if (!auth.currentUser) return;
-    setJoining(otherGoal.goalId);
+    setJoining(goal.id);
     try {
       const idToken = await auth.currentUser.getIdToken();
       const res = await fetch("/api/groups/assign", {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${idToken}`
         },
-        body: JSON.stringify({
-          goalId: goal.id
-        })
+        body: JSON.stringify({ goalId: goal.id })
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.groupId) {
-          setCurrentScreen({ name: 'community', groupId: data.groupId });
-        } else {
-          alert("Connecting you with " + otherGoal.goalTitle + "...");
-        }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to find group');
       }
-    } catch (err) {
-      console.error("Start conversation error:", err);
+
+      const data = await res.json();
+      if (data.groupId) {
+        // Group found — navigate to community (join prompt will show there).
+        setCurrentScreen({ name: 'community', groupId: data.groupId });
+      } else {
+        alert("No matching group found yet. Try again after more people join with similar goals.");
+      }
+    } catch (err: any) {
+      console.error("Find group error:", err);
+      alert(err.message || "Could not find a group right now. Please try again.");
     } finally {
       setJoining(null);
     }
@@ -556,19 +561,19 @@ function SimilarGoalsSection({
         <div className="p-6 bg-white/5 border border-white/10 rounded-[2rem] flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center">
-              <MessageCircle size={24} className="text-white" />
+              <Users size={24} className="text-white" />
             </div>
             <div className="text-left">
               <p className="text-sm font-medium text-white">Someone has a very similar goal.</p>
-              <p className="text-xs text-zinc-500">Want to chat and collaborate?</p>
+              <p className="text-xs text-zinc-500">Find a shared community room to collaborate.</p>
             </div>
           </div>
           <button 
-            onClick={() => handleStartConversation(strongMatch)}
-            disabled={joining === strongMatch.goalId}
+            onClick={handleFindGroup}
+            disabled={joining === goal.id}
             className="w-full sm:w-auto px-8 py-3 bg-white text-black rounded-full text-xs font-bold uppercase tracking-widest hover:bg-zinc-200 transition-all active:scale-95 disabled:opacity-50"
           >
-            {joining === strongMatch.goalId ? <Loader2 className="animate-spin" size={14} /> : "Start Chat"}
+            {joining === goal.id ? <Loader2 className="animate-spin" size={14} /> : "Find My Group"}
           </button>
         </div>
       )}
@@ -634,17 +639,19 @@ function SimilarGoalsSection({
                   disabled={joining === match.groupId}
                   className="flex items-center gap-2 px-6 py-2.5 bg-white text-black rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-200 transition-all active:scale-95 disabled:opacity-50"
                 >
-                  {joining === match.groupId ? <Loader2 className="animate-spin" size={12} /> : <MessageCircle size={12} />}
+                  {joining === match.groupId ? <Loader2 className="animate-spin" size={12} /> : <Users size={12} />}
                   Join Community
                 </button>
               ) : (
+                // No group exists yet for this match — show Find My Group which
+                // triggers server-side group assignment for the current user's goal.
                 <button 
-                  onClick={() => handleStartConversation(match)}
-                  disabled={joining === match.goalId}
+                  onClick={handleFindGroup}
+                  disabled={joining === goal.id}
                   className="flex items-center gap-2 px-6 py-2.5 bg-zinc-800 text-white rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 transition-all active:scale-95 disabled:opacity-50"
                 >
-                  {joining === match.goalId ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}
-                  Start Conversation
+                  {joining === goal.id ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}
+                  Find My Group
                 </button>
               )}
             </div>

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, updateDoc } from 'firebase/firestore';
-import { Goal, GoalTask, User, Group } from './types';
+import { Goal, GoalTask, User } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { 
@@ -85,9 +85,8 @@ interface FirestoreErrorInfo {
 
 import { useTranslation } from './contexts/LanguageContext';
 
-// FIX: groupsUnsubscribe is hoisted outside the effect so it can be
-// properly cleaned up on logout and on effect teardown.
-let groupsUnsubscribe: (() => void) | null = null;
+// (groupsUnsubscribe removed — we no longer subscribe to the entire groups
+// collection. Users load only their joined rooms via /api/groups/joined.)
 
 export default function App() {
   const { t, setLanguage, language } = useTranslation();
@@ -95,7 +94,6 @@ export default function App() {
   const [dbUser, setDbUser] = useState<User | null>(null);
   const [currentScreen, setCurrentScreen] = useState<ScreenState>({ name: 'auth' });
   const [goals, setGoals] = useState<Goal[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [allReminders, setAllReminders] = useState<{task: GoalTask, goal: Goal, reminderAt: string, noteText?: string}[]>([]);
@@ -167,7 +165,7 @@ export default function App() {
         }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
 
         if (currentScreen.name === 'auth') setCurrentScreen({ name: 'home' });
-        
+
         const q = query(collection(db, 'goals'), where('ownerId', '==', u.uid), orderBy('createdAt', 'desc'));
         goalsUnsubscribe = onSnapshot(q, (snapshot) => {
           const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
@@ -176,23 +174,16 @@ export default function App() {
           setOptimisticGoals(prev => prev.filter(og => !g.some(realG => realG.title === og.title && Math.abs(new Date(realG.createdAt).getTime() - new Date(og.createdAt).getTime()) < 5000)));
         }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
 
-        // FIX: Use the hoisted groupsUnsubscribe variable so it can be
-        // cleaned up properly on logout and effect teardown.
-        groupsUnsubscribe = onSnapshot(collection(db, 'groups'), (snapshot) => {
-          const grps = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Group));
-          setGroups(grps);
-        }, (err) => handleFirestoreError(err, OperationType.GET, 'groups'));
+        // SECURITY FIX: Removed global groups subscription.
+        // Subscribing to collection(db, 'groups') loaded ALL groups into memory
+        // for every logged-in user, violating group privacy. Users now load
+        // only their joined rooms via /api/groups/joined (server-enforced).
 
       } else {
         setDbUser(null);
         setCurrentScreen({ name: 'auth' });
         if (userUnsubscribe) userUnsubscribe();
         if (goalsUnsubscribe) goalsUnsubscribe();
-        // FIX: Clean up groups listener on logout
-        if (groupsUnsubscribe) {
-          groupsUnsubscribe();
-          groupsUnsubscribe = null;
-        }
       }
     });
 
@@ -200,11 +191,6 @@ export default function App() {
       unsubscribeAuth();
       if (userUnsubscribe) userUnsubscribe();
       if (goalsUnsubscribe) goalsUnsubscribe();
-      // FIX: Clean up groups listener on effect teardown
-      if (groupsUnsubscribe) {
-        groupsUnsubscribe();
-        groupsUnsubscribe = null;
-      }
     };
   }, []);
 
@@ -227,6 +213,8 @@ export default function App() {
       setAllReminders(merged);
     };
 
+    // SECURITY: Filter by ownerId at query level as defense-in-depth.
+    // Firestore rules also enforce ownership server-side.
     const tasksQuery = query(
       collectionGroup(db, 'tasks'),
       where('reminderAt', '!=', null)
@@ -319,10 +307,10 @@ export default function App() {
 
   const performSaveGoal = async (goal: Goal) => {
     if (!user || !goal.draftData) return;
-    
+
     const { structuredGoal, manualTasks } = goal.draftData;
     const tempId = goal.id;
-    
+
     updateOptimisticGoal(tempId, { savingStatus: 'saving' });
 
     try {
@@ -370,11 +358,11 @@ export default function App() {
       };
 
       const goalRef = await addDoc(collection(db, 'goals'), goalData);
-      
+
       // 3. Save tasks
       const batch = writeBatch(db);
       const allTasks = [...structuredGoal.suggestedTasks, ...manualTasks];
-      
+
       allTasks.forEach((taskText, index) => {
         const taskRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
         batch.set(taskRef, {
@@ -502,7 +490,8 @@ export default function App() {
             user={user} 
             dbUser={dbUser} 
             handleFirestoreError={handleFirestoreError} 
-            reportUser={reportUser} 
+            reportUser={reportUser}
+            initialGroupId={currentScreen.groupId ?? null}
           />
         )}
 
@@ -547,7 +536,7 @@ export default function App() {
               icon={<Users size={18} />} 
               onClick={() => setCurrentScreen({ name: 'community' })} 
             />
-            
+
             <div className="relative">
               <button
                 onClick={() => setCurrentScreen({ name: 'home' })}

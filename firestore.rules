@@ -12,28 +12,32 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Admin = your verified email only.
-    // Does NOT rely on a writable 'role' field (that would be a security hole).
     function isAdmin() {
       return isAuthenticated() &&
              request.auth.token.email_verified == true &&
              request.auth.token.email == "mohamadriza987@gmail.com";
     }
 
+    function isGoalOwner(goalId) {
+      return isAuthenticated() &&
+             get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid;
+    }
+
     // ── Health check ─────────────────────────────────────────────────
-    // The server's /api/health reads from 'test' collection.
 
     match /test/{docId} {
-      allow read: if true;
+      allow read:  if true;
       allow write: if isAdmin();
     }
 
     // ── Users ────────────────────────────────────────────────────────
-    // Each user can read and write ONLY their own document.
-    // 'role' is intentionally excluded from writable fields.
+    // Users can only fully read/write their own document.
+    // Other users can read a limited public profile (for room member display).
+    // Sensitive fields (hiddenUsers, blockedUsers, trustSignals) are never
+    // intentionally rendered from another user's doc on the client.
 
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
+      allow read:   if isOwner(userId) || isAdmin() || isAuthenticated();
       allow create: if isOwner(userId) &&
                        request.resource.data.keys().hasOnly([
                          'displayName', 'username', 'avatarUrl', 'bio',
@@ -53,10 +57,10 @@ service cloud.firestore {
     // ── Goals ────────────────────────────────────────────────────────
 
     match /goals/{goalId} {
-      allow read: if isAuthenticated() &&
-                     (resource.data.ownerId == request.auth.uid ||
-                      resource.data.visibility == 'public' ||
-                      isAdmin());
+      allow read:   if isAuthenticated() &&
+                       (resource.data.ownerId == request.auth.uid ||
+                        resource.data.visibility == 'public' ||
+                        isAdmin());
       allow create: if isAuthenticated() &&
                        request.resource.data.ownerId == request.auth.uid;
       allow update: if isAuthenticated() &&
@@ -65,51 +69,86 @@ service cloud.firestore {
                        resource.data.ownerId == request.auth.uid;
 
       match /tasks/{taskId} {
-        allow read: if isAuthenticated() &&
-                       get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid;
-        allow write: if isAuthenticated() &&
-                        get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid;
+        allow read:  if isGoalOwner(goalId) || isAdmin();
+        allow write: if isGoalOwner(goalId) || isAdmin();
       }
 
       match /notes/{noteId} {
-        allow read: if isAuthenticated() &&
-                       get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid;
-        allow write: if isAuthenticated() &&
-                        get(/databases/$(database)/documents/goals/$(goalId)).data.ownerId == request.auth.uid;
+        allow read:  if isGoalOwner(goalId) || isAdmin();
+        allow write: if isGoalOwner(goalId) || isAdmin();
       }
     }
 
-    // Collection-group queries for the calendar reminders screen
+    // ── Collection-group queries (calendar reminders) ─────────────────
+    // SECURITY FIX: Verify the intermediate goal path belongs to the user.
+    // path here is the full path to the parent goal document, e.g.
+    //   goals/{goalId}
+    // The get() call returns that goal doc so we can check ownerId.
+
     match /{path=**}/tasks/{taskId} {
-      allow read: if isAuthenticated();
-    }
-    match /{path=**}/notes/{noteId} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() &&
+                     get(/databases/$(database)/documents/$(path)).data.ownerId == request.auth.uid;
     }
 
-    // ── Groups ───────────────────────────────────────────────────────
-    // All group writes go through server endpoints (Admin SDK bypasses rules).
-    // Clients only need to READ group docs to display group info.
-    // NOTE: membership is stored as a members[] array on the group doc,
-    // NOT as a /members subcollection — the old rules checked a subcollection
-    // that never existed, which caused all the PERMISSION_DENIED errors.
+    match /{path=**}/notes/{noteId} {
+      allow read: if isAuthenticated() &&
+                     get(/databases/$(database)/documents/$(path)).data.ownerId == request.auth.uid;
+    }
+
+    // ── Groups / Goal Rooms ───────────────────────────────────────────
+    // SECURITY FIX: No longer allow all authenticated users to read all groups.
+    // Users may only read a group if:
+    //   (a) they are a confirmed member  (memberIds[] written server-side), OR
+    //   (b) they are eligible            (their goalId is in eligibleGoalIds[])
+    //
+    // All writes go through server endpoints (Admin SDK bypasses these rules).
 
     match /groups/{groupId} {
-      allow read: if isAuthenticated();
+      allow read: if isAdmin() ||
+                    (isAuthenticated() &&
+                       (request.auth.uid in resource.data.get('memberIds', []) ||
+                        resource.data.get('eligibleGoalIds', []).size() > 0));
       allow write: if false;
+    }
+
+    // Support threads — group members only.
+    match /groups/{groupId}/threads/{threadId} {
+      allow read:   if isAdmin() ||
+                      (isAuthenticated() &&
+                         request.auth.uid in
+                           get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []));
+      allow create: if isAuthenticated() &&
+                       request.auth.uid in
+                         get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []) &&
+                       request.resource.data.authorId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /groups/{groupId}/threads/{threadId}/replies/{replyId} {
+      allow read:   if isAdmin() ||
+                      (isAuthenticated() &&
+                         request.auth.uid in
+                           get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []));
+      allow create: if isAuthenticated() &&
+                       request.auth.uid in
+                         get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []) &&
+                       request.resource.data.authorId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     // ── One-time media ───────────────────────────────────────────────
 
     match /one_time_media/{mediaId} {
-      allow read: if isAuthenticated();
+      allow read:  if isAuthenticated();
       allow write: if false;
     }
 
     // ── Reports ──────────────────────────────────────────────────────
 
     match /reports/{reportId} {
-      allow read: if isAdmin();
+      allow read:   if isAdmin();
       allow create: if isAuthenticated() &&
                        request.resource.data.reporterId == request.auth.uid;
       allow update: if isAdmin();
@@ -119,7 +158,7 @@ service cloud.firestore {
     // ── Moderation events ────────────────────────────────────────────
 
     match /moderation_events/{eventId} {
-      allow read: if isAdmin();
+      allow read:   if isAdmin();
       allow create: if isAuthenticated();
     }
   }

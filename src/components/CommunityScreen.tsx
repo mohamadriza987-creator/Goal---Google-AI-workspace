@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import { motion } from 'motion/react';
-import { Users, Loader2, ChevronDown } from 'lucide-react';
+import { Users, Loader2, ChevronDown, Flag } from 'lucide-react';
 import { StreamChat } from 'stream-chat';
 import {
   Chat,
@@ -20,6 +20,8 @@ interface CommunityScreenProps {
   dbUser: User | null;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
   reportUser: (reportedUserId: string, messageId: string, reason: string) => Promise<void>;
+  /** When set, open this specific room immediately instead of defaulting to first. */
+  initialGroupId: string | null;
 }
 
 interface JoinedGroup {
@@ -30,14 +32,17 @@ interface JoinedGroup {
   memberCount: number;
 }
 
-export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
+export function CommunityScreen({ user, dbUser, initialGroupId }: CommunityScreenProps) {
   const { t } = useTranslation();
-  const [joinedGroups, setJoinedGroups] = useState<JoinedGroup[]>([]);
+  const [joinedGroups, setJoinedGroups]   = useState<JoinedGroup[]>([]);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
-  const [chatClient, setChatClient] = useState<StreamChat | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [chatClient, setChatClient]       = useState<StreamChat | null>(null);
+  const [loading, setLoading]             = useState(true);
+  const [showDropdown, setShowDropdown]   = useState(false);
+  const [reportingMsg, setReportingMsg]   = useState<string | null>(null);
+  const initialGroupIdRef                 = useRef(initialGroupId);
 
+  // ── Fetch the user's joined rooms ───────────────────────────────────
   useEffect(() => {
     const fetchJoined = async () => {
       try {
@@ -47,9 +52,24 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
         });
         if (!res.ok) throw new Error('Failed to fetch joined groups');
         const data = await res.json();
-        const groups = data.joinedGroups || [];
+        const groups: JoinedGroup[] = data.joinedGroups || [];
         setJoinedGroups(groups);
-        if (groups.length > 0) setActiveGroupId(groups[0].groupId);
+
+        if (groups.length === 0) return;
+
+        // ROOM ROUTING FIX: If a specific room was requested (e.g. user just
+        // joined from the goal card), open that exact room. Only fall back to
+        // the first room if no explicit roomId was provided.
+        const requested = initialGroupIdRef.current;
+        if (requested && groups.some(g => g.groupId === requested)) {
+          setActiveGroupId(requested);
+        } else {
+          // No specific room requested — default to the most-recently-joined room.
+          const sorted = [...groups].sort(
+            (a, b) => new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime()
+          );
+          setActiveGroupId(sorted[0].groupId);
+        }
       } catch (err) {
         console.error(err);
       } finally {
@@ -59,6 +79,7 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
     fetchJoined();
   }, [user]);
 
+  // ── Initialise Stream Chat client ──────────────────────────────────
   useEffect(() => {
     let activeClient: StreamChat | null = null;
 
@@ -103,6 +124,32 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
     };
   }, [user, dbUser]);
 
+  // ── Report a Stream message ────────────────────────────────────────
+  const handleReportMessage = async (messageId: string, authorId: string) => {
+    if (!activeGroupId) return;
+    try {
+      const idToken = await user.getIdToken();
+      await fetch('/api/moderation/report', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          groupId:  activeGroupId,
+          threadId: messageId,   // using messageId as threadId for Stream messages
+          authorId,
+          reason:   'Reported by member',
+        })
+      });
+      setReportingMsg(null);
+      alert('Message reported. Our moderators will review it.');
+    } catch (err) {
+      console.error('Report error:', err);
+    }
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-screen">
@@ -136,7 +183,11 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
   }
 
   const activeGroup = joinedGroups.find(g => g.groupId === activeGroupId);
-  const channel = activeGroupId ? chatClient.channel('messaging', activeGroupId) : null;
+  // Only create a channel object when we have a confirmed groupId that belongs
+  // to this user's joined list. Never expose a channel for an arbitrary ID.
+  const channel = activeGroupId && activeGroup
+    ? chatClient.channel('messaging', activeGroupId)
+    : null;
 
   return (
     <motion.div
@@ -178,8 +229,8 @@ export function CommunityScreen({ user, dbUser }: CommunityScreenProps) {
         )}
       </div>
 
-      {/* Chat area — fills remaining height exactly, no overflow under nav */}
-      <div className="flex-1 min-h-0">
+      {/* Chat area */}
+      <div className="flex-1 min-h-0 relative">
         {channel ? (
           <Chat client={chatClient} theme="str-chat__theme-dark">
             <Channel channel={channel}>

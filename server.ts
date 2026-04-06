@@ -17,11 +17,6 @@ import { z } from "zod";
 import { StreamChat } from "stream-chat";
 import fs from "fs";
 
-// Alias gemfree → GEMINI_API_KEY so both secret names work
-if (process.env.gemfree && !process.env.GEMINI_API_KEY) {
-  process.env.GEMINI_API_KEY = process.env.gemfree;
-}
-
 const configPath = path.join(process.cwd(), "firebase-applet-config.json");
 const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
@@ -100,6 +95,9 @@ type GroupDoc = {
     userId: string;
     joinedAt: string;
   }>;
+  // Flat userId set — kept in sync with members[] by server routes.
+  // Used by Firestore security rules for cheap membership checks.
+  memberIds?: string[];
   eligibleGoalIds?: string[];
   matchingCriteria?: {
     category?: string;
@@ -714,6 +712,13 @@ async function startServer() {
       }
 
       const { goalId, embedding } = validation.data;
+
+      // SECURITY: Verify the goal belongs to the requesting user before precomputing.
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists || goalDoc.data()?.ownerId !== req.userId) {
+        return res.status(403).json({ error: "Forbidden: goal does not belong to you" });
+      }
+
       const matches = await computeAndStoreSimilarGoals(goalId, embedding, req.userId);
       res.json({ success: true, matches });
     } catch (error: any) {
@@ -809,6 +814,13 @@ async function startServer() {
       }
 
       const { goalId } = validation.data;
+
+      // SECURITY: Verify the goal belongs to the requesting user.
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists || goalDoc.data()?.ownerId !== req.userId) {
+        return res.status(403).json({ error: "Forbidden: goal does not belong to you" });
+      }
+
       const result = await findOrCreateGroupForGoal(goalId);
 
       if (result) {
@@ -834,39 +846,61 @@ async function startServer() {
       const { goalId, groupId } = validation.data;
       const userId = req.userId;
 
+      // SECURITY: Verify the goal belongs to the requesting user AND is assigned
+      // to this exact group. Prevents users from joining rooms for others' goals.
       const goalDoc = await db.collection("goals").doc(goalId).get();
-      if (!goalDoc.exists || goalDoc.data()?.ownerId !== userId || goalDoc.data()?.groupId !== groupId) {
+      if (
+        !goalDoc.exists ||
+        goalDoc.data()?.ownerId !== userId ||
+        goalDoc.data()?.groupId !== groupId
+      ) {
         return res.status(403).json({ error: "Not eligible for this group" });
       }
 
       const groupRef = db.collection("groups").doc(groupId);
-      const goalRef = db.collection("goals").doc(goalId);
+      const goalRef  = db.collection("goals").doc(goalId);
 
       await db.runTransaction(async (transaction) => {
         const gDoc = await transaction.get(groupRef);
         if (!gDoc.exists) throw new Error("Group not found");
 
         const gData = gDoc.data() as GroupDoc;
-        const members = gData.members || [];
+        const members        = gData.members        || [];
         const eligibleGoalIds = gData.eligibleGoalIds || [];
+        // memberIds is a flat string[] we maintain alongside members[] so that
+        // Firestore security rules can do cheap `request.auth.uid in memberIds`
+        // without an expensive cross-document get().
+        const memberIds: string[] = gData.memberIds || [];
+
         const alreadyMember = members.some((m) => m.goalId === goalId);
 
+        // SECURITY: eligibleGoalIds is server-written — clients cannot spoof it.
         if (!eligibleGoalIds.includes(goalId)) {
           throw new Error("Goal is not eligible for this group");
         }
 
-        if (!alreadyMember) {
-          const currentMemberCount = typeof gData.memberCount === "number" ? gData.memberCount : members.length;
-          if (typeof gData.maxMembers === "number" && currentMemberCount >= gData.maxMembers) {
-            throw new Error("Group is full");
-          }
+        if (alreadyMember) {
+          // Already joined — idempotent success, no double-write.
+          return;
+        }
 
+        const currentMemberCount =
+          typeof gData.memberCount === "number" ? gData.memberCount : members.length;
+        if (typeof gData.maxMembers === "number" && currentMemberCount >= gData.maxMembers) {
+          throw new Error("Group is full");
+        }
+
+        // Write both the rich members[] entry AND the flat memberIds[] set
+        // so Firestore rules can verify membership cheaply.
+        if (!memberIds.includes(userId)) {
           transaction.update(groupRef, {
             members: admin.firestore.FieldValue.arrayUnion({
               goalId,
               userId,
               joinedAt: nowIso(),
             }),
+            // Flat userId set — used by Firestore security rules.
+            memberIds: admin.firestore.FieldValue.arrayUnion(userId),
             memberCount: admin.firestore.FieldValue.increment(1),
           });
         }
@@ -877,7 +911,7 @@ async function startServer() {
         });
       });
 
-      const apiKey = process.env.STREAM_API_KEY || env.STREAM_API_KEY;
+      const apiKey    = process.env.STREAM_API_KEY    || env.STREAM_API_KEY;
       const apiSecret = process.env.STREAM_API_SECRET || env.STREAM_API_SECRET;
 
       if (apiKey && apiSecret) {
@@ -890,6 +924,13 @@ async function startServer() {
       res.json({ success: true, groupId });
     } catch (error: any) {
       console.error("Join group error:", error);
+      // Surface eligibility/full errors as 403 instead of 500.
+      const clientMsg = ["Goal is not eligible", "Group is full", "Not eligible"].some(
+        (s) => error.message?.includes(s)
+      );
+      if (clientMsg) {
+        return res.status(403).json({ error: error.message });
+      }
       res.status(500).json({ error: "Failed to join group", details: error.message });
     }
   });
@@ -1069,12 +1110,103 @@ async function startServer() {
     }
   });
 
-  app.post("/api/groups/match", authMiddleware, async (_req: any, res) => {
-    res.json({ success: true, message: "Matching logic triggered" });
+  // NOTE: /api/groups/match is intentionally removed — it was a no-op stub
+  // that returned success without doing anything. Group matching runs
+  // server-side automatically after goal precompute.
+
+  // ── Moderation ──────────────────────────────────────────────────────
+  // Record a moderation signal (hide/block) from the client.
+  // Hidden users are stored on the *reporter's* own user doc (client-writable).
+  // Blocked users trigger an additional moderation_events write here.
+
+  const ModerationSignalSchema = z.object({
+    targetUserId: z.string().min(1),
+    action: z.enum(["hide", "block", "report"]),
+    context: z.string().max(200).optional(),
   });
 
-  app.post("/api/moderation/signal", authMiddleware, async (_req: any, res) => {
-    res.json({ success: true });
+  app.post("/api/moderation/signal", authMiddleware, async (req: any, res) => {
+    try {
+      const validation = ModerationSignalSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+      }
+
+      const { targetUserId, action, context } = validation.data;
+      const userId = req.userId;
+
+      if (targetUserId === userId) {
+        return res.status(400).json({ error: "Cannot moderate yourself" });
+      }
+
+      await db.collection("moderation_events").add({
+        reporterId: userId,
+        targetUserId,
+        action,
+        context: context || null,
+        createdAt: nowIso(),
+        status: "pending",
+      });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Moderation signal error:", error);
+      res.status(500).json({ error: "Failed to record moderation signal" });
+    }
+  });
+
+  // ── Reports (threads / replies) ──────────────────────────────────────
+  // Authenticated users can report content inside rooms they are a member of.
+
+  const ReportContentSchema = z.object({
+    groupId:    z.string().min(1),
+    threadId:   z.string().min(1),
+    replyId:    z.string().optional(),
+    authorId:   z.string().min(1),
+    reason:     z.string().min(1).max(500),
+  });
+
+  app.post("/api/moderation/report", authMiddleware, async (req: any, res) => {
+    try {
+      const validation = ReportContentSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+      }
+
+      const { groupId, threadId, replyId, authorId, reason } = validation.data;
+      const userId = req.userId;
+
+      // SECURITY: Confirm the reporter is actually a member of this group.
+      const groupDoc = await db.collection("groups").doc(groupId).get();
+      if (!groupDoc.exists) {
+        return res.status(404).json({ error: "Group not found" });
+      }
+      const memberIds: string[] = groupDoc.data()?.memberIds || [];
+      if (!memberIds.includes(userId)) {
+        return res.status(403).json({ error: "You are not a member of this group" });
+      }
+
+      // Cannot report your own content.
+      if (authorId === userId) {
+        return res.status(400).json({ error: "Cannot report your own content" });
+      }
+
+      await db.collection("reports").add({
+        reporterId:  userId,
+        reportedUserId: authorId,
+        groupId,
+        threadId,
+        replyId:     replyId || null,
+        reason,
+        createdAt:   nowIso(),
+        status:      "pending",
+      });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Report content error:", error);
+      res.status(500).json({ error: "Failed to submit report" });
+    }
   });
 
   app.get("/api/admin/reports", authMiddleware, async (req: any, res) => {
