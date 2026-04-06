@@ -1247,7 +1247,13 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        // Disable HMR WebSocket server — port 24678 conflicts on Replit
+        // causing an unhandled error that crashes the entire process.
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
