@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { auth, db, googleProvider } from './firebase';
+import { auth, db, googleProvider } from '../firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, updateDoc } from 'firebase/firestore';
-import { Goal, GoalTask, User } from './types';
+import { Goal, GoalTask, User } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Home, Activity, UserCircle2 } from 'lucide-react';

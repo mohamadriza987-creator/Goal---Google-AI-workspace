@@ -12,6 +12,7 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder';
 interface HomeScreenProps {
   user: any;
   dbUser: User | null;
+  goals: Goal[];                             // passed from App — used by new home screen
   setCurrentScreen: (screen: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
   addOptimisticGoal: (goal: Goal) => void;
@@ -65,11 +66,11 @@ export function HomeScreen({
         ta.style.height = (ta.scrollHeight) + 'px';
       });
     };
-    
+
     if (currentView === 'review') {
       // Use a small timeout to ensure DOM is ready and styles are applied
       const timeoutId = setTimeout(adjustHeights, 50);
-      
+
       window.addEventListener('resize', adjustHeights);
       return () => {
         clearTimeout(timeoutId);
@@ -82,11 +83,11 @@ export function HomeScreen({
     setLoading(true);
     setProcessingState('transcribing');
     setProcessingError(null);
-    
+
     if (!isRefinement) {
       setCurrentTranscript(null);
     }
-    
+
     try {
       const reader = new FileReader();
       const base64Promise = new Promise<string>((resolve) => {
@@ -102,7 +103,7 @@ export function HomeScreen({
 
       // Step 1: Transcription
       const transcript = await transcribeAudio(base64Audio, blob.type, idToken);
-      
+
       if (isRefinement) {
         const combinedTranscript = `${currentTranscript}\n\nAdditional details: ${transcript}`;
         setCurrentTranscript(combinedTranscript);
@@ -124,7 +125,7 @@ export function HomeScreen({
     setLoading(true);
     setProcessingState('generating');
     setProcessingError(null);
-    
+
     try {
       const userContext = {
         age: dbUser?.age,
@@ -133,7 +134,7 @@ export function HomeScreen({
 
       const token = idToken || await user.getIdToken();
       const structured = await generateGoalFromTranscript(transcript, token, userContext);
-      
+
       // Update app language based on detected language
       if (structured.language) {
         const langCode = mapLanguageNameToCode(structured.language);
@@ -208,11 +209,11 @@ export function HomeScreen({
 
   const saveGoal = async () => {
     if (!user || !structuredGoal || isSaving) return;
-    
+
     setIsSaving(true);
     const tempId = `temp-${Date.now()}`;
     const createdAt = new Date().toISOString();
-    
+
     const optimisticGoal: Goal = {
       id: tempId,
       ownerId: user.uid,
@@ -241,13 +242,13 @@ export function HomeScreen({
 
     // Optimistically add to UI
     addOptimisticGoal(optimisticGoal);
-    
+
     // Navigate immediately
     setCurrentScreen('goals');
-    
+
     try {
       await performSaveGoal(optimisticGoal);
-      
+
       // Clear draft since it's saved
       setStructuredGoal(null);
       setManualTasks([]);
@@ -274,7 +275,7 @@ export function HomeScreen({
     const newTasks = isSelected 
       ? structuredGoal.suggestedTasks.filter(t => t !== task)
       : [...structuredGoal.suggestedTasks, task];
-    
+
     setStructuredGoal({
       ...structuredGoal,
       suggestedTasks: newTasks
@@ -313,7 +314,7 @@ export function HomeScreen({
                 onClick={handlePandaClick} 
                 className="w-64 h-64"
               />
-              
+
               <motion.div
                 key={isRecording ? 'recording' : isTyping ? 'typing' : 'idle'}
                 initial={{ opacity: 0, y: 10 }}
@@ -390,7 +391,7 @@ export function HomeScreen({
                 )}
               </motion.div>
             </div>
-            
+
             {(loading || recorderError || processingError) && (
               <motion.div
                 initial={{ opacity: 0 }}
@@ -457,7 +458,7 @@ export function HomeScreen({
                     {t('discard')}
                   </button>
                 </div>
-                
+
                 <div className="space-y-8">
                   <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
                     <div className="flex items-center justify-between">
@@ -521,7 +522,7 @@ export function HomeScreen({
                         </div>
                       )}
                     </div>
-                    
+
                     {!isAddingDetails && refinementCount < REFINEMENT_LIMIT && (
                       <div className="flex flex-wrap items-center gap-4 pt-2">
                         <button 
@@ -579,7 +580,7 @@ export function HomeScreen({
                               )}
                             </div>
                           </div>
-                          
+
                           <div className="flex justify-end">
                             <button 
                               onClick={() => {
@@ -631,7 +632,7 @@ export function HomeScreen({
                       className="text-xl text-zinc-400 bg-transparent border-none focus:ring-0 w-full p-0 leading-relaxed resize-none overflow-hidden min-h-[6rem]"
                     />
                   </div>
-                  
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div>
                       <label className="text-xs uppercase tracking-widest text-zinc-500 mb-4 block">{t('suggestedTasks')}</label>
@@ -747,7 +748,7 @@ export function HomeScreen({
                             </div>
                           </div>
                         ))}
-                        
+
                         <div className="flex items-start gap-2 mt-4">
                           <textarea
                             placeholder={t('addNote') + "..."}
