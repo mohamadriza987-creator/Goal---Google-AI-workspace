@@ -9,13 +9,13 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
-  doc, updateDoc, addDoc, increment, serverTimestamp,
-  getDoc,
+  doc, updateDoc, addDoc, increment,
 } from 'firebase/firestore';
-import { auth } from '../firebase';
+import { PeopleTab } from './PeopleTab';
+import { NotesTab }  from './NotesTab';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -637,7 +637,7 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   // Join flow
   const [joining, setJoining] = useState(false);
 
-  const { groupId, groupJoined, eligibleAt } = goal as any;
+  const { groupId, groupJoined } = goal as any;
 
   useEffect(() => {
     if (!groupId || !groupJoined) { setLoading(false); return; }
@@ -818,22 +818,6 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stub Tab
-// ─────────────────────────────────────────────────────────────────────────────
-
-function StubTab({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
-      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-        {icon}
-      </div>
-      <p className="text-card-title mb-2">{title}</p>
-      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>{subtitle}</p>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main
@@ -924,13 +908,11 @@ export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentSc
             {activeTab === 'goal-room' && <GoalRoomTab goal={goal} user={user} />}
 
             {activeTab === 'people' && (
-              <StubTab icon={<Users size={22} style={{ color: 'var(--c-gold)' }} />}
-                title="People" subtitle="People on a similar path. Coming in the next build." />
+              <PeopleTab goal={goal} user={user} setCurrentScreen={setCurrentScreen} />
             )}
 
             {activeTab === 'notes' && (
-              <StubTab icon={<BookOpen size={22} style={{ color: 'var(--c-gold)' }} />}
-                title="Notes" subtitle="Your private and shared notes. Coming in the next build." />
+              <NotesTab goal={goal} user={user} />
             )}
 
           </motion.div>

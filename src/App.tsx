@@ -363,7 +363,7 @@ export default function App() {
         {/* ACTIVITY */}
         {currentScreen.name === 'activity' && (
           <motion.div key="activity" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <ActivityScreen user={user} dbUser={dbUser} />
+            <ActivityScreen user={user} dbUser={dbUser} goals={displayGoals} setCurrentScreen={navigate} />
           </motion.div>
         )}
 
