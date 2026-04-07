@@ -14,7 +14,7 @@ import { db } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
   doc, updateDoc, addDoc, deleteDoc, increment, serverTimestamp,
-  getDoc,
+  getDoc, getDocs,
 } from 'firebase/firestore';
 import { auth } from '../firebase';
 
@@ -1122,16 +1122,28 @@ interface MemberGoalData extends RoomMember {
   avatarUrl?: string;
 }
 
+interface MemberTaskItem {
+  id: string;
+  goalId: string;
+  userId: string;
+  memberName: string;
+  text: string;
+  isDone: boolean;
+  completedAt?: string;
+  createdAt: string;
+}
+
 function MemberDetailSheet({
   member,
-  threads,
+  tasks,
   onClose,
 }: {
   member: MemberGoalData;
-  threads: GoalRoomThread[];
+  tasks: MemberTaskItem[];
   onClose: () => void;
 }) {
-  const totalUseful = threads.reduce((sum, t) => sum + (t.usefulCount || 0), 0);
+  const doneTasks   = tasks.filter(t => t.isDone);
+  const activeTasks = tasks.filter(t => !t.isDone);
 
   return (
     <>
@@ -1199,48 +1211,54 @@ function MemberDetailSheet({
                     <span style={{ fontWeight: 500 }}>{member.timeHorizon}</span>
                   </div>
                 )}
-                {totalUseful > 0 && (
+                {doneTasks.length > 0 && (
                   <div className="flex flex-col">
-                    <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Helped others</span>
-                    <span style={{ fontWeight: 600, fontSize: 18, color: 'var(--c-gold)' }}>{totalUseful}×</span>
+                    <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Tasks done</span>
+                    <span style={{ fontWeight: 600, fontSize: 18, color: 'var(--c-gold)' }}>{doneTasks.length}</span>
                   </div>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Their room activity */}
-          {threads.length > 0 ? (
-            <div className="px-5 pb-6">
+          {/* Their active tasks */}
+          {activeTasks.length > 0 && (
+            <div className="px-5 pb-4">
               <p className="text-label mb-3"
                  style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Their Updates ({threads.length})
+                Working On ({activeTasks.length})
               </p>
               <div className="flex flex-col gap-2">
-                {threads.map(t => (
-                  <div key={t.id} className="card p-4" style={{ borderRadius: 14 }}>
-                    <div className="flex items-start justify-between mb-1">
-                      <span className={BADGE_META[t.badge]?.cls}>{BADGE_META[t.badge]?.label}</span>
-                      {(t.usefulCount || 0) > 0 && (
-                        <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)' }}>
-                          <ThumbsUp size={11} /> {t.usefulCount}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-body mb-0.5" style={{ fontWeight: 500 }}>{t.title}</p>
-                    {t.previewText && (
-                      <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-3)' }}>{t.previewText}</p>
-                    )}
-                    <p className="text-meta mt-1.5" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                      {timeAgo(t.lastActivityAt)}
-                    </p>
+                {activeTasks.map(t => (
+                  <div key={t.id} className="card p-3" style={{ borderRadius: 12 }}>
+                    <p className="text-body" style={{ fontWeight: 400 }}>{t.text}</p>
                   </div>
                 ))}
               </div>
             </div>
-          ) : (
+          )}
+
+          {/* Their completed tasks */}
+          {doneTasks.length > 0 && (
             <div className="px-5 pb-6">
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No updates from this member yet.</p>
+              <p className="text-label mb-3"
+                 style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Completed ({doneTasks.length})
+              </p>
+              <div className="flex flex-col gap-2">
+                {doneTasks.map(t => (
+                  <div key={t.id} className="card p-3 flex items-start gap-2" style={{ borderRadius: 12 }}>
+                    <Check size={13} className="mt-0.5 flex-shrink-0" style={{ color: 'var(--c-gold)' }} />
+                    <p className="text-body" style={{ fontWeight: 400, color: 'var(--c-text-2)' }}>{t.text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tasks.length === 0 && (
+            <div className="px-5 pb-6">
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No tasks recorded yet.</p>
             </div>
           )}
         </div>
@@ -1253,29 +1271,41 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
   const groupId = goal.groupId;
   const isInRoom = goal.groupJoined === true && !!groupId;
 
-  const [groupName, setGroupName] = useState<string>('');
-  const [memberCount, setMemberCount] = useState<number>(0);
-  const [members, setMembers] = useState<RoomMember[]>([]);
-  const [memberGoals, setMemberGoals] = useState<Map<string, MemberGoalData>>(new Map());
-  const [threads, setThreads] = useState<GoalRoomThread[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [groupName, setGroupName]         = useState<string>('');
+  const [roomDescription, setRoomDescription] = useState<string>('');
+  const [memberCount, setMemberCount]     = useState<number>(0);
+  const [members, setMembers]             = useState<RoomMember[]>([]);
+  const [memberGoals, setMemberGoals]     = useState<Map<string, MemberGoalData>>(new Map());
+  const [memberTasks, setMemberTasks]     = useState<MemberTaskItem[]>([]);
+  const [loading, setLoading]             = useState(true);
   const [selectedMember, setSelectedMember] = useState<MemberGoalData | null>(null);
 
-  // Fetch group doc + member goals once
   useEffect(() => {
     if (!isInRoom || !groupId) { setLoading(false); return; }
 
     getDoc(doc(db, 'groups', groupId)).then(async (snap) => {
       if (!snap.exists()) { setLoading(false); return; }
       const data = snap.data() as any;
+
       setGroupName(data.derivedGoalTheme ?? 'Your Goal Room');
       setMemberCount(data.memberCount ?? 0);
+
+      // Build description from matchingCriteria
+      const cat     = data.matchingCriteria?.category as string | undefined;
+      const horizon = data.matchingCriteria?.timeHorizon as string | undefined;
+      const parts: string[] = [];
+      if (cat)     parts.push(cat.charAt(0).toUpperCase() + cat.slice(1));
+      if (horizon) parts.push(`${horizon} timeline`);
+      setRoomDescription(
+        parts.length ? `${parts.join(' · ')} · highly matched goals` : 'Highly matched goals',
+      );
 
       const rawMembers: RoomMember[] = (data.members ?? []).filter(
         (m: any) => m.userId !== user?.uid,
       );
       setMembers(rawMembers);
 
+      // Fetch each member's goal + user profile
       const results = await Promise.all(
         rawMembers.map(async (m) => {
           try {
@@ -1308,19 +1338,34 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
       const map = new Map<string, MemberGoalData>();
       results.forEach(r => map.set(r.userId, r));
       setMemberGoals(map);
+
+      // Fetch tasks from every member's goal
+      const allTasks: MemberTaskItem[] = [];
+      await Promise.all(
+        results.map(async (mg) => {
+          try {
+            const tasksSnap = await getDocs(collection(db, 'goals', mg.goalId, 'tasks'));
+            tasksSnap.docs.forEach(td => {
+              const t = td.data() as any;
+              if (!t.text) return;
+              allTasks.push({
+                id: td.id,
+                goalId: mg.goalId,
+                userId: mg.userId,
+                memberName: mg.displayName ?? 'Member',
+                text: t.text,
+                isDone: t.isDone ?? false,
+                completedAt: t.completedAt,
+                createdAt: t.createdAt ?? '',
+              });
+            });
+          } catch { /* ignore per-member failure */ }
+        }),
+      );
+      setMemberTasks(allTasks);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [groupId, isInRoom, user?.uid]);
-
-  // Subscribe to room threads
-  useEffect(() => {
-    if (!isInRoom || !groupId) return;
-    return onSnapshot(
-      query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
-      (snap) => setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)),
-      (err) => console.error(err),
-    );
-  }, [groupId, isInRoom]);
 
   if (!isInRoom) {
     return (
@@ -1347,17 +1392,32 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     );
   }
 
-  const otherThreads = threads.filter(t => t.authorId !== user?.uid);
-  const fromRoom     = otherThreads.slice(0, 5);
-  const mostHelpful  = [...otherThreads]
-    .sort((a, b) => (b.usefulCount ?? 0) - (a.usefulCount ?? 0))
-    .filter(t => (t.usefulCount ?? 0) > 0)
+  // Similar Tasks: active tasks from room members, most recent first, top 5
+  const similarTasks = memberTasks
+    .filter(t => !t.isDone)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 5);
+
+  // Most Popular Tasks: group by normalised text, rank by member count then completion count
+  const taskGroups = new Map<string, { text: string; memberCount: number; doneCount: number }>();
+  memberTasks.forEach(t => {
+    const key = t.text.toLowerCase().trim();
+    const existing = taskGroups.get(key);
+    if (existing) {
+      existing.memberCount++;
+      if (t.isDone) existing.doneCount++;
+    } else {
+      taskGroups.set(key, { text: t.text, memberCount: 1, doneCount: t.isDone ? 1 : 0 });
+    }
+  });
+  const popularTasks = [...taskGroups.values()]
+    .sort((a, b) => b.memberCount - a.memberCount || b.doneCount - a.doneCount)
     .slice(0, 5);
 
   return (
     <div className="pb-32">
 
-      {/* Room header card */}
+      {/* Your Goal Room */}
       <div className="px-5 pt-5 pb-3">
         <div className="card p-4" style={{ borderRadius: 16 }}>
           <div className="flex items-start gap-3">
@@ -1367,15 +1427,16 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
             </div>
             <div className="min-w-0">
               <p className="text-card-title mb-0.5 truncate">{groupName}</p>
+              <p className="text-meta mb-1" style={{ color: 'var(--c-text-2)' }}>{roomDescription}</p>
               <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                {memberCount} {memberCount === 1 ? 'member' : 'members'} · pursuing the same goal
+                {memberCount} {memberCount === 1 ? 'member' : 'members'}
               </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Members list */}
+      {/* Members */}
       <section className="px-5 pt-4">
         <p className="text-label mb-3"
            style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
@@ -1419,66 +1480,47 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         )}
       </section>
 
-      {/* From Your Room */}
-      {fromRoom.length > 0 && (
+      {/* Similar Tasks */}
+      {similarTasks.length > 0 && (
         <section className="px-5 pt-6">
           <p className="text-label mb-3"
              style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            From Your Room
+            Similar Tasks
           </p>
           <div className="flex flex-col gap-2">
-            {fromRoom.map(t => (
-              <div key={t.id} className="card p-4" style={{ borderRadius: 14 }}>
-                <div className="flex items-start gap-2 mb-1">
-                  <span className={BADGE_META[t.badge]?.cls}>{BADGE_META[t.badge]?.label}</span>
-                </div>
-                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{t.title}</p>
-                {t.previewText && (
-                  <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-3)' }}>{t.previewText}</p>
-                )}
-                <div className="flex items-center gap-3 mt-2">
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{t.authorName}</span>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{timeAgo(t.lastActivityAt)}</span>
-                  {(t.replyCount ?? 0) > 0 && (
-                    <>
-                      <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
-                      <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-text-3)' }}>
-                        <MessageCircle size={12} /> {t.replyCount}
-                      </span>
-                    </>
-                  )}
-                </div>
+            {similarTasks.map(t => (
+              <div key={`${t.goalId}-${t.id}`} className="card p-4" style={{ borderRadius: 14 }}>
+                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{t.text}</p>
+                <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>{t.memberName}</p>
               </div>
             ))}
           </div>
         </section>
       )}
 
-      {/* Most Helpful */}
-      {mostHelpful.length > 0 && (
+      {/* Most Popular Tasks */}
+      {popularTasks.length > 0 && (
         <section className="px-5 pt-6">
           <p className="text-label mb-3"
              style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Most Helpful
+            Most Popular Tasks
           </p>
           <div className="flex flex-col gap-2">
-            {mostHelpful.map(t => (
-              <div key={t.id} className="card p-4" style={{ borderRadius: 14 }}>
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <span className={BADGE_META[t.badge]?.cls}>{BADGE_META[t.badge]?.label}</span>
-                  <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)' }}>
-                    <ThumbsUp size={12} /> {t.usefulCount}
+            {popularTasks.map((g, i) => (
+              <div key={i} className="card p-4" style={{ borderRadius: 14 }}>
+                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{g.text}</p>
+                <div className="flex items-center gap-3">
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+                    {g.memberCount} {g.memberCount === 1 ? 'member' : 'members'}
                   </span>
-                </div>
-                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{t.title}</p>
-                {t.previewText && (
-                  <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-3)' }}>{t.previewText}</p>
-                )}
-                <div className="flex items-center gap-3 mt-2">
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{t.authorName}</span>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{timeAgo(t.lastActivityAt)}</span>
+                  {g.doneCount > 0 && (
+                    <>
+                      <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
+                      <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)' }}>
+                        <Check size={12} /> {g.doneCount} completed
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -1491,7 +1533,7 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         {selectedMember && (
           <MemberDetailSheet
             member={selectedMember}
-            threads={threads.filter(t => t.authorId === selectedMember.userId)}
+            tasks={memberTasks.filter(t => t.userId === selectedMember.userId)}
             onClose={() => setSelectedMember(null)}
           />
         )}
