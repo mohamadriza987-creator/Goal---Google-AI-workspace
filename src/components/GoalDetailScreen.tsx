@@ -1108,16 +1108,58 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 // ─────────────────────────────────────────────────────────────────────────────
 
 function PeopleTab({ goal }: { goal: Goal; user: FirebaseUser | null }) {
+  const similar = goal.similarGoals ?? [];
+  const top     = similar.slice(0, 5);
+
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
-      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-        <Users size={22} style={{ color: 'var(--c-gold)' }} />
-      </div>
-      <p className="text-card-title mb-2">People</p>
-      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-        No members yet.
-      </p>
+    <div className="px-5 pt-6 pb-32 space-y-8">
+
+      {/* Similar Goals */}
+      <section>
+        <h3 className="text-meta uppercase tracking-widest mb-3"
+            style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+          Similar Goals
+        </h3>
+        {top.length > 0 ? (
+          <div className="space-y-2">
+            {top.map((g) => (
+              <div key={g.goalId}
+                   className="flex items-center justify-between px-4 py-3 rounded-2xl"
+                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                <p className="text-sm flex-1 min-w-0 truncate" style={{ color: 'var(--c-text-2)' }}>
+                  {g.goalTitle}
+                </p>
+                <span className="ml-3 text-meta flex-shrink-0"
+                      style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                  {Math.round(g.similarityScore * 100)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="px-4 py-5 rounded-2xl text-center"
+               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+            <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+              No similar goals matched yet.
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* Most Popular Tasks */}
+      <section>
+        <h3 className="text-meta uppercase tracking-widest mb-3"
+            style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+          Most Popular Tasks
+        </h3>
+        <div className="px-4 py-5 rounded-2xl text-center"
+             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+            Aggregated community tasks coming soon.
+          </p>
+        </div>
+      </section>
+
     </div>
   );
 }
