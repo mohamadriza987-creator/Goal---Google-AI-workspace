@@ -3,7 +3,7 @@ import { Goal, GoalTask, GoalRoomThread, GoalRoomReply, User, ThreadBadge } from
 import { User as FirebaseUser } from 'firebase/auth';
 import {
   ArrowLeft, Lock, Edit2, Check, Plus, Send,
-  HelpCircle, Loader2, X, BookOpen, Zap,
+  HelpCircle, Loader2, X, BookOpen, Zap, Bell, Info, Trash2,
   MessageCircle, Users, ChevronRight,
   ThumbsUp, Heart, Hand, Star,
 } from 'lucide-react';
@@ -12,7 +12,7 @@ import { cn } from '../lib/utils';
 import { db } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
-  doc, updateDoc, addDoc, increment, serverTimestamp,
+  doc, updateDoc, addDoc, deleteDoc, increment, serverTimestamp,
   getDoc,
 } from 'firebase/firestore';
 import { auth } from '../firebase';
@@ -96,13 +96,14 @@ function BottomSheet({ open, onClose, title, children }: {
 // Task Card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskCard({ task, goalId, isNextStep, similarCount, onAskHelp, onAddNote }: {
-  task: GoalTask; goalId: string; isNextStep: boolean; similarCount: number;
-  onAskHelp: (t: GoalTask) => void; onAddNote: (t: GoalTask) => void;
+function TaskCard({ task, goalId, isNextStep, onOpenDetail }: {
+  task: GoalTask; goalId: string; isNextStep: boolean;
+  onOpenDetail: (t: GoalTask) => void;
 }) {
   const [toggling, setToggling] = useState(false);
 
-  const toggleDone = async () => {
+  const toggleDone = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (toggling) return;
     setToggling(true);
     try {
@@ -129,50 +130,204 @@ function TaskCard({ task, goalId, isNextStep, similarCount, onAskHelp, onAddNote
           </span>
         </div>
       )}
-      <div className="p-4">
-        <div className="flex items-start gap-3">
-          <button onClick={toggleDone} disabled={toggling}
-            className="flex-shrink-0 mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
-            style={task.isDone
-              ? { background: 'var(--c-success)', borderColor: 'var(--c-success)' }
-              : { borderColor: 'var(--c-border-light)' }}>
-            {toggling ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
-                      : task.isDone && <Check size={13} color="#fff" strokeWidth={3} />}
-          </button>
-          <div className="flex-1 min-w-0">
+      <div className="px-4 py-3 flex items-center gap-3">
+        {/* Done toggle */}
+        <button onClick={toggleDone} disabled={toggling}
+          className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
+          style={task.isDone
+            ? { background: 'var(--c-success)', borderColor: 'var(--c-success)' }
+            : { borderColor: 'var(--c-border-light)' }}>
+          {toggling
+            ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
+            : task.isDone && <Check size={13} color="#fff" strokeWidth={3} />}
+        </button>
+
+        {/* Task text */}
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onOpenDetail(task)}>
+          <p className="text-body leading-snug"
+             style={{ color: task.isDone ? 'var(--c-text-3)' : 'var(--c-text)', textDecoration: task.isDone ? 'line-through' : 'none' }}>
+            {task.text}
+          </p>
+          {(task.notes?.length ?? 0) > 0 && (
+            <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>
+              {task.notes!.length} note{task.notes!.length > 1 ? 's' : ''}
+            </p>
+          )}
+        </div>
+
+        {/* Bell */}
+        <button onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}
+          className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+          style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
+          <Bell size={15} fill={task.reminderAt ? 'currentColor' : 'none'} />
+        </button>
+
+        {/* Info */}
+        <button onClick={() => onOpenDetail(task)}
+          className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+          style={{ color: 'var(--c-text-3)' }}>
+          <Info size={15} />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task Detail Sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+function TaskDetailSheet({ task, goalId, onClose }: {
+  task: GoalTask | null; goalId: string; onClose: () => void;
+}) {
+  const [editing,     setEditing]     = useState(false);
+  const [editText,    setEditText]    = useState('');
+  const [saving,      setSaving]      = useState(false);
+  const [deleting,    setDeleting]    = useState(false);
+  const [addingNote,  setAddingNote]  = useState(false);
+  const [noteText,    setNoteText]    = useState('');
+  const [noteSaving,  setNoteSaving]  = useState(false);
+
+  useEffect(() => {
+    if (task) { setEditText(task.text); setEditing(false); setAddingNote(false); setNoteText(''); }
+  }, [task?.id]);
+
+  const saveEdit = async () => {
+    if (!task || !editText.trim() || saving) return;
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), { text: editText.trim() });
+      setEditing(false);
+    } catch(e) { console.error(e); } finally { setSaving(false); }
+  };
+
+  const deleteTask = async () => {
+    if (!task || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteDoc(doc(db, 'goals', goalId, 'tasks', task.id));
+      onClose();
+    } catch(e) { console.error(e); setDeleting(false); }
+  };
+
+  const saveNote = async () => {
+    if (!task || !noteText.trim() || noteSaving) return;
+    setNoteSaving(true);
+    try {
+      const existing = task.notes ?? [];
+      await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), {
+        notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
+      });
+      setNoteText(''); setAddingNote(false);
+    } catch(e) { console.error(e); } finally { setNoteSaving(false); }
+  };
+
+  return (
+    <BottomSheet open={!!task} onClose={onClose} title="Task">
+      {task && (
+        <div className="space-y-5">
+          {/* Task text / edit */}
+          {editing ? (
+            <div className="space-y-2">
+              <textarea value={editText} onChange={e => setEditText(e.target.value)} autoFocus rows={3}
+                className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+              <div className="flex gap-2">
+                <button onClick={saveEdit} disabled={saving || !editText.trim()}
+                  className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save
+                </button>
+                <button onClick={() => setEditing(false)}
+                  className="px-4 py-2 rounded-xl text-meta"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
             <p className="text-body leading-snug"
                style={{ color: task.isDone ? 'var(--c-text-3)' : 'var(--c-text)', textDecoration: task.isDone ? 'line-through' : 'none' }}>
               {task.text}
             </p>
-            {similarCount > 0 && !task.isDone && (
-              <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>{similarCount} people share this task</p>
+          )}
+
+          {/* Reminder */}
+          <div className="flex items-center justify-between py-3"
+               style={{ borderBottom: '1px solid var(--c-border)' }}>
+            <div className="flex items-center gap-2" style={{ color: 'var(--c-text-2)' }}>
+              <Bell size={15} />
+              <span className="text-body">Reminder</span>
+            </div>
+            <span className="text-meta"
+                  style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
+              {task.reminderAt ? new Date(task.reminderAt).toLocaleDateString() : 'Not set'}
+            </span>
+          </div>
+
+          {/* Notes */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-meta uppercase tracking-widest"
+                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Notes</span>
+              {!addingNote && (
+                <button onClick={() => setAddingNote(true)}
+                  className="flex items-center gap-1 text-meta"
+                  style={{ color: 'var(--c-gold)' }}>
+                  <Plus size={14} /> Add
+                </button>
+              )}
+            </div>
+
+            {(task.notes?.length ?? 0) === 0 && !addingNote && (
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No notes yet.</p>
             )}
-            {(task.notes?.length ?? 0) > 0 && (
-              <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>{task.notes!.length} note{task.notes!.length > 1 ? 's' : ''}</p>
+            {task.notes?.map(n => (
+              <div key={n.id} className="px-4 py-3 rounded-xl"
+                   style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+                <p className="text-body">{n.text}</p>
+                <p className="text-meta mt-1" style={{ color: 'var(--c-text-3)' }}>{timeAgo(n.createdAt)}</p>
+              </div>
+            ))}
+
+            {addingNote && (
+              <div className="space-y-2">
+                <textarea value={noteText} onChange={e => setNoteText(e.target.value)} autoFocus rows={3}
+                  placeholder="Write a note…"
+                  className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+                <div className="flex gap-2">
+                  <button onClick={saveNote} disabled={noteSaving || !noteText.trim()}
+                    className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                    {noteSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save Note
+                  </button>
+                  <button onClick={() => { setAddingNote(false); setNoteText(''); }}
+                    className="px-4 py-2 rounded-xl text-meta"
+                    style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
+
+          {/* Edit + Delete */}
+          {!editing && (
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setEditing(true)}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium"
+                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
+                <Edit2 size={15} /> Edit
+              </button>
+              <button onClick={deleteTask} disabled={deleting}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium disabled:opacity-40"
+                style={{ background: 'rgba(220,53,69,.08)', border: '1px solid rgba(220,53,69,.2)', color: '#e05260' }}>
+                {deleting ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} Delete
+              </button>
+            </div>
+          )}
         </div>
-        {!task.isDone && (
-          <div className="flex items-center gap-2 mt-3 ml-9">
-            <button onClick={() => onAddNote(task)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
-              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-              <BookOpen size={12} /> Add note
-            </button>
-            <button onClick={() => onAskHelp(task)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
-              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-              <HelpCircle size={12} /> Ask help
-            </button>
-            <button onClick={toggleDone}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-meta font-semibold transition-opacity hover:opacity-70"
-              style={{ background: 'rgba(74,124,89,.15)', border: '1px solid rgba(74,124,89,.3)', color: 'var(--c-success)' }}>
-              <Check size={12} /> Done
-            </button>
-          </div>
-        )}
-      </div>
-    </motion.div>
+      )}
+    </BottomSheet>
   );
 }
 
@@ -186,15 +341,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
   const [addingTask,  setAddingTask]  = useState(false);
   const [newTaskText, setNewTaskText] = useState('');
   const [saving,      setSaving]      = useState(false);
-
-  // Sheets
-  const [helpTask,     setHelpTask]     = useState<GoalTask | null>(null);
-  const [helpType,     setHelpType]     = useState('');
-  const [helpBlocking, setHelpBlocking] = useState('');
-  const [helpSaving,   setHelpSaving]   = useState(false);
-  const [noteTask,     setNoteTask]     = useState<GoalTask | null>(null);
-  const [noteText,     setNoteText]     = useState('');
-  const [noteSaving,   setNoteSaving]   = useState(false);
+  const [detailTask,  setDetailTask]  = useState<GoalTask | null>(null);
 
   const isTemp = goal.id.startsWith('temp-');
 
@@ -219,59 +366,8 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     } catch(e) { console.error(e); } finally { setSaving(false); }
   };
 
-  const submitHelp = async () => {
-    if (!helpTask || helpSaving) return;
-    setHelpSaving(true);
-    try {
-      // Write a thread to Goal Room if the goal has a group
-      if (goal.groupId && auth.currentUser) {
-        const uid  = auth.currentUser.uid;
-        const name = auth.currentUser.displayName || 'Member';
-        const now  = new Date().toISOString();
-        const threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
-          goalId:          goal.id,
-          badge:           'help',
-          title:           helpTask.text,
-          linkedTaskId:    helpTask.id,
-          linkedTaskText:  helpTask.text,
-          authorId:        uid,
-          authorName:      name,
-          previewText:     helpBlocking || `${helpType} needed`,
-          replyCount:      0,
-          usefulCount:     0,
-          createdAt:       now,
-          lastActivityAt:  now,
-        });
-        // Post first reply as context
-        if (helpBlocking.trim()) {
-          await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
-            threadId:  threadRef.id, goalId: goal.id,
-            authorId:  uid, authorName: name,
-            text:      `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
-            reactions: {}, createdAt: now,
-          });
-        }
-      }
-      setHelpTask(null); setHelpType(''); setHelpBlocking('');
-    } catch(e) { console.error(e); }
-    finally { setHelpSaving(false); }
-  };
-
-  const submitNote = async () => {
-    if (!noteTask || !noteText.trim() || noteSaving) return;
-    setNoteSaving(true);
-    try {
-      const existing = noteTask.notes ?? [];
-      await updateDoc(doc(db, 'goals', goal.id, 'tasks', noteTask.id), {
-        notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
-      });
-      setNoteTask(null); setNoteText('');
-    } catch(e) { console.error(e); } finally { setNoteSaving(false); }
-  };
-
   const todo = tasks.filter(t => !t.isDone);
   const done = tasks.filter(t =>  t.isDone);
-  const simCount = goal.similarGoals?.length ?? 0;
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>;
   if (isTemp)  return <div className="px-5 py-10 text-center"><Loader2 size={20} className="animate-spin mx-auto mb-3" style={{ color: 'var(--c-gold)' }} /><p className="text-body" style={{ color: 'var(--c-text-2)' }}>Saving your goal…</p></div>;
@@ -281,11 +377,11 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
       {todo.length > 0 && (
         <section>
           <h3 className="text-meta uppercase tracking-widest mb-3" style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>To Do</h3>
-          <div className="space-y-3">
+          <div className="space-y-2">
             <AnimatePresence>
               {todo.map((t, i) => (
                 <TaskCard key={t.id} task={t} goalId={goal.id} isNextStep={i === 0}
-                  similarCount={i === 0 ? simCount : 0} onAskHelp={setHelpTask} onAddNote={setNoteTask} />
+                  onOpenDetail={setDetailTask} />
               ))}
             </AnimatePresence>
           </div>
@@ -323,7 +419,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
             <AnimatePresence>
               {done.map(t => (
                 <TaskCard key={t.id} task={t} goalId={goal.id} isNextStep={false}
-                  similarCount={0} onAskHelp={setHelpTask} onAddNote={setNoteTask} />
+                  onOpenDetail={setDetailTask} />
               ))}
             </AnimatePresence>
           </div>
@@ -337,64 +433,11 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         </div>
       )}
 
-      {/* Ask Help Sheet */}
-      <BottomSheet open={!!helpTask} onClose={() => setHelpTask(null)} title="Ask for Help">
-        {helpTask && (
-          <div className="space-y-4">
-            <div className="px-4 py-3 rounded-xl" style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Task</p>
-              <p className="text-body mt-0.5">{helpTask.text}</p>
-            </div>
-            <div>
-              <label className="text-meta mb-2 block" style={{ color: 'var(--c-text-3)' }}>What kind of help?</label>
-              <div className="flex flex-wrap gap-2">
-                {['Advice', 'Accountability', 'Resource', 'Practice partner'].map(type => (
-                  <button key={type} onClick={() => setHelpType(type)}
-                    className="px-3 py-2 rounded-xl text-meta font-medium transition-all"
-                    style={helpType === type
-                      ? { background: 'var(--c-gold)', color: '#000' }
-                      : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-                    {type}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-meta mb-2 block" style={{ color: 'var(--c-text-3)' }}>What's blocking you?</label>
-              <textarea value={helpBlocking} onChange={e => setHelpBlocking(e.target.value)}
-                placeholder="Describe what's stopping you…" rows={3}
-                className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
-                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
-            </div>
-            <button onClick={submitHelp} disabled={helpSaving || !helpType}
-              className="btn-gold w-full flex items-center justify-center gap-2 disabled:opacity-40">
-              {helpSaving ? <Loader2 size={16} className="animate-spin" /> : <HelpCircle size={16} />}
-              Post to Goal Room
-            </button>
-          </div>
-        )}
-      </BottomSheet>
-
-      {/* Add Note Sheet */}
-      <BottomSheet open={!!noteTask} onClose={() => { setNoteTask(null); setNoteText(''); }} title="Add Note">
-        {noteTask && (
-          <div className="space-y-4">
-            <div className="px-4 py-3 rounded-xl" style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Task</p>
-              <p className="text-body mt-0.5">{noteTask.text}</p>
-            </div>
-            <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
-              placeholder="Write your note…" rows={4} autoFocus
-              className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
-              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
-            <button onClick={submitNote} disabled={noteSaving || !noteText.trim()}
-              className="btn-gold w-full flex items-center justify-center gap-2 disabled:opacity-40">
-              {noteSaving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-              Save Note
-            </button>
-          </div>
-        )}
-      </BottomSheet>
+      <TaskDetailSheet
+        task={detailTask}
+        goalId={goal.id}
+        onClose={() => setDetailTask(null)}
+      />
     </div>
   );
 }
