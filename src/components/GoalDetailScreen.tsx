@@ -775,9 +775,12 @@ function ThreadCard({ thread, onOpen }: { thread: GoalRoomThread; onOpen: () => 
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface AuthorCredit {
-  similarityPct?: number;   // from goal.similarGoals
-  usefulGiven:   number;    // sum of usefulCount on their threads in this room
-  helpOffered:   number;    // count of threads they posted with help/support badge
+  similarityPct?: number; // from goal.similarGoals
+  usefulReceived: number; // sum of usefulCount on their threads in this room
+  helpPosts:      number; // threads they posted with help/support badge
+  // NOTE: "people helped" (distinct users helped) is not available as data —
+  // that would require aggregating unique users per useful-reacted reply,
+  // which is not stored. The fields above are what can be computed cleanly.
 }
 
 function buildAuthorCredit(
@@ -786,13 +789,13 @@ function buildAuthorCredit(
   similarGoals: Goal['similarGoals'],
 ): AuthorCredit {
   const theirThreads = allThreads.filter(t => t.authorId === authorId);
-  const usefulGiven  = theirThreads.reduce((s, t) => s + (t.usefulCount ?? 0), 0);
-  const helpOffered  = theirThreads.filter(t => t.badge === 'help' || t.badge === 'support').length;
-  const simEntry     = similarGoals?.find(g => g.userId === authorId);
+  const usefulReceived = theirThreads.reduce((s, t) => s + (t.usefulCount ?? 0), 0);
+  const helpPosts      = theirThreads.filter(t => t.badge === 'help' || t.badge === 'support').length;
+  const simEntry       = similarGoals?.find(g => g.userId === authorId);
   return {
     similarityPct: simEntry ? Math.round(simEntry.similarityScore * 100) : undefined,
-    usefulGiven,
-    helpOffered,
+    usefulReceived,
+    helpPosts,
   };
 }
 
@@ -924,14 +927,14 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
                   {authorCredit.similarityPct}% match
                 </span>
               )}
-              {authorCredit.usefulGiven > 0 && (
+              {authorCredit.usefulReceived > 0 && (
                 <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)', fontSize: 11 }}>
-                  <ThumbsUp size={10} /> {authorCredit.usefulGiven} useful
+                  <ThumbsUp size={10} /> {authorCredit.usefulReceived} useful
                 </span>
               )}
-              {authorCredit.helpOffered > 0 && (
+              {authorCredit.helpPosts > 0 && (
                 <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                  <Hand size={10} /> helped {authorCredit.helpOffered}×
+                  <Hand size={10} /> {authorCredit.helpPosts} help posts
                 </span>
               )}
             </div>
