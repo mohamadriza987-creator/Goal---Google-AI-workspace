@@ -5,22 +5,23 @@ import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionG
 import { Goal, GoalTask, User } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { Activity, UserCircle2 } from 'lucide-react';
+import { Calendar as CalendarIcon, Trophy } from 'lucide-react';
 
 // ── Screen types ──────────────────────────────────────────────────────────────
 
 type Screen =
   | 'auth'
   | 'home'
-  | 'goal-detail'   // replaces old 'goals' — opens a specific goal
-  | 'activity'      // replaces old 'community' as nav tab
+  | 'goal-detail'
+  | 'calendar'
+  | 'challenge'
   | 'profile';
 
 interface ScreenState {
   name: Screen;
   goalId?: string;
   groupId?: string;
-  initialTab?: 'plan' | 'goal-room' | 'people' | 'notes';
+  initialTab?: 'plan' | 'goal-room' | 'people';
 }
 
 enum OperationType {
@@ -48,16 +49,14 @@ const PandaIcon = ({ size = 24, active = false }: { size?: number; active?: bool
   </div>
 );
 
-// ── Lazy-load screens ─────────────────────────────────────────────────────────
+// ── Screen imports ───────────────────────────────────────────────────────────
 
-import { HomeScreen }      from './components/HomeScreen';
+import { HomeScreen }       from './components/HomeScreen';
 import { GoalDetailScreen } from './components/GoalDetailScreen';
-import { ActivityScreen }  from './components/ActivityScreen';
-import { ProfileScreen }   from './components/ProfileScreen';
-import { NavButton }       from './components/NavButton';
-
-// (groupsUnsubscribe removed — we no longer subscribe to the entire groups
-// collection. Users load only their joined rooms via /api/groups/joined.)
+import { CalendarScreen }   from './components/CalendarScreen';
+import { ChallengeScreen }  from './components/ChallengeScreen';
+import { ProfileScreen }    from './components/ProfileScreen';
+import { NavButton }        from './components/NavButton';
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -137,9 +136,6 @@ export default function App() {
           );
         }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
 
-        // SECURITY FIX: Global groups subscription removed.
-        // Users load only their joined rooms via /api/groups/joined.
-
       } else {
         setDbUser(null);
         setCurrentScreen({ name: 'auth' });
@@ -155,7 +151,7 @@ export default function App() {
     };
   }, []);
 
-  // ── Reminders (calendar data, kept for Activity screen future use) ──────
+  // ── Reminders (calendar data) ──────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
 
@@ -168,7 +164,6 @@ export default function App() {
       setAllReminders(merged);
     };
 
-    // SECURITY: Firestore rules verify parent goal ownership server-side.
     const tQ = query(collectionGroup(db, 'tasks'), where('reminderAt', '!=', null));
     const unsubT = onSnapshot(tQ, (snap) => {
       latestTask = [];
@@ -206,19 +201,6 @@ export default function App() {
     }
   };
 
-  const reportUser = async (reportedUserId: string, messageId: string, reason: string) => {
-    if (!user) return;
-    try {
-      await addDoc(collection(db, 'reports'), {
-        reporterId: user.uid, reportedUserId, messageId, reason,
-        createdAt: new Date().toISOString(), status: 'pending',
-      });
-      alert('User reported successfully. Our moderators will review the content.');
-    } catch (error) {
-      console.error('Error reporting user:', error);
-    }
-  };
-
   // ── Optimistic goals ────────────────────────────────────────────────────
   const addOptimisticGoal    = (goal: Goal)                         => setOptimisticGoals(prev => [goal, ...prev]);
   const updateOptimisticGoal = (tempId: string, upd: Partial<Goal>) => setOptimisticGoals(prev => prev.map(g => g.id === tempId ? { ...g, ...upd } : g));
@@ -244,7 +226,8 @@ export default function App() {
         if (r.ok) embedding = (await r.json()).embedding;
       } catch (e) { console.error('Embedding failed:', e); }
 
-      // 2. Save goal doc
+      // 2. Save goal doc — default visibility to 'public'
+      const visibility = structuredGoal.privacy === 'private' ? 'private' : 'public';
       const goalRef = await addDoc(collection(db, 'goals'), {
         ownerId: user.uid,
         title:   structuredGoal.goalTitle,
@@ -254,8 +237,8 @@ export default function App() {
         timeHorizon: structuredGoal.timeHorizon,
         progressPercent: 0,
         status:   'active',
-        visibility: structuredGoal.privacy,
-        publicFields: structuredGoal.privacy === 'public' ? ['title', 'description', 'tasks', 'progress'] : [],
+        visibility,
+        publicFields: visibility === 'public' ? ['title', 'description', 'tasks', 'progress'] : [],
         createdAt: goal.createdAt,
         sourceText: structuredGoal.transcript,
         normalizedMatchingText: structuredGoal.normalizedMatchingText,
@@ -360,10 +343,21 @@ export default function App() {
           </motion.div>
         )}
 
-        {/* ACTIVITY */}
-        {currentScreen.name === 'activity' && (
-          <motion.div key="activity" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <ActivityScreen user={user} dbUser={dbUser} />
+        {/* CALENDAR */}
+        {currentScreen.name === 'calendar' && (
+          <motion.div key="calendar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <CalendarScreen
+              allReminders={allReminders}
+              goals={displayGoals}
+              setCurrentScreen={navigate}
+            />
+          </motion.div>
+        )}
+
+        {/* CHALLENGE */}
+        {currentScreen.name === 'challenge' && (
+          <motion.div key="challenge" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <ChallengeScreen user={user} dbUser={dbUser} />
           </motion.div>
         )}
 
@@ -376,8 +370,8 @@ export default function App() {
 
       </AnimatePresence>
 
-      {/* ── Bottom navigation (hidden on auth) ──────────────────────── */}
-      {!isAuth && (
+      {/* ── Bottom navigation (hidden on auth & profile) ───────────── */}
+      {!isAuth && currentScreen.name !== 'profile' && (
         <motion.div
           className="fixed bottom-0 left-0 right-0 z-50"
           initial={false}
@@ -414,20 +408,20 @@ export default function App() {
               </span>
             </button>
 
-            {/* Activity */}
+            {/* Calendar */}
             <NavButton
-              active={currentScreen.name === 'activity'}
-              icon={<Activity size={20} />}
-              label="Activity"
-              onClick={() => navigate({ name: 'activity' })}
+              active={currentScreen.name === 'calendar'}
+              icon={<CalendarIcon size={20} />}
+              label="Calendar"
+              onClick={() => navigate({ name: 'calendar' })}
             />
 
-            {/* Profile */}
+            {/* Challenge */}
             <NavButton
-              active={currentScreen.name === 'profile'}
-              icon={<UserCircle2 size={20} />}
-              label="Profile"
-              onClick={() => navigate({ name: 'profile' })}
+              active={currentScreen.name === 'challenge'}
+              icon={<Trophy size={20} />}
+              label="Challenge"
+              onClick={() => navigate({ name: 'challenge' })}
             />
 
           </nav>

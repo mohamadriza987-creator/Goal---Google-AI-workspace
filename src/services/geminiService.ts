@@ -6,7 +6,7 @@ export interface StructuredGoal {
   category: string;
   tags: string[];
   timeHorizon: string;
-  privacy: 'private' | 'group' | 'public';
+  privacy: 'private' | 'public';
   language: string;
   normalizedMatchingText: string;
 }

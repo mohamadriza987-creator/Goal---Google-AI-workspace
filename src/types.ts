@@ -27,7 +27,7 @@ export interface Goal {
   originalLanguage?: string;
   aiGeneratedTitle?: string;
   aiGeneratedDescription?: string;
-  visibility: 'private' | 'group' | 'public';
+  visibility: 'private' | 'public';
   publicFields?: string[];
   category?: string;
   status: 'active' | 'completed' | 'archived';
@@ -116,7 +116,7 @@ export interface Group {
   matchingCriteria?: {
     category?: string;
     timeHorizon?: string;
-    privacy?: 'public' | 'group';
+    privacy?: 'public' | 'private';
   };
   createdAt: string;
   updatedAt?: string;

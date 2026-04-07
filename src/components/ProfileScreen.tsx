@@ -116,7 +116,8 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
               { code: 'en', name: 'English' },
               { code: 'es', name: 'Español' },
               { code: 'fr', name: 'Français' },
-              { code: 'hi', name: 'हिन्दी' }
+              { code: 'hi', name: 'हिन्दी' },
+              { code: 'ml', name: 'മലയാളം' }
             ].map((lang) => (
               <button
                 key={lang.code}

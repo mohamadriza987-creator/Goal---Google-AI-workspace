@@ -819,18 +819,52 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stub Tab
+// People Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StubTab({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
-      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-        {icon}
+function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+  const similarGoals = goal.similarGoals ?? [];
+
+  if (similarGoals.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
+        <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
+             style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+          <Users size={22} style={{ color: 'var(--c-gold)' }} />
+        </div>
+        <p className="text-card-title mb-2">People</p>
+        <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+          People on a similar path will appear here as more users join.
+        </p>
       </div>
-      <p className="text-card-title mb-2">{title}</p>
-      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>{subtitle}</p>
+    );
+  }
+
+  return (
+    <div className="px-4 py-5 space-y-3" style={{ paddingBottom: 120 }}>
+      <h3 className="text-meta uppercase tracking-widest mb-3"
+          style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>
+        {similarGoals.length} {similarGoals.length === 1 ? 'person' : 'people'} on a similar path
+      </h3>
+      {similarGoals.map((sg) => (
+        <div key={sg.goalId} className="p-4 rounded-2xl"
+             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+          <div className="flex items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{sg.goalTitle}</p>
+              {sg.description && (
+                <p className="text-meta mt-0.5 line-clamp-1" style={{ color: 'var(--c-text-3)' }}>
+                  {sg.description}
+                </p>
+              )}
+            </div>
+            <span className="text-meta ml-3 flex-shrink-0 px-2 py-0.5 rounded-full"
+                  style={{ background: 'rgba(201,168,76,.1)', color: 'var(--c-gold)', fontSize: 11 }}>
+              {Math.round(sg.similarityScore * 100)}% match
+            </span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -842,17 +876,16 @@ function StubTab({ icon, title, subtitle }: { icon: React.ReactNode; title: stri
 interface GoalDetailScreenProps {
   user: FirebaseUser | null; dbUser: User | null;
   goalId: string; goals: Goal[];
-  initialTab: 'plan' | 'goal-room' | 'people' | 'notes';
+  initialTab: 'plan' | 'goal-room' | 'people';
   setCurrentScreen: (s: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
 }
 
-type Tab = 'plan' | 'goal-room' | 'people' | 'notes';
+type Tab = 'plan' | 'goal-room' | 'people';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'plan',      label: 'Plan'      },
   { key: 'goal-room', label: 'Goal Room' },
   { key: 'people',    label: 'People'    },
-  { key: 'notes',     label: 'Notes'     },
 ];
 
 export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
@@ -924,13 +957,7 @@ export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentSc
             {activeTab === 'goal-room' && <GoalRoomTab goal={goal} user={user} />}
 
             {activeTab === 'people' && (
-              <StubTab icon={<Users size={22} style={{ color: 'var(--c-gold)' }} />}
-                title="People" subtitle="People on a similar path. Coming in the next build." />
-            )}
-
-            {activeTab === 'notes' && (
-              <StubTab icon={<BookOpen size={22} style={{ color: 'var(--c-gold)' }} />}
-                title="Notes" subtitle="Your private and shared notes. Coming in the next build." />
+              <PeopleTab goal={goal} user={user} />
             )}
 
           </motion.div>
