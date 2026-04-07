@@ -532,11 +532,46 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
     }
   } catch (error: any) {
     console.error("Panda API Error:", error);
-    
+
     if (error.message?.includes("429") || error.message?.includes("RESOURCE_EXHAUSTED")) {
       throw new Error("API quota exceeded. Please try again later or check your billing plan.");
     }
-    
+
     throw error;
   }
+}
+
+export async function generateMicroSteps(taskText: string): Promise<string[]> {
+  const ai = getAI();
+  const models = ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"];
+  let lastError: any;
+
+  for (const model of models) {
+    try {
+      const result = await withRetry(() => ai.models.generateContent({
+        model,
+        contents: `Break this task into 3 to 5 very short action steps. Each step must be 2 to 5 words. No bullets, no numbering, no explanation.
+Task: "${taskText}"
+Return ONLY a valid JSON array of strings. Example: ["Research online options","Pick one course","Sign up today","Complete first module"]`,
+        config: { responseMimeType: 'application/json' },
+      }), 2, 800);
+
+      const text = result.text ?? '[]';
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text.trim());
+      } catch {
+        // try to extract array from text
+        const match = text.match(/\[[\s\S]*\]/);
+        parsed = match ? JSON.parse(match[0]) : [];
+      }
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('empty');
+      return (parsed as string[]).slice(0, 5).map((s: string) => String(s).trim());
+    } catch (e: any) {
+      lastError = e;
+      if (e.message?.includes("429") || e.message?.includes("RESOURCE_EXHAUSTED")) continue;
+      throw e;
+    }
+  }
+  throw lastError;
 }

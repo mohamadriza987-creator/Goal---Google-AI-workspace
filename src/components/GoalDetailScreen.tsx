@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { generateMicroSteps } from '../services/geminiService';
 import { db, auth } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
@@ -26,6 +27,13 @@ function timeAgo(iso: string) {
   if (d < 3600) return `${Math.floor(d/60)}m ago`;
   if (d < 86400)return `${Math.floor(d/3600)}h ago`;
   return `${Math.floor(d/86400)}d ago`;
+}
+
+/** Convert ISO string to value suitable for datetime-local input */
+function toDatetimeLocal(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 const BADGE_META: Record<ThreadBadge, { label: string; cls: string }> = {
@@ -177,23 +185,50 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
   task: GoalTask | null; goal: Goal; onClose: () => void;
   onDelete: (t: GoalTask) => void;
 }) {
-  const [editing,      setEditing]      = useState(false);
-  const [editText,     setEditText]     = useState('');
-  const [saving,       setSaving]       = useState(false);
-  const [addingNote,   setAddingNote]   = useState(false);
-  const [noteText,     setNoteText]     = useState('');
-  const [noteSaving,   setNoteSaving]   = useState(false);
-  const [showHelp,     setShowHelp]     = useState(false);
-  const [helpType,     setHelpType]     = useState('');
-  const [helpBlocking, setHelpBlocking] = useState('');
-  const [helpSaving,   setHelpSaving]   = useState(false);
-  const [helpDone,     setHelpDone]     = useState(false);
+  const [editing,        setEditing]        = useState(false);
+  const [editText,       setEditText]       = useState('');
+  const [saving,         setSaving]         = useState(false);
+  const [addingNote,     setAddingNote]     = useState(false);
+  const [noteText,       setNoteText]       = useState('');
+  const [noteSaving,     setNoteSaving]     = useState(false);
+  const [showHelp,       setShowHelp]       = useState(false);
+  const [helpType,       setHelpType]       = useState('');
+  const [helpBlocking,   setHelpBlocking]   = useState('');
+  const [helpSaving,     setHelpSaving]     = useState(false);
+  const [helpDone,       setHelpDone]       = useState(false);
+  const [generatingSteps, setGeneratingSteps] = useState(false);
+  const [editingReminder, setEditingReminder] = useState(false);
+  const [reminderValue,   setReminderValue]   = useState('');
+  const [reminderSaving,  setReminderSaving]  = useState(false);
 
   useEffect(() => {
-    if (task) {
-      setEditText(task.text); setEditing(false);
-      setAddingNote(false); setNoteText('');
-      setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
+    if (!task) return;
+    setEditText(task.text); setEditing(false);
+    setAddingNote(false); setNoteText('');
+    setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
+    setGeneratingSteps(false);
+    setEditingReminder(false);
+    setReminderValue(task.reminderAt ? toDatetimeLocal(task.reminderAt) : '');
+
+    // Auto-generate micro-steps if not already stored
+    if (!task.microSteps?.length) {
+      const run = async () => {
+        const user = auth.currentUser;
+        if (!user) return;
+        setGeneratingSteps(true);
+        try {
+          const idToken = await user.getIdToken();
+          const steps = await generateMicroSteps(task.text, idToken);
+          if (steps.length > 0) {
+            await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { microSteps: steps });
+          }
+        } catch (e) {
+          console.error('micro-steps generation failed', e);
+        } finally {
+          setGeneratingSteps(false);
+        }
+      };
+      run();
     }
   }, [task?.id]);
 
@@ -244,6 +279,28 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     } catch(e) { console.error(e); } finally { setHelpSaving(false); }
   };
 
+  const saveReminder = async () => {
+    if (!task || reminderSaving) return;
+    setReminderSaving(true);
+    try {
+      const iso = reminderValue ? new Date(reminderValue).toISOString() : null;
+      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
+        reminderAt: iso ?? null,
+      });
+      setEditingReminder(false);
+    } catch(e) { console.error(e); } finally { setReminderSaving(false); }
+  };
+
+  const removeReminder = async () => {
+    if (!task || reminderSaving) return;
+    setReminderSaving(true);
+    try {
+      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { reminderAt: null });
+      setReminderValue('');
+      setEditingReminder(false);
+    } catch(e) { console.error(e); } finally { setReminderSaving(false); }
+  };
+
   return (
     <BottomSheet open={!!task} onClose={onClose} title="Task">
       {task && (
@@ -274,11 +331,16 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
           )}
 
           {/* Micro-steps */}
-          {(task.microSteps?.length ?? 0) > 0 && (
-            <div className="space-y-2">
-              <span className="text-meta uppercase tracking-widest"
-                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Steps</span>
-              <div className="space-y-1">
+          <div className="space-y-2">
+            <span className="text-meta uppercase tracking-widest"
+                  style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Steps</span>
+            {generatingSteps ? (
+              <div className="flex items-center gap-2 py-2" style={{ color: 'var(--c-text-3)' }}>
+                <Loader2 size={13} className="animate-spin" />
+                <span className="text-meta">Breaking it down…</span>
+              </div>
+            ) : (task.microSteps?.length ?? 0) > 0 ? (
+              <div className="space-y-0.5">
                 {task.microSteps!.map((step, i) => (
                   <div key={i} className="flex items-start gap-2.5 py-1.5">
                     <span className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center"
@@ -289,20 +351,59 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : null}
+          </div>
 
           {/* Reminder */}
-          <div className="flex items-center justify-between py-3"
-               style={{ borderBottom: '1px solid var(--c-border)' }}>
-            <div className="flex items-center gap-2" style={{ color: 'var(--c-text-2)' }}>
-              <Bell size={15} />
-              <span className="text-body">Reminder</span>
-            </div>
-            <span className="text-meta"
-                  style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
-              {task.reminderAt ? new Date(task.reminderAt).toLocaleDateString() : 'Not set'}
-            </span>
+          <div style={{ borderBottom: '1px solid var(--c-border)', paddingBottom: 12 }}>
+            {editingReminder ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 mb-1" style={{ color: 'var(--c-text-2)' }}>
+                  <Bell size={15} />
+                  <span className="text-body">Reminder</span>
+                </div>
+                <input
+                  type="datetime-local"
+                  value={reminderValue}
+                  onChange={e => setReminderValue(e.target.value)}
+                  className="w-full px-4 py-2 rounded-xl text-sm focus:outline-none"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }}
+                />
+                <div className="flex gap-2">
+                  <button onClick={saveReminder} disabled={reminderSaving || !reminderValue}
+                    className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                    {reminderSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Set
+                  </button>
+                  {task.reminderAt && (
+                    <button onClick={removeReminder} disabled={reminderSaving}
+                      className="px-4 py-2 rounded-xl text-meta disabled:opacity-40"
+                      style={{ background: 'rgba(220,53,69,.08)', border: '1px solid rgba(220,53,69,.2)', color: '#e05260' }}>
+                      Remove
+                    </button>
+                  )}
+                  <button onClick={() => { setEditingReminder(false); setReminderValue(task.reminderAt ? toDatetimeLocal(task.reminderAt) : ''); }}
+                    className="px-4 py-2 rounded-xl text-meta"
+                    style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setEditingReminder(true)}
+                className="flex items-center justify-between w-full py-3"
+                style={{ color: 'var(--c-text-2)' }}>
+                <div className="flex items-center gap-2">
+                  <Bell size={15} />
+                  <span className="text-body">Reminder</span>
+                </div>
+                <span className="text-meta"
+                      style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
+                  {task.reminderAt
+                    ? new Date(task.reminderAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+                    : 'Not set'}
+                </span>
+              </button>
+            )}
           </div>
 
           {/* Notes */}

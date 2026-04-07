@@ -12,6 +12,7 @@ import {
   normalizeGoal,
   generateEmbedding,
   generateGroupName,
+  generateMicroSteps,
 } from "./server/gemini.ts";
 import { z } from "zod";
 import fs from "fs";
@@ -671,6 +672,18 @@ async function startServer() {
         error: "Failed to normalize goal",
         details: error.message || String(error),
       });
+    }
+  });
+
+  app.post("/api/tasks/micro-steps", authMiddleware, async (req: any, res) => {
+    try {
+      const { taskText } = req.body;
+      if (!taskText?.trim()) return res.status(400).json({ error: "taskText required" });
+      const steps = await generateMicroSteps(taskText.trim());
+      res.json({ steps });
+    } catch (error: any) {
+      console.error("[API] /api/tasks/micro-steps error:", error);
+      res.status(500).json({ error: error.message || "Failed to generate micro-steps" });
     }
   });
 

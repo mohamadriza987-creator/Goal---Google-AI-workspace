@@ -58,6 +58,20 @@ export async function generateGoalFromTranscript(transcript: string, idToken: st
   return result as StructuredGoal;
 }
 
+export async function generateMicroSteps(taskText: string, idToken: string): Promise<string[]> {
+  const response = await fetch("/api/tasks/micro-steps", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
+    body: JSON.stringify({ taskText }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: "Unknown" }));
+    throw new Error(err.error || "Failed to generate micro-steps");
+  }
+  const result = await response.json();
+  return result.steps ?? [];
+}
+
 export async function structureGoalFromAudio(audioBase64: string, mimeType: string, idToken: string, userContext?: UserContext): Promise<StructuredGoal> {
   console.log('Calling backend to process audio...', { mimeType, size: audioBase64.length, userContext });
   const response = await fetch("/api/process-audio", {
