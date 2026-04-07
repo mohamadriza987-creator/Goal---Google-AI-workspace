@@ -83,6 +83,8 @@ export const translations: Record<string, any> = {
     noChallengesYet: "No challenges yet",
     noGoodNewsYet: "No good news yet",
     noMemberWinsYet: "No member wins yet",
+    similarGoals: "Similar Goals",
+    mostPopularTasks: "Most Popular Tasks",
   },
   es: {
     appName: "Proyecto Meta",
@@ -166,6 +168,8 @@ export const translations: Record<string, any> = {
     noChallengesYet: "Aún no hay desafíos",
     noGoodNewsYet: "Aún no hay buenas noticias",
     noMemberWinsYet: "Aún no hay logros de miembros",
+    similarGoals: "Metas Similares",
+    mostPopularTasks: "Tareas Más Populares",
   },
   fr: {
     appName: "Projet Objectif",
@@ -249,6 +253,8 @@ export const translations: Record<string, any> = {
     noChallengesYet: "Pas encore de défis",
     noGoodNewsYet: "Pas encore de bonnes nouvelles",
     noMemberWinsYet: "Pas encore de victoires",
+    similarGoals: "Objectifs Similaires",
+    mostPopularTasks: "Tâches les Plus Populaires",
   },
   hi: {
     appName: "प्रोजेक्ट लक्ष्य",
@@ -332,6 +338,8 @@ export const translations: Record<string, any> = {
     noChallengesYet: "अभी तक कोई चुनौती नहीं",
     noGoodNewsYet: "अभी तक कोई अच्छी खबर नहीं",
     noMemberWinsYet: "अभी तक सदस्यों की कोई जीत नहीं",
+    similarGoals: "समान लक्ष्य",
+    mostPopularTasks: "सबसे लोकप्रिय कार्य",
   },
   ml: {
     appName: "പ്രോജക്ട് ഗോള്‍",
@@ -414,6 +422,9 @@ export const translations: Record<string, any> = {
     typeYourGoal: "നിങ്ങളുടെ ലക്ഷ്യം ഇവിടെ ടൈപ്പ് ചെയ്യൂ...",
     typeAdditionalDetails: "അധിക വിവരങ്ങള്‍ ടൈപ്പ് ചെയ്യൂ...",
     send: "അയയ്ക്കുക",
+    group: "ഗ്രൂപ്പ്",
+    similarGoals: "സമാന ലക്ഷ്യങ്ങള്‍",
+    mostPopularTasks: "ഏറ്റവും ജനപ്രിയമായ ടാസ്‌ക്കുകള്‍",
   },
 };
 
