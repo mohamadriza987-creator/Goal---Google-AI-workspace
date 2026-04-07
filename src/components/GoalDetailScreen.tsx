@@ -1107,17 +1107,395 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 // People Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PeopleTab({ goal }: { goal: Goal; user: FirebaseUser | null }) {
+interface RoomMember {
+  goalId: string;
+  userId: string;
+  joinedAt: string;
+}
+
+interface MemberGoalData extends RoomMember {
+  title: string;
+  description: string;
+  progressPercent: number;
+  timeHorizon?: string;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
+function MemberDetailSheet({
+  member,
+  threads,
+  onClose,
+}: {
+  member: MemberGoalData;
+  threads: GoalRoomThread[];
+  onClose: () => void;
+}) {
+  const totalUseful = threads.reduce((sum, t) => sum + (t.usefulCount || 0), 0);
+
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
-      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-        <Users size={22} style={{ color: 'var(--c-gold)' }} />
+    <>
+      <motion.div
+        key="backdrop"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-40"
+        style={{ background: 'rgba(0,0,0,0.5)' }}
+        onClick={onClose}
+      />
+      <motion.div
+        key="sheet"
+        initial={{ y: '100%' }}
+        animate={{ y: 0 }}
+        exit={{ y: '100%' }}
+        transition={{ type: 'spring', damping: 32, stiffness: 320 }}
+        className="fixed bottom-0 left-0 right-0 z-50 flex flex-col"
+        style={{ background: 'var(--c-surface-1)', borderRadius: '20px 20px 0 0', maxHeight: '85vh', overflow: 'hidden' }}
+      >
+        <div className="overflow-y-auto flex-1 pb-10">
+          <div className="flex justify-center pt-3 pb-1">
+            <div className="w-9 h-1 rounded-full" style={{ background: 'var(--c-border)' }} />
+          </div>
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 pt-3 pb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold"
+                   style={{ background: 'var(--c-surface-2)', color: 'var(--c-text-2)' }}>
+                {member.displayName?.charAt(0)?.toUpperCase() ?? '?'}
+              </div>
+              <div>
+                <p style={{ fontWeight: 600 }}>{member.displayName ?? 'Member'}</p>
+                <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+                  Joined {timeAgo(member.joinedAt)}
+                </p>
+              </div>
+            </div>
+            <button onClick={onClose} style={{ color: 'var(--c-text-3)' }}>
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Their goal */}
+          <div className="px-5 pb-4">
+            <div className="card p-4" style={{ borderRadius: 14 }}>
+              <p className="text-meta mb-1"
+                 style={{ color: 'var(--c-text-3)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Their Goal
+              </p>
+              <p className="text-body mb-1" style={{ fontWeight: 500 }}>{member.title}</p>
+              {member.description && (
+                <p className="text-meta" style={{ color: 'var(--c-text-2)' }}>{member.description}</p>
+              )}
+              <div className="flex items-center gap-5 mt-3">
+                <div className="flex flex-col">
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Progress</span>
+                  <span style={{ fontWeight: 600, fontSize: 18 }}>{member.progressPercent}%</span>
+                </div>
+                {member.timeHorizon && (
+                  <div className="flex flex-col">
+                    <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Timeline</span>
+                    <span style={{ fontWeight: 500 }}>{member.timeHorizon}</span>
+                  </div>
+                )}
+                {totalUseful > 0 && (
+                  <div className="flex flex-col">
+                    <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Helped others</span>
+                    <span style={{ fontWeight: 600, fontSize: 18, color: 'var(--c-gold)' }}>{totalUseful}×</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Their room activity */}
+          {threads.length > 0 ? (
+            <div className="px-5 pb-6">
+              <p className="text-label mb-3"
+                 style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Their Updates ({threads.length})
+              </p>
+              <div className="flex flex-col gap-2">
+                {threads.map(t => (
+                  <div key={t.id} className="card p-4" style={{ borderRadius: 14 }}>
+                    <div className="flex items-start justify-between mb-1">
+                      <span className={BADGE_META[t.badge]?.cls}>{BADGE_META[t.badge]?.label}</span>
+                      {(t.usefulCount || 0) > 0 && (
+                        <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)' }}>
+                          <ThumbsUp size={11} /> {t.usefulCount}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-body mb-0.5" style={{ fontWeight: 500 }}>{t.title}</p>
+                    {t.previewText && (
+                      <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-3)' }}>{t.previewText}</p>
+                    )}
+                    <p className="text-meta mt-1.5" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                      {timeAgo(t.lastActivityAt)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="px-5 pb-6">
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No updates from this member yet.</p>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
+function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+  const groupId = goal.groupId;
+  const isInRoom = goal.groupJoined === true && !!groupId;
+
+  const [groupName, setGroupName] = useState<string>('');
+  const [memberCount, setMemberCount] = useState<number>(0);
+  const [members, setMembers] = useState<RoomMember[]>([]);
+  const [memberGoals, setMemberGoals] = useState<Map<string, MemberGoalData>>(new Map());
+  const [threads, setThreads] = useState<GoalRoomThread[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedMember, setSelectedMember] = useState<MemberGoalData | null>(null);
+
+  // Fetch group doc + member goals once
+  useEffect(() => {
+    if (!isInRoom || !groupId) { setLoading(false); return; }
+
+    getDoc(doc(db, 'groups', groupId)).then(async (snap) => {
+      if (!snap.exists()) { setLoading(false); return; }
+      const data = snap.data() as any;
+      setGroupName(data.derivedGoalTheme ?? 'Your Goal Room');
+      setMemberCount(data.memberCount ?? 0);
+
+      const rawMembers: RoomMember[] = (data.members ?? []).filter(
+        (m: any) => m.userId !== user?.uid,
+      );
+      setMembers(rawMembers);
+
+      const results = await Promise.all(
+        rawMembers.map(async (m) => {
+          try {
+            const [gSnap, uSnap] = await Promise.all([
+              getDoc(doc(db, 'goals', m.goalId)),
+              getDoc(doc(db, 'users', m.userId)),
+            ]);
+            const g = gSnap.exists() ? (gSnap.data() as any) : null;
+            const u = uSnap.exists() ? (uSnap.data() as any) : null;
+            return {
+              goalId: m.goalId,
+              userId: m.userId,
+              joinedAt: m.joinedAt,
+              title: g?.title ?? 'Goal',
+              description: g?.description ?? '',
+              progressPercent: g?.progressPercent ?? 0,
+              timeHorizon: g?.timeHorizon,
+              displayName: u?.displayName ?? u?.username ?? null,
+              avatarUrl: u?.avatarUrl ?? null,
+            } as MemberGoalData;
+          } catch {
+            return {
+              goalId: m.goalId, userId: m.userId, joinedAt: m.joinedAt,
+              title: 'Goal', description: '', progressPercent: 0,
+            } as MemberGoalData;
+          }
+        }),
+      );
+
+      const map = new Map<string, MemberGoalData>();
+      results.forEach(r => map.set(r.userId, r));
+      setMemberGoals(map);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [groupId, isInRoom, user?.uid]);
+
+  // Subscribe to room threads
+  useEffect(() => {
+    if (!isInRoom || !groupId) return;
+    return onSnapshot(
+      query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
+      (snap) => setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)),
+      (err) => console.error(err),
+    );
+  }, [groupId, isInRoom]);
+
+  if (!isInRoom) {
+    return (
+      <div className="flex flex-col items-center justify-center px-6 py-24 text-center gap-4">
+        <div className="w-14 h-14 rounded-full flex items-center justify-center"
+             style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+          <Users size={22} style={{ color: 'var(--c-text-3)' }} />
+        </div>
+        <div>
+          <p className="text-card-title mb-1">Not in a room yet</p>
+          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+            Once your goal matches others at 90%+ similarity, you'll be placed in a shared room automatically.
+          </p>
+        </div>
       </div>
-      <p className="text-card-title mb-2">People</p>
-      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-        No members yet.
-      </p>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 size={22} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
+      </div>
+    );
+  }
+
+  const otherThreads = threads.filter(t => t.authorId !== user?.uid);
+  const fromRoom     = otherThreads.slice(0, 5);
+  const mostHelpful  = [...otherThreads]
+    .sort((a, b) => (b.usefulCount ?? 0) - (a.usefulCount ?? 0))
+    .filter(t => (t.usefulCount ?? 0) > 0)
+    .slice(0, 5);
+
+  return (
+    <div className="pb-32">
+
+      {/* Room header card */}
+      <div className="px-5 pt-5 pb-3">
+        <div className="card p-4" style={{ borderRadius: 16 }}>
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+              <Users size={16} style={{ color: 'var(--c-gold)' }} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-card-title mb-0.5 truncate">{groupName}</p>
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+                {memberCount} {memberCount === 1 ? 'member' : 'members'} · pursuing the same goal
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Members list */}
+      <section className="px-5 pt-4">
+        <p className="text-label mb-3"
+           style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Members
+        </p>
+        {members.length === 0 ? (
+          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No other members yet.</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {members.map(m => {
+              const mg = memberGoals.get(m.userId);
+              return (
+                <button
+                  key={m.userId}
+                  className="card p-4 flex items-center gap-3 w-full text-left"
+                  style={{ borderRadius: 14 }}
+                  onClick={() => mg && setSelectedMember(mg)}
+                >
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-sm font-semibold"
+                       style={{ background: 'var(--c-surface-2)', color: 'var(--c-text-2)' }}>
+                    {mg?.displayName?.charAt(0)?.toUpperCase() ?? '?'}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-body truncate" style={{ fontWeight: 500 }}>
+                      {mg?.displayName ?? 'Member'}
+                    </p>
+                    <p className="text-meta truncate" style={{ color: 'var(--c-text-3)' }}>
+                      {mg?.title ?? '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+                      {mg?.progressPercent ?? 0}%
+                    </span>
+                    <ChevronRight size={14} style={{ color: 'var(--c-text-3)' }} />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* From Your Room */}
+      {fromRoom.length > 0 && (
+        <section className="px-5 pt-6">
+          <p className="text-label mb-3"
+             style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            From Your Room
+          </p>
+          <div className="flex flex-col gap-2">
+            {fromRoom.map(t => (
+              <div key={t.id} className="card p-4" style={{ borderRadius: 14 }}>
+                <div className="flex items-start gap-2 mb-1">
+                  <span className={BADGE_META[t.badge]?.cls}>{BADGE_META[t.badge]?.label}</span>
+                </div>
+                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{t.title}</p>
+                {t.previewText && (
+                  <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-3)' }}>{t.previewText}</p>
+                )}
+                <div className="flex items-center gap-3 mt-2">
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{t.authorName}</span>
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{timeAgo(t.lastActivityAt)}</span>
+                  {(t.replyCount ?? 0) > 0 && (
+                    <>
+                      <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
+                      <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-text-3)' }}>
+                        <MessageCircle size={12} /> {t.replyCount}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Most Helpful */}
+      {mostHelpful.length > 0 && (
+        <section className="px-5 pt-6">
+          <p className="text-label mb-3"
+             style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Most Helpful
+          </p>
+          <div className="flex flex-col gap-2">
+            {mostHelpful.map(t => (
+              <div key={t.id} className="card p-4" style={{ borderRadius: 14 }}>
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <span className={BADGE_META[t.badge]?.cls}>{BADGE_META[t.badge]?.label}</span>
+                  <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)' }}>
+                    <ThumbsUp size={12} /> {t.usefulCount}
+                  </span>
+                </div>
+                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{t.title}</p>
+                {t.previewText && (
+                  <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-3)' }}>{t.previewText}</p>
+                )}
+                <div className="flex items-center gap-3 mt-2">
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{t.authorName}</span>
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>{timeAgo(t.lastActivityAt)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Member detail sheet */}
+      <AnimatePresence>
+        {selectedMember && (
+          <MemberDetailSheet
+            member={selectedMember}
+            threads={threads.filter(t => t.authorId === selectedMember.userId)}
+            onClose={() => setSelectedMember(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
