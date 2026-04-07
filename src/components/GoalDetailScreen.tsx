@@ -223,8 +223,8 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     if (!helpTask || helpSaving) return;
     setHelpSaving(true);
     try {
-      // Write a real thread to Goal Room if the goal has a joined group
-      if (goal.groupId && goal.groupJoined && auth.currentUser) {
+      // Write a thread to Goal Room if the goal has a group
+      if (goal.groupId && auth.currentUser) {
         const uid  = auth.currentUser.uid;
         const name = auth.currentUser.displayName || 'Member';
         const now  = new Date().toISOString();
@@ -251,10 +251,6 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
             reactions: {}, createdAt: now,
           });
         }
-      } else {
-        // No group yet — just acknowledge
-        await new Promise(r => setTimeout(r, 400));
-        alert('Help request noted! Join a Goal Room to share it with others.');
       }
       setHelpTask(null); setHelpType(''); setHelpBlocking('');
     } catch(e) { console.error(e); }
@@ -634,35 +630,16 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   const [newBody,     setNewBody]     = useState('');
   const [newSaving,   setNewSaving]   = useState(false);
 
-  // Join flow
-  const [joining, setJoining] = useState(false);
-
-  const { groupId, groupJoined, eligibleAt } = goal as any;
+  const groupId = goal.groupId;
 
   useEffect(() => {
-    if (!groupId || !groupJoined) { setLoading(false); return; }
+    if (!groupId) { setLoading(false); return; }
     return onSnapshot(
       query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
       (snap) => { setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)); setLoading(false); },
       (err)  => { console.error(err); setLoading(false); }
     );
-  }, [groupId, groupJoined]);
-
-  const joinRoom = async () => {
-    if (!user || !groupId || joining) return;
-    setJoining(true);
-    try {
-      const idToken = await user.getIdToken();
-      const res = await fetch('/api/groups/join', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-        body: JSON.stringify({ goalId: goal.id, groupId }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || 'Failed to join');
-    } catch(e: any) {
-      alert(e.message || 'Could not join. Try again.');
-    } finally { setJoining(false); }
-  };
+  }, [groupId]);
 
   const createThread = async () => {
     if (!newTitle.trim() || newSaving || !user || !groupId) return;
@@ -682,7 +659,7 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 
   const filtered = filter === 'all' ? threads : threads.filter(t => t.badge === filter);
 
-  // ── No group at all
+  // ── No room assigned yet
   if (!groupId) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
@@ -691,31 +668,9 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
           <MessageCircle size={22} style={{ color: 'var(--c-gold)' }} />
         </div>
         <p className="text-card-title mb-2">Goal Room</p>
-        <p className="text-meta mb-6" style={{ color: 'var(--c-text-3)' }}>
-          Your goal is being matched to a room with people on a similar path.
-          Check back soon.
+        <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+          No room assigned to this goal yet.
         </p>
-      </div>
-    );
-  }
-
-  // ── Eligible but not joined
-  if (groupId && !groupJoined) {
-    return (
-      <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
-        <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-             style={{ background: 'rgba(201,168,76,.1)', border: '1px solid rgba(201,168,76,.3)' }}>
-          <Users size={22} style={{ color: 'var(--c-gold)' }} />
-        </div>
-        <p className="text-card-title mb-2">You have a room waiting</p>
-        <p className="text-meta mb-8" style={{ color: 'var(--c-text-3)' }}>
-          People on a similar path are in this room. Join to collaborate, ask for help, and share progress.
-        </p>
-        <button onClick={joinRoom} disabled={joining}
-          className="btn-gold flex items-center gap-2 disabled:opacity-50">
-          {joining ? <Loader2 size={16} className="animate-spin" /> : <Users size={16} />}
-          Join Goal Room
-        </button>
       </div>
     );
   }
@@ -822,49 +777,17 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 // People Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const similarGoals = goal.similarGoals ?? [];
-
-  if (similarGoals.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
-        <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-             style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-          <Users size={22} style={{ color: 'var(--c-gold)' }} />
-        </div>
-        <p className="text-card-title mb-2">People</p>
-        <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-          People on a similar path will appear here as more users join.
-        </p>
-      </div>
-    );
-  }
-
+function PeopleTab({ goal }: { goal: Goal; user: FirebaseUser | null }) {
   return (
-    <div className="px-4 py-5 space-y-3" style={{ paddingBottom: 120 }}>
-      <h3 className="text-meta uppercase tracking-widest mb-3"
-          style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>
-        {similarGoals.length} {similarGoals.length === 1 ? 'person' : 'people'} on a similar path
-      </h3>
-      {similarGoals.map((sg) => (
-        <div key={sg.goalId} className="p-4 rounded-2xl"
-             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-          <div className="flex items-center justify-between">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{sg.goalTitle}</p>
-              {sg.description && (
-                <p className="text-meta mt-0.5 line-clamp-1" style={{ color: 'var(--c-text-3)' }}>
-                  {sg.description}
-                </p>
-              )}
-            </div>
-            <span className="text-meta ml-3 flex-shrink-0 px-2 py-0.5 rounded-full"
-                  style={{ background: 'rgba(201,168,76,.1)', color: 'var(--c-gold)', fontSize: 11 }}>
-              {Math.round(sg.similarityScore * 100)}% match
-            </span>
-          </div>
-        </div>
-      ))}
+    <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
+      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
+           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+        <Users size={22} style={{ color: 'var(--c-gold)' }} />
+      </div>
+      <p className="text-card-title mb-2">People</p>
+      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+        No members yet.
+      </p>
     </div>
   );
 }
