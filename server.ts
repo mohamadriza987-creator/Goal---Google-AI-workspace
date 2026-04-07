@@ -162,8 +162,8 @@ async function findOrCreateGroupForGoal(goalId: string) {
       (d) => ({ id: d.id, ...d.data() }) as GroupDoc,
     );
 
-    const SIMILARITY_THRESHOLD_EXISTING = 0.78;
-    const SIMILARITY_THRESHOLD_NEW = 0.72;
+    const SIMILARITY_THRESHOLD_EXISTING = 0.90;
+    const SIMILARITY_THRESHOLD_NEW = 0.90;
 
     let bestGroup: GroupDoc | null = null;
     let maxScore = -1;
@@ -192,20 +192,36 @@ async function findOrCreateGroupForGoal(goalId: string) {
       const eligibleAt = nowIso();
 
       await db.runTransaction(async (transaction) => {
+        const gDoc = await transaction.get(groupRef);
+        const gData = (gDoc.data() || {}) as GroupDoc;
+        const existingMembers: GroupDoc["members"] = gData.members || [];
+        const existingMemberIds: string[] = gData.memberIds || [];
+        const alreadyMember = existingMembers.some((m) => m.goalId === goal.id);
+
         transaction.update(goalRef, {
           groupId: bestGroup!.id,
-          groupJoined: false,
+          groupJoined: true,
           eligibleAt,
-          joinedAt: admin.firestore.FieldValue.delete(),
+          joinedAt: eligibleAt,
         });
 
-        transaction.set(
-          groupRef,
-          {
-            eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goal.id),
-          },
-          { merge: true },
-        );
+        const groupUpdates: Record<string, any> = {
+          eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goal.id),
+        };
+
+        if (!alreadyMember && goal.ownerId) {
+          groupUpdates.members = admin.firestore.FieldValue.arrayUnion({
+            goalId: goal.id,
+            userId: goal.ownerId,
+            joinedAt: eligibleAt,
+          });
+          groupUpdates.memberCount = admin.firestore.FieldValue.increment(1);
+          if (!existingMemberIds.includes(goal.ownerId)) {
+            groupUpdates.memberIds = admin.firestore.FieldValue.arrayUnion(goal.ownerId);
+          }
+        }
+
+        transaction.set(groupRef, groupUpdates, { merge: true });
       });
 
       return {
@@ -245,14 +261,22 @@ async function findOrCreateGroupForGoal(goalId: string) {
       const eligibleGoalIds = uniqueStrings(clusterGoals.map((g) => g.id));
       const eligibleAt = nowIso();
 
+      const autoMembers = clusterGoals
+        .filter((g) => !!g.ownerId)
+        .map((g) => ({ goalId: g.id, userId: g.ownerId!, joinedAt: eligibleAt }));
+      const autoMemberIds = uniqueStrings(
+        clusterGoals.map((g) => g.ownerId).filter(Boolean) as string[],
+      );
+
       const groupData = {
         derivedGoalTheme: groupName,
         representativeEmbedding: goal.embedding,
         localityCenter: goal.matchingMetadata?.locality || "Global",
         maxMembers: 70,
-        members: [],
+        members: autoMembers,
+        memberIds: autoMemberIds,
         eligibleGoalIds,
-        memberCount: 0,
+        memberCount: autoMembers.length,
         matchingCriteria: {
           category: goal.category,
           timeHorizon: goal.timeHorizon,
@@ -267,9 +291,9 @@ async function findOrCreateGroupForGoal(goalId: string) {
       for (const g of clusterGoals) {
         batch.update(db.collection("goals").doc(g.id), {
           groupId: groupRef.id,
-          groupJoined: false,
+          groupJoined: true,
           eligibleAt,
-          joinedAt: admin.firestore.FieldValue.delete(),
+          joinedAt: eligibleAt,
         });
       }
       await batch.commit();
@@ -330,6 +354,8 @@ async function computeAndStoreSimilarGoals(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
 
+    const currentGoalMeta = allGoals.find((g) => g.id === goalId);
+
     const matches = allGoals
       .filter((g) => g.id !== goalId && g.embedding && g.ownerId !== ownerId)
       .map((g) => {
@@ -343,14 +369,44 @@ async function computeAndStoreSimilarGoals(
           description: g.description,
         };
       })
-      .filter((m) => m.similarityScore >= 0.7)
+      .filter((m) => m.similarityScore >= 0.9)
       .sort((a, b) => b.similarityScore - a.similarityScore)
       .slice(0, 5);
 
-    await db.collection("goals").doc(goalId).update({
+    const batch = db.batch();
+
+    batch.update(db.collection("goals").doc(goalId), {
       similarGoals: matches,
       similarityComputedAt: nowIso(),
     });
+
+    // Reciprocal: update each matched goal so it reflects this goal too.
+    // Clears stale one-way entries by replacing with fresh score.
+    for (const match of matches) {
+      const matchedGoal = allGoals.find((g) => g.id === match.goalId);
+      if (!matchedGoal) continue;
+
+      const existing: GoalDoc["similarGoals"] = matchedGoal.similarGoals || [];
+      const withoutThis = existing.filter((s) => s.goalId !== goalId);
+      const reciprocalEntry = {
+        goalId,
+        userId: ownerId,
+        goalTitle: currentGoalMeta?.title || "",
+        similarityScore: match.similarityScore,
+        groupId: currentGoalMeta?.groupId,
+        description: currentGoalMeta?.description,
+      };
+      const updated = [...withoutThis, reciprocalEntry]
+        .sort((a, b) => b.similarityScore - a.similarityScore)
+        .slice(0, 5);
+
+      batch.update(db.collection("goals").doc(match.goalId), {
+        similarGoals: updated,
+        similarityComputedAt: nowIso(),
+      });
+    }
+
+    await batch.commit();
 
     const currentGoalDoc = await db.collection("goals").doc(goalId).get();
     const currentGoal = { id: goalId, ...currentGoalDoc.data() } as GoalDoc;
