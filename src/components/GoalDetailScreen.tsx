@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { generateMicroSteps } from '../services/geminiService';
 import { db } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
@@ -178,23 +179,45 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
   task: GoalTask | null; goal: Goal; onClose: () => void;
   onDelete: (t: GoalTask) => void;
 }) {
-  const [editing,      setEditing]      = useState(false);
-  const [editText,     setEditText]     = useState('');
-  const [saving,       setSaving]       = useState(false);
-  const [addingNote,   setAddingNote]   = useState(false);
-  const [noteText,     setNoteText]     = useState('');
-  const [noteSaving,   setNoteSaving]   = useState(false);
-  const [showHelp,     setShowHelp]     = useState(false);
-  const [helpType,     setHelpType]     = useState('');
-  const [helpBlocking, setHelpBlocking] = useState('');
-  const [helpSaving,   setHelpSaving]   = useState(false);
-  const [helpDone,     setHelpDone]     = useState(false);
+  const [editing,        setEditing]        = useState(false);
+  const [editText,       setEditText]       = useState('');
+  const [saving,         setSaving]         = useState(false);
+  const [addingNote,     setAddingNote]     = useState(false);
+  const [noteText,       setNoteText]       = useState('');
+  const [noteSaving,     setNoteSaving]     = useState(false);
+  const [showHelp,       setShowHelp]       = useState(false);
+  const [helpType,       setHelpType]       = useState('');
+  const [helpBlocking,   setHelpBlocking]   = useState('');
+  const [helpSaving,     setHelpSaving]     = useState(false);
+  const [helpDone,       setHelpDone]       = useState(false);
+  const [generatingSteps, setGeneratingSteps] = useState(false);
 
   useEffect(() => {
-    if (task) {
-      setEditText(task.text); setEditing(false);
-      setAddingNote(false); setNoteText('');
-      setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
+    if (!task) return;
+    setEditText(task.text); setEditing(false);
+    setAddingNote(false); setNoteText('');
+    setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
+    setGeneratingSteps(false);
+
+    // Auto-generate micro-steps if not already stored
+    if (!task.microSteps?.length) {
+      const run = async () => {
+        const user = auth.currentUser;
+        if (!user) return;
+        setGeneratingSteps(true);
+        try {
+          const idToken = await user.getIdToken();
+          const steps = await generateMicroSteps(task.text, idToken);
+          if (steps.length > 0) {
+            await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { microSteps: steps });
+          }
+        } catch (e) {
+          console.error('micro-steps generation failed', e);
+        } finally {
+          setGeneratingSteps(false);
+        }
+      };
+      run();
     }
   }, [task?.id]);
 
@@ -275,11 +298,16 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
           )}
 
           {/* Micro-steps */}
-          {(task.microSteps?.length ?? 0) > 0 && (
-            <div className="space-y-2">
-              <span className="text-meta uppercase tracking-widest"
-                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Steps</span>
-              <div className="space-y-1">
+          <div className="space-y-2">
+            <span className="text-meta uppercase tracking-widest"
+                  style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Steps</span>
+            {generatingSteps ? (
+              <div className="flex items-center gap-2 py-2" style={{ color: 'var(--c-text-3)' }}>
+                <Loader2 size={13} className="animate-spin" />
+                <span className="text-meta">Breaking it down…</span>
+              </div>
+            ) : (task.microSteps?.length ?? 0) > 0 ? (
+              <div className="space-y-0.5">
                 {task.microSteps!.map((step, i) => (
                   <div key={i} className="flex items-start gap-2.5 py-1.5">
                     <span className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center"
@@ -290,8 +318,8 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : null}
+          </div>
 
           {/* Reminder */}
           <div className="flex items-center justify-between py-3"
