@@ -4,18 +4,15 @@ import { motion } from 'motion/react';
 import { Bell, Calendar as CalendarIcon } from 'lucide-react';
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
+import { useTranslation } from '../contexts/LanguageContext';
 
 interface CalendarScreenProps {
   allReminders: {task: GoalTask, goal: Goal, reminderAt: string, noteText?: string}[];
   goals: Goal[];
-  setActiveGoal: (goal: Goal) => void;
-  setFocusedTaskId: (id: string) => void;
   setCurrentScreen: (screen: any) => void;
 }
 
-import { useTranslation } from '../contexts/LanguageContext';
-
-export function CalendarScreen({ allReminders, goals, setActiveGoal, setFocusedTaskId, setCurrentScreen }: CalendarScreenProps) {
+export function CalendarScreen({ allReminders, goals, setCurrentScreen }: CalendarScreenProps) {
   const { t } = useTranslation();
   return (
     <motion.div
@@ -34,7 +31,7 @@ export function CalendarScreen({ allReminders, goals, setActiveGoal, setFocusedT
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-8">
           <div className="p-8 bg-zinc-900/50 border border-zinc-800 rounded-[2.5rem] backdrop-blur-xl">
-            <Calendar 
+            <Calendar
               className="w-full"
               tileContent={({ date, view }) => {
                 if (view === 'month') {
@@ -67,11 +64,9 @@ export function CalendarScreen({ allReminders, goals, setActiveGoal, setFocusedT
                         </p>
                       </div>
                     </div>
-                    <button 
+                    <button
                       onClick={() => {
-                        setActiveGoal(reminder.goal);
-                        setFocusedTaskId(reminder.task.id);
-                        setCurrentScreen('goals');
+                        setCurrentScreen({ name: 'goal-detail', goalId: reminder.goal.id, initialTab: 'plan' });
                       }}
                       className="px-4 py-2 bg-zinc-800 rounded-xl text-[10px] uppercase font-bold opacity-0 group-hover:opacity-100 transition-opacity"
                     >

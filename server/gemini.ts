@@ -26,7 +26,7 @@ export interface StructuredGoal {
   category: string;
   tags: string[];
   timeHorizon: string;
-  privacy: 'private' | 'group' | 'public';
+  privacy: 'private' | 'public';
   language: string;
   normalizedMatchingText: string;
 }
@@ -207,7 +207,7 @@ export async function generateGoalFromTranscript(transcript: string, userContext
         - category: One of [health, finance, learning, business, personal, social, other].
         - tags: 3-5 relevant tags in the original language.
         - timeHorizon: Estimated duration (e.g., "1 week", "1 month") in the original language.
-        - privacy: Default to 'private' unless the user implies otherwise.
+        - privacy: Default to 'public' unless the user explicitly wants it private.
         - language: Detect the language of the input (e.g., "English", "Spanish", "Hindi").`,
         responseMimeType: "application/json",
         responseSchema: {
@@ -228,7 +228,7 @@ export async function generateGoalFromTranscript(transcript: string, userContext
             timeHorizon: { type: Type.STRING },
             privacy: { 
               type: Type.STRING,
-              enum: ['private', 'group', 'public']
+              enum: ['private', 'public']
             },
             language: { type: Type.STRING },
             normalizedMatchingText: { type: Type.STRING }
@@ -465,7 +465,7 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
         - category: One of [health, finance, learning, business, personal, social, other].
         - tags: 3-5 relevant tags in the original language.
         - timeHorizon: Estimated duration (e.g., "1 week", "1 month") in the original language.
-        - privacy: Default to 'private' unless the user implies otherwise.
+        - privacy: Default to 'public' unless the user explicitly wants it private.
         - language: Detect the language of the input (e.g., "English", "Spanish", "Hindi").`,
         responseMimeType: "application/json",
         responseSchema: {
@@ -486,7 +486,7 @@ export async function structureGoalFromAudio(audioBase64: string, mimeType: stri
             timeHorizon: { type: Type.STRING },
             privacy: { 
               type: Type.STRING,
-              enum: ['private', 'group', 'public']
+              enum: ['private', 'public']
             },
             language: { type: Type.STRING },
             normalizedMatchingText: { type: Type.STRING }

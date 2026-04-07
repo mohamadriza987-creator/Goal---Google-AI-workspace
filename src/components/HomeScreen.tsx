@@ -788,7 +788,7 @@ export function HomeScreen({
                   </label>
                   <div className="flex rounded-xl overflow-hidden"
                        style={{ border:'1px solid var(--c-border)', background:'var(--c-surface-2)' }}>
-                    {(['private','group','public'] as const).map(v => (
+                    {(['public','private'] as const).map(v => (
                       <button key={v} onClick={() => setStructuredGoal({...structuredGoal, privacy:v})}
                         className={cn('flex-1 py-2 text-xs font-semibold capitalize transition-all')}
                         style={structuredGoal.privacy===v

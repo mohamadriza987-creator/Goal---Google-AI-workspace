@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Goal, GoalTask, GoalRoomThread, GoalRoomReply, User, ThreadBadge } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import {
   ArrowLeft, Lock, Edit2, Check, Plus, Send,
-  HelpCircle, Loader2, X, BookOpen, Zap,
+  HelpCircle, Loader2, X, BookOpen, Zap, Bell, Info, Trash2,
   MessageCircle, Users, ChevronRight,
   ThumbsUp, Heart, Hand, Star,
 } from 'lucide-react';
@@ -12,10 +12,9 @@ import { cn } from '../lib/utils';
 import { db, auth } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
-  doc, updateDoc, addDoc, increment,
+  doc, updateDoc, addDoc, deleteDoc, increment, serverTimestamp,
+  getDoc,
 } from 'firebase/firestore';
-import { PeopleTab } from './PeopleTab';
-import { NotesTab }  from './NotesTab';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -96,21 +95,19 @@ function BottomSheet({ open, onClose, title, children }: {
 // Task Card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskCard({ task, goalId, isNextStep, similarCount, onAskHelp, onAddNote }: {
-  task: GoalTask; goalId: string; isNextStep: boolean; similarCount: number;
-  onAskHelp: (t: GoalTask) => void; onAddNote: (t: GoalTask) => void;
+function TaskCard({ task, isNextStep, onOpenDetail, onToggleDone }: {
+  task: GoalTask; isNextStep: boolean;
+  onOpenDetail: (t: GoalTask) => void;
+  onToggleDone: (task: GoalTask) => Promise<void>;
 }) {
   const [toggling, setToggling] = useState(false);
 
-  const toggleDone = async () => {
+  const handleToggle = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (toggling) return;
     setToggling(true);
-    try {
-      await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), {
-        isDone:      !task.isDone,
-        completedAt: !task.isDone ? new Date().toISOString() : null,
-      });
-    } catch (e) { console.error(e); }
+    try { await onToggleDone(task); }
+    catch (e) { console.error(e); }
     finally { setToggling(false); }
   };
 
@@ -129,50 +126,298 @@ function TaskCard({ task, goalId, isNextStep, similarCount, onAskHelp, onAddNote
           </span>
         </div>
       )}
-      <div className="p-4">
-        <div className="flex items-start gap-3">
-          <button onClick={toggleDone} disabled={toggling}
-            className="flex-shrink-0 mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
-            style={task.isDone
-              ? { background: 'var(--c-success)', borderColor: 'var(--c-success)' }
-              : { borderColor: 'var(--c-border-light)' }}>
-            {toggling ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
-                      : task.isDone && <Check size={13} color="#fff" strokeWidth={3} />}
-          </button>
-          <div className="flex-1 min-w-0">
+      <div className="px-4 py-3 flex items-center gap-3">
+        {/* Done toggle */}
+        <button onClick={handleToggle} disabled={toggling}
+          className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
+          style={task.isDone
+            ? { background: 'var(--c-success)', borderColor: 'var(--c-success)' }
+            : { borderColor: 'var(--c-border-light)' }}>
+          {toggling
+            ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
+            : task.isDone && <Check size={13} color="#fff" strokeWidth={3} />}
+        </button>
+
+        {/* Task text */}
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onOpenDetail(task)}>
+          <p className="text-body leading-snug"
+             style={{ color: task.isDone ? 'var(--c-text-3)' : 'var(--c-text)', textDecoration: task.isDone ? 'line-through' : 'none' }}>
+            {task.text}
+          </p>
+          {(task.notes?.length ?? 0) > 0 && (
+            <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>
+              {task.notes!.length} note{task.notes!.length > 1 ? 's' : ''}
+            </p>
+          )}
+        </div>
+
+        {/* Bell */}
+        <button onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}
+          className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+          style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
+          <Bell size={15} fill={task.reminderAt ? 'currentColor' : 'none'} />
+        </button>
+
+        {/* Info */}
+        <button onClick={() => onOpenDetail(task)}
+          className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+          style={{ color: 'var(--c-text-3)' }}>
+          <Info size={15} />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task Detail Sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+function TaskDetailSheet({ task, goal, onClose, onDelete }: {
+  task: GoalTask | null; goal: Goal; onClose: () => void;
+  onDelete: (t: GoalTask) => void;
+}) {
+  const [editing,      setEditing]      = useState(false);
+  const [editText,     setEditText]     = useState('');
+  const [saving,       setSaving]       = useState(false);
+  const [addingNote,   setAddingNote]   = useState(false);
+  const [noteText,     setNoteText]     = useState('');
+  const [noteSaving,   setNoteSaving]   = useState(false);
+  const [showHelp,     setShowHelp]     = useState(false);
+  const [helpType,     setHelpType]     = useState('');
+  const [helpBlocking, setHelpBlocking] = useState('');
+  const [helpSaving,   setHelpSaving]   = useState(false);
+  const [helpDone,     setHelpDone]     = useState(false);
+
+  useEffect(() => {
+    if (task) {
+      setEditText(task.text); setEditing(false);
+      setAddingNote(false); setNoteText('');
+      setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
+    }
+  }, [task?.id]);
+
+  const saveEdit = async () => {
+    if (!task || !editText.trim() || saving) return;
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { text: editText.trim() });
+      setEditing(false);
+    } catch(e) { console.error(e); } finally { setSaving(false); }
+  };
+
+  const saveNote = async () => {
+    if (!task || !noteText.trim() || noteSaving) return;
+    setNoteSaving(true);
+    try {
+      const existing = task.notes ?? [];
+      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
+        notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
+      });
+      setNoteText(''); setAddingNote(false);
+    } catch(e) { console.error(e); } finally { setNoteSaving(false); }
+  };
+
+  const submitHelp = async () => {
+    if (!task || !goal.groupId || !helpType || helpSaving) return;
+    const uid  = auth.currentUser?.uid;
+    const name = auth.currentUser?.displayName || 'Member';
+    if (!uid) return;
+    setHelpSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
+        goalId:         goal.id, badge: 'help', title: task.text,
+        linkedTaskId:   task.id, linkedTaskText: task.text,
+        authorId: uid, authorName: name,
+        previewText:    helpBlocking.trim() || `${helpType} needed`,
+        replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
+      });
+      if (helpBlocking.trim()) {
+        await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
+          threadId: threadRef.id, goalId: goal.id, authorId: uid, authorName: name,
+          text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
+          reactions: {}, createdAt: now,
+        });
+      }
+      setHelpDone(true); setHelpType(''); setHelpBlocking('');
+    } catch(e) { console.error(e); } finally { setHelpSaving(false); }
+  };
+
+  return (
+    <BottomSheet open={!!task} onClose={onClose} title="Task">
+      {task && (
+        <div className="space-y-5">
+          {/* Task text / edit */}
+          {editing ? (
+            <div className="space-y-2">
+              <textarea value={editText} onChange={e => setEditText(e.target.value)} autoFocus rows={3}
+                className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+              <div className="flex gap-2">
+                <button onClick={saveEdit} disabled={saving || !editText.trim()}
+                  className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save
+                </button>
+                <button onClick={() => setEditing(false)}
+                  className="px-4 py-2 rounded-xl text-meta"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
             <p className="text-body leading-snug"
                style={{ color: task.isDone ? 'var(--c-text-3)' : 'var(--c-text)', textDecoration: task.isDone ? 'line-through' : 'none' }}>
               {task.text}
             </p>
-            {similarCount > 0 && !task.isDone && (
-              <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>{similarCount} people share this task</p>
+          )}
+
+          {/* Micro-steps */}
+          {(task.microSteps?.length ?? 0) > 0 && (
+            <div className="space-y-2">
+              <span className="text-meta uppercase tracking-widest"
+                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Steps</span>
+              <div className="space-y-1">
+                {task.microSteps!.map((step, i) => (
+                  <div key={i} className="flex items-start gap-2.5 py-1.5">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center"
+                          style={{ background: 'var(--c-surface-2)', color: 'var(--c-text-3)', fontSize: 10, fontWeight: 700 }}>
+                      {i + 1}
+                    </span>
+                    <p className="text-body flex-1 leading-snug">{step}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Reminder */}
+          <div className="flex items-center justify-between py-3"
+               style={{ borderBottom: '1px solid var(--c-border)' }}>
+            <div className="flex items-center gap-2" style={{ color: 'var(--c-text-2)' }}>
+              <Bell size={15} />
+              <span className="text-body">Reminder</span>
+            </div>
+            <span className="text-meta"
+                  style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
+              {task.reminderAt ? new Date(task.reminderAt).toLocaleDateString() : 'Not set'}
+            </span>
+          </div>
+
+          {/* Notes */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-meta uppercase tracking-widest"
+                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Notes</span>
+              {!addingNote && (
+                <button onClick={() => setAddingNote(true)}
+                  className="flex items-center gap-1 text-meta"
+                  style={{ color: 'var(--c-gold)' }}>
+                  <Plus size={14} /> Add
+                </button>
+              )}
+            </div>
+            {(task.notes?.length ?? 0) === 0 && !addingNote && (
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No notes yet.</p>
             )}
-            {(task.notes?.length ?? 0) > 0 && (
-              <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>{task.notes!.length} note{task.notes!.length > 1 ? 's' : ''}</p>
+            {task.notes?.map(n => (
+              <div key={n.id} className="px-4 py-3 rounded-xl"
+                   style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+                <p className="text-body">{n.text}</p>
+                <p className="text-meta mt-1" style={{ color: 'var(--c-text-3)' }}>{timeAgo(n.createdAt)}</p>
+              </div>
+            ))}
+            {addingNote && (
+              <div className="space-y-2">
+                <textarea value={noteText} onChange={e => setNoteText(e.target.value)} autoFocus rows={3}
+                  placeholder="Write a note…"
+                  className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+                <div className="flex gap-2">
+                  <button onClick={saveNote} disabled={noteSaving || !noteText.trim()}
+                    className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                    {noteSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save Note
+                  </button>
+                  <button onClick={() => { setAddingNote(false); setNoteText(''); }}
+                    className="px-4 py-2 rounded-xl text-meta"
+                    style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
+
+          {/* Edit + Delete */}
+          {!editing && (
+            <div className="flex gap-2">
+              <button onClick={() => setEditing(true)}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium"
+                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
+                <Edit2 size={15} /> Edit
+              </button>
+              <button onClick={() => onDelete(task)}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium"
+                style={{ background: 'rgba(220,53,69,.08)', border: '1px solid rgba(220,53,69,.2)', color: '#e05260' }}>
+                <Trash2 size={15} /> Delete
+              </button>
+            </div>
+          )}
+
+          {/* Ask for Help */}
+          {!editing && goal.groupId && (
+            <div style={{ borderTop: '1px solid var(--c-border)', paddingTop: 16 }}>
+              {helpDone ? (
+                <div className="flex items-center gap-2 px-4 py-3 rounded-xl"
+                     style={{ background: 'rgba(74,124,89,.1)', border: '1px solid rgba(74,124,89,.2)' }}>
+                  <Check size={14} style={{ color: 'var(--c-success)' }} />
+                  <span className="text-body" style={{ color: 'var(--c-success)' }}>Posted to Goal Room</span>
+                </div>
+              ) : !showHelp ? (
+                <button onClick={() => setShowHelp(true)}
+                  className="flex items-center gap-2 text-body w-full py-1 transition-opacity hover:opacity-70"
+                  style={{ color: 'var(--c-text-3)' }}>
+                  <HelpCircle size={15} /> Ask for help with this task
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-meta uppercase tracking-widest"
+                     style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Ask for Help</p>
+                  <div className="flex flex-wrap gap-2">
+                    {['Advice', 'Accountability', 'Resource', 'Practice partner'].map(type => (
+                      <button key={type} onClick={() => setHelpType(type)}
+                        className="px-3 py-1.5 rounded-xl text-meta font-medium transition-all"
+                        style={helpType === type
+                          ? { background: 'var(--c-gold)', color: '#000' }
+                          : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea value={helpBlocking} onChange={e => setHelpBlocking(e.target.value)}
+                    placeholder="What's blocking you? (optional)" rows={2}
+                    className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                    style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+                  <div className="flex gap-2">
+                    <button onClick={submitHelp} disabled={helpSaving || !helpType}
+                      className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                      {helpSaving ? <Loader2 size={14} className="animate-spin" /> : <HelpCircle size={14} />}
+                      Post to Goal Room
+                    </button>
+                    <button onClick={() => { setShowHelp(false); setHelpType(''); setHelpBlocking(''); }}
+                      className="px-4 py-2 rounded-xl text-meta"
+                      style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        {!task.isDone && (
-          <div className="flex items-center gap-2 mt-3 ml-9">
-            <button onClick={() => onAddNote(task)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
-              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-              <BookOpen size={12} /> Add note
-            </button>
-            <button onClick={() => onAskHelp(task)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
-              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-              <HelpCircle size={12} /> Ask help
-            </button>
-            <button onClick={toggleDone}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-meta font-semibold transition-opacity hover:opacity-70"
-              style={{ background: 'rgba(74,124,89,.15)', border: '1px solid rgba(74,124,89,.3)', color: 'var(--c-success)' }}>
-              <Check size={12} /> Done
-            </button>
-          </div>
-        )}
-      </div>
-    </motion.div>
+      )}
+    </BottomSheet>
   );
 }
 
@@ -180,32 +425,68 @@ function TaskCard({ task, goalId, isNextStep, similarCount, onAskHelp, onAddNote
 // Plan Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const [tasks,       setTasks]       = useState<GoalTask[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [addingTask,  setAddingTask]  = useState(false);
-  const [newTaskText, setNewTaskText] = useState('');
-  const [saving,      setSaving]      = useState(false);
+type PendingDelete = { task: GoalTask; timerId: ReturnType<typeof setTimeout> };
 
-  // Sheets
-  const [helpTask,     setHelpTask]     = useState<GoalTask | null>(null);
-  const [helpType,     setHelpType]     = useState('');
-  const [helpBlocking, setHelpBlocking] = useState('');
-  const [helpSaving,   setHelpSaving]   = useState(false);
-  const [noteTask,     setNoteTask]     = useState<GoalTask | null>(null);
-  const [noteText,     setNoteText]     = useState('');
-  const [noteSaving,   setNoteSaving]   = useState(false);
+function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+  const [tasks,         setTasks]         = useState<GoalTask[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [addingTask,    setAddingTask]    = useState(false);
+  const [newTaskText,   setNewTaskText]   = useState('');
+  const [saving,        setSaving]        = useState(false);
+  const [detailTask,    setDetailTask]    = useState<GoalTask | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const pendingDeleteRef = useRef<PendingDelete | null>(null);
 
   const isTemp = goal.id.startsWith('temp-');
+
+  useEffect(() => { pendingDeleteRef.current = pendingDelete; }, [pendingDelete]);
+
+  // Commit any in-flight delete on unmount
+  useEffect(() => {
+    return () => {
+      const pd = pendingDeleteRef.current;
+      if (pd) {
+        clearTimeout(pd.timerId);
+        deleteDoc(doc(db, 'goals', goal.id, 'tasks', pd.task.id)).catch(console.error);
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (isTemp) { setLoading(false); return; }
     return onSnapshot(
       query(collection(db, 'goals', goal.id, 'tasks'), orderBy('order', 'asc')),
-      (snap) => { setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalTask)); setLoading(false); },
-      (err)  => { console.error(err); setLoading(false); }
+      (snap) => {
+        const updated = snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalTask);
+        setTasks(updated);
+        setLoading(false);
+        setDetailTask(prev => prev ? (updated.find(t => t.id === prev.id) ?? prev) : null);
+        // Keep goal progress in sync with actual task completion
+        const active = updated.filter(t => t.id !== pendingDeleteRef.current?.task.id);
+        if (active.length > 0) {
+          const pct = Math.round(active.filter(t => t.isDone).length / active.length * 100);
+          updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
+        }
+      },
+      (err) => { console.error(err); setLoading(false); }
     );
   }, [goal.id]);
+
+  const toggleDone = async (task: GoalTask): Promise<void> => {
+    const newDone = !task.isDone;
+    // Optimistic progress: compute before Firestore confirms
+    const active = tasks.filter(t => t.id !== pendingDeleteRef.current?.task.id);
+    const newDoneCount = active.filter(t => t.id === task.id ? newDone : t.isDone).length;
+    const newPct = active.length > 0 ? Math.round(newDoneCount / active.length * 100) : 0;
+    await Promise.all([
+      updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
+        isDone: newDone,
+        completedAt: newDone ? new Date().toISOString() : null,
+      }),
+      updateDoc(doc(db, 'goals', goal.id), { progressPercent: newPct }),
+    ]);
+  };
 
   const addTask = async () => {
     if (!newTaskText.trim() || saving || isTemp) return;
@@ -219,63 +500,37 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     } catch(e) { console.error(e); } finally { setSaving(false); }
   };
 
-  const submitHelp = async () => {
-    if (!helpTask || helpSaving) return;
-    setHelpSaving(true);
-    try {
-      // Write a real thread to Goal Room if the goal has a joined group
-      if (goal.groupId && goal.groupJoined && auth.currentUser) {
-        const uid  = auth.currentUser.uid;
-        const name = auth.currentUser.displayName || 'Member';
-        const now  = new Date().toISOString();
-        const threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
-          goalId:          goal.id,
-          badge:           'help',
-          title:           helpTask.text,
-          linkedTaskId:    helpTask.id,
-          linkedTaskText:  helpTask.text,
-          authorId:        uid,
-          authorName:      name,
-          previewText:     helpBlocking || `${helpType} needed`,
-          replyCount:      0,
-          usefulCount:     0,
-          createdAt:       now,
-          lastActivityAt:  now,
-        });
-        // Post first reply as context
-        if (helpBlocking.trim()) {
-          await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
-            threadId:  threadRef.id, goalId: goal.id,
-            authorId:  uid, authorName: name,
-            text:      `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
-            reactions: {}, createdAt: now,
-          });
-        }
+  const requestDelete = (task: GoalTask) => {
+    const prev = pendingDeleteRef.current;
+    if (prev) {
+      clearTimeout(prev.timerId);
+      deleteDoc(doc(db, 'goals', goal.id, 'tasks', prev.task.id)).catch(console.error);
+    }
+    setDetailTask(null);
+    const timerId = setTimeout(async () => {
+      await deleteDoc(doc(db, 'goals', goal.id, 'tasks', task.id)).catch(console.error);
+      // Recalculate progress after hard delete
+      const remaining = tasks.filter(t => t.id !== task.id);
+      if (remaining.length > 0) {
+        const pct = Math.round(remaining.filter(t => t.isDone).length / remaining.length * 100);
+        updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
       } else {
-        // No group yet — just acknowledge
-        await new Promise(r => setTimeout(r, 400));
-        alert('Help request noted! Join a Goal Room to share it with others.');
+        updateDoc(doc(db, 'goals', goal.id), { progressPercent: 0 }).catch(console.error);
       }
-      setHelpTask(null); setHelpType(''); setHelpBlocking('');
-    } catch(e) { console.error(e); }
-    finally { setHelpSaving(false); }
+      setPendingDelete(null);
+    }, 5000);
+    setPendingDelete({ task, timerId });
   };
 
-  const submitNote = async () => {
-    if (!noteTask || !noteText.trim() || noteSaving) return;
-    setNoteSaving(true);
-    try {
-      const existing = noteTask.notes ?? [];
-      await updateDoc(doc(db, 'goals', goal.id, 'tasks', noteTask.id), {
-        notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
-      });
-      setNoteTask(null); setNoteText('');
-    } catch(e) { console.error(e); } finally { setNoteSaving(false); }
+  const undoDelete = () => {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timerId);
+    setPendingDelete(null);
   };
 
-  const todo = tasks.filter(t => !t.isDone);
-  const done = tasks.filter(t =>  t.isDone);
-  const simCount = goal.similarGoals?.length ?? 0;
+  const displayTasks = tasks.filter(t => t.id !== pendingDelete?.task.id);
+  const todo = displayTasks.filter(t => !t.isDone);
+  const done = displayTasks.filter(t =>  t.isDone);
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>;
   if (isTemp)  return <div className="px-5 py-10 text-center"><Loader2 size={20} className="animate-spin mx-auto mb-3" style={{ color: 'var(--c-gold)' }} /><p className="text-body" style={{ color: 'var(--c-text-2)' }}>Saving your goal…</p></div>;
@@ -285,11 +540,11 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
       {todo.length > 0 && (
         <section>
           <h3 className="text-meta uppercase tracking-widest mb-3" style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>To Do</h3>
-          <div className="space-y-3">
+          <div className="space-y-2">
             <AnimatePresence>
               {todo.map((t, i) => (
-                <TaskCard key={t.id} task={t} goalId={goal.id} isNextStep={i === 0}
-                  similarCount={i === 0 ? simCount : 0} onAskHelp={setHelpTask} onAddNote={setNoteTask} />
+                <TaskCard key={t.id} task={t} isNextStep={i === 0}
+                  onOpenDetail={setDetailTask} onToggleDone={toggleDone} />
               ))}
             </AnimatePresence>
           </div>
@@ -326,8 +581,8 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
           <div className="space-y-2">
             <AnimatePresence>
               {done.map(t => (
-                <TaskCard key={t.id} task={t} goalId={goal.id} isNextStep={false}
-                  similarCount={0} onAskHelp={setHelpTask} onAddNote={setNoteTask} />
+                <TaskCard key={t.id} task={t} isNextStep={false}
+                  onOpenDetail={setDetailTask} onToggleDone={toggleDone} />
               ))}
             </AnimatePresence>
           </div>
@@ -341,64 +596,33 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         </div>
       )}
 
-      {/* Ask Help Sheet */}
-      <BottomSheet open={!!helpTask} onClose={() => setHelpTask(null)} title="Ask for Help">
-        {helpTask && (
-          <div className="space-y-4">
-            <div className="px-4 py-3 rounded-xl" style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Task</p>
-              <p className="text-body mt-0.5">{helpTask.text}</p>
-            </div>
-            <div>
-              <label className="text-meta mb-2 block" style={{ color: 'var(--c-text-3)' }}>What kind of help?</label>
-              <div className="flex flex-wrap gap-2">
-                {['Advice', 'Accountability', 'Resource', 'Practice partner'].map(type => (
-                  <button key={type} onClick={() => setHelpType(type)}
-                    className="px-3 py-2 rounded-xl text-meta font-medium transition-all"
-                    style={helpType === type
-                      ? { background: 'var(--c-gold)', color: '#000' }
-                      : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-                    {type}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-meta mb-2 block" style={{ color: 'var(--c-text-3)' }}>What's blocking you?</label>
-              <textarea value={helpBlocking} onChange={e => setHelpBlocking(e.target.value)}
-                placeholder="Describe what's stopping you…" rows={3}
-                className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
-                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
-            </div>
-            <button onClick={submitHelp} disabled={helpSaving || !helpType}
-              className="btn-gold w-full flex items-center justify-center gap-2 disabled:opacity-40">
-              {helpSaving ? <Loader2 size={16} className="animate-spin" /> : <HelpCircle size={16} />}
-              Post to Goal Room
-            </button>
-          </div>
-        )}
-      </BottomSheet>
+      <TaskDetailSheet
+        task={detailTask}
+        goal={goal}
+        onClose={() => setDetailTask(null)}
+        onDelete={requestDelete}
+      />
 
-      {/* Add Note Sheet */}
-      <BottomSheet open={!!noteTask} onClose={() => { setNoteTask(null); setNoteText(''); }} title="Add Note">
-        {noteTask && (
-          <div className="space-y-4">
-            <div className="px-4 py-3 rounded-xl" style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Task</p>
-              <p className="text-body mt-0.5">{noteTask.text}</p>
-            </div>
-            <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
-              placeholder="Write your note…" rows={4} autoFocus
-              className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
-              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
-            <button onClick={submitNote} disabled={noteSaving || !noteText.trim()}
-              className="btn-gold w-full flex items-center justify-center gap-2 disabled:opacity-40">
-              {noteSaving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-              Save Note
+      {/* Undo delete toast */}
+      <AnimatePresence>
+        {pendingDelete && (
+          <motion.div
+            key="undo-toast"
+            initial={{ y: 24, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 24, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 36 }}
+            className="fixed bottom-24 left-4 right-4 z-50 flex items-center justify-between px-4 py-3 rounded-2xl"
+            style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', boxShadow: '0 4px 20px rgba(0,0,0,.35)' }}>
+            <span className="text-body" style={{ color: 'var(--c-text-2)' }}>Task deleted</span>
+            <button onClick={undoDelete}
+              className="text-body font-semibold px-2 py-1 rounded-lg"
+              style={{ color: 'var(--c-gold)' }}>
+              Undo
             </button>
-          </div>
+          </motion.div>
         )}
-      </BottomSheet>
+      </AnimatePresence>
     </div>
   );
 }
@@ -634,35 +858,16 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   const [newBody,     setNewBody]     = useState('');
   const [newSaving,   setNewSaving]   = useState(false);
 
-  // Join flow
-  const [joining, setJoining] = useState(false);
-
-  const { groupId, groupJoined } = goal as any;
+  const groupId = goal.groupId;
 
   useEffect(() => {
-    if (!groupId || !groupJoined) { setLoading(false); return; }
+    if (!groupId) { setLoading(false); return; }
     return onSnapshot(
       query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
       (snap) => { setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)); setLoading(false); },
       (err)  => { console.error(err); setLoading(false); }
     );
-  }, [groupId, groupJoined]);
-
-  const joinRoom = async () => {
-    if (!user || !groupId || joining) return;
-    setJoining(true);
-    try {
-      const idToken = await user.getIdToken();
-      const res = await fetch('/api/groups/join', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-        body: JSON.stringify({ goalId: goal.id, groupId }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || 'Failed to join');
-    } catch(e: any) {
-      alert(e.message || 'Could not join. Try again.');
-    } finally { setJoining(false); }
-  };
+  }, [groupId]);
 
   const createThread = async () => {
     if (!newTitle.trim() || newSaving || !user || !groupId) return;
@@ -682,7 +887,7 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 
   const filtered = filter === 'all' ? threads : threads.filter(t => t.badge === filter);
 
-  // ── No group at all
+  // ── No room assigned yet
   if (!groupId) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
@@ -691,31 +896,9 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
           <MessageCircle size={22} style={{ color: 'var(--c-gold)' }} />
         </div>
         <p className="text-card-title mb-2">Goal Room</p>
-        <p className="text-meta mb-6" style={{ color: 'var(--c-text-3)' }}>
-          Your goal is being matched to a room with people on a similar path.
-          Check back soon.
+        <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+          No room assigned to this goal yet.
         </p>
-      </div>
-    );
-  }
-
-  // ── Eligible but not joined
-  if (groupId && !groupJoined) {
-    return (
-      <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
-        <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-             style={{ background: 'rgba(201,168,76,.1)', border: '1px solid rgba(201,168,76,.3)' }}>
-          <Users size={22} style={{ color: 'var(--c-gold)' }} />
-        </div>
-        <p className="text-card-title mb-2">You have a room waiting</p>
-        <p className="text-meta mb-8" style={{ color: 'var(--c-text-3)' }}>
-          People on a similar path are in this room. Join to collaborate, ask for help, and share progress.
-        </p>
-        <button onClick={joinRoom} disabled={joining}
-          className="btn-gold flex items-center gap-2 disabled:opacity-50">
-          {joining ? <Loader2 size={16} className="animate-spin" /> : <Users size={16} />}
-          Join Goal Room
-        </button>
       </div>
     );
   }
@@ -818,6 +1001,24 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// People Tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function PeopleTab({ goal }: { goal: Goal; user: FirebaseUser | null }) {
+  return (
+    <div className="flex flex-col items-center justify-center px-6 py-24 text-center">
+      <div className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
+           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+        <Users size={22} style={{ color: 'var(--c-gold)' }} />
+      </div>
+      <p className="text-card-title mb-2">People</p>
+      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+        No members yet.
+      </p>
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main
@@ -826,17 +1027,16 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 interface GoalDetailScreenProps {
   user: FirebaseUser | null; dbUser: User | null;
   goalId: string; goals: Goal[];
-  initialTab: 'plan' | 'goal-room' | 'people' | 'notes';
+  initialTab: 'plan' | 'goal-room' | 'people';
   setCurrentScreen: (s: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
 }
 
-type Tab = 'plan' | 'goal-room' | 'people' | 'notes';
+type Tab = 'plan' | 'goal-room' | 'people';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'plan',      label: 'Plan'      },
   { key: 'goal-room', label: 'Goal Room' },
   { key: 'people',    label: 'People'    },
-  { key: 'notes',     label: 'Notes'     },
 ];
 
 export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
@@ -908,11 +1108,7 @@ export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentSc
             {activeTab === 'goal-room' && <GoalRoomTab goal={goal} user={user} />}
 
             {activeTab === 'people' && (
-              <PeopleTab goal={goal} user={user} setCurrentScreen={setCurrentScreen} />
-            )}
-
-            {activeTab === 'notes' && (
-              <NotesTab goal={goal} user={user} />
+              <PeopleTab goal={goal} user={user} />
             )}
 
           </motion.div>

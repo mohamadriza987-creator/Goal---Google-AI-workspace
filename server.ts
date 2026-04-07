@@ -14,7 +14,6 @@ import {
   generateGroupName,
 } from "./server/gemini.ts";
 import { z } from "zod";
-import { StreamChat } from "stream-chat";
 import fs from "fs";
 
 const configPath = path.join(process.cwd(), "firebase-applet-config.json");
@@ -386,7 +385,7 @@ async function reconcileAllGoals() {
           category: goal.category || "other",
           tags: goal.tags || [],
           timeHorizon: goal.timeHorizon || "unknown",
-          privacy: goal.privacy || goal.visibility || "private",
+          privacy: goal.privacy || goal.visibility || "public",
           sourceText: goal.originalVoiceTranscript || ""
         }, { age: null, locality: null });
         await goalDoc.ref.update({ normalizedMatchingText: normalizedText });
@@ -576,11 +575,9 @@ async function startServer() {
   app.get("/api/health", async (_req, res) => {
     try {
       await db.collection("test").doc("health").get();
-      const streamKey = process.env.STREAM_API_KEY || env.STREAM_API_KEY || "";
       res.json({
         status: "ok",
         firestore: "connected",
-        stream: streamKey ? "configured" : "missing",
         database: dbId
       });
     } catch (error: any) {
@@ -750,7 +747,7 @@ async function startServer() {
               category: goal.category || "other",
               tags: goal.tags || [],
               timeHorizon: goal.timeHorizon || "unknown",
-              privacy: goal.privacy || goal.visibility || "private",
+              privacy: goal.privacy || goal.visibility || "public",
               sourceText: goal.originalVoiceTranscript || ""
             }, { age: null, locality: null });
             await goalDoc.ref.update({ normalizedMatchingText: currentNormalizedText });
@@ -911,20 +908,9 @@ async function startServer() {
         });
       });
 
-      const apiKey    = process.env.STREAM_API_KEY    || env.STREAM_API_KEY;
-      const apiSecret = process.env.STREAM_API_SECRET || env.STREAM_API_SECRET;
-
-      if (apiKey && apiSecret) {
-        const serverClient = StreamChat.getInstance(apiKey, apiSecret);
-        const channel = serverClient.channel("messaging", groupId);
-        await channel.watch().catch(() => undefined);
-        await channel.addMembers([userId]).catch(() => undefined);
-      }
-
       res.json({ success: true, groupId });
     } catch (error: any) {
       console.error("Join group error:", error);
-      // Surface eligibility/full errors as 403 instead of 500.
       const clientMsg = ["Goal is not eligible", "Group is full", "Not eligible"].some(
         (s) => error.message?.includes(s)
       );
@@ -966,33 +952,6 @@ async function startServer() {
     } catch (error: any) {
       console.error("Fetch joined groups error:", error);
       res.status(500).json({ error: "Failed to fetch joined groups" });
-    }
-  });
-
-  app.post("/api/stream/token", authMiddleware, async (req: any, res) => {
-    try {
-      const apiKey = process.env.STREAM_API_KEY || env.STREAM_API_KEY;
-      const apiSecret = process.env.STREAM_API_SECRET || env.STREAM_API_SECRET;
-
-      if (!apiKey || !apiSecret) {
-        return res.status(500).json({ error: "Stream API keys not configured" });
-      }
-
-      const serverClient = StreamChat.getInstance(apiKey, apiSecret);
-      const userDoc = await db.collection("users").doc(req.userId).get();
-      const userData = userDoc.data();
-
-      await serverClient.upsertUser({
-        id: req.userId,
-        name: userData?.displayName || req.user.name || "User",
-        image: userData?.avatarUrl || req.user.picture,
-      });
-
-      const token = serverClient.createToken(req.userId);
-      res.json({ token, apiKey });
-    } catch (error: any) {
-      console.error("Stream token error:", error);
-      res.status(500).json({ error: "Failed to generate Stream token" });
     }
   });
 

@@ -32,8 +32,6 @@
     "react-calendar": "^6.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
-    "stream-chat": "^9.40.0",
-    "stream-chat-react": "^13.14.3",
     "tailwind-merge": "^3.5.0",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
