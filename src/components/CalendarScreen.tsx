@@ -1,120 +1,258 @@
-import React from 'react';
-import { Goal, GoalTask } from '../types';
+import React, { useState } from 'react';
+import { Goal, GoalTask, CalendarNote } from '../types';
 import { motion } from 'motion/react';
-import { Bell, Calendar as CalendarIcon } from 'lucide-react';
+import { Bell, CheckCircle2, FileText, Plus, Check, Loader2 } from 'lucide-react';
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
-import { useTranslation } from '../contexts/LanguageContext';
 
 interface CalendarScreenProps {
-  allReminders: {task: GoalTask, goal: Goal, reminderAt: string, noteText?: string}[];
+  allReminders: { task: GoalTask; goal: Goal; reminderAt: string; noteText?: string }[];
   goals: Goal[];
   setCurrentScreen: (screen: any) => void;
+  calendarNotes: CalendarNote[];
+  onSaveCalendarNote: (date: string, text: string) => Promise<void>;
+  onDeleteCalendarNote: (date: string) => Promise<void>;
 }
 
-export function CalendarScreen({ allReminders, goals, setCurrentScreen }: CalendarScreenProps) {
-  const { t } = useTranslation();
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="max-w-4xl mx-auto p-6 pt-12 pb-32"
-    >
-      <div className="flex items-center justify-between mb-12">
-        <h1 className="text-3xl font-bold tracking-tight">{t('calendar')}</h1>
-        <div className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border border-zinc-800 rounded-2xl text-xs text-zinc-400">
-          <div className="w-2 h-2 bg-white rounded-full" />
-          {t('synced')}
-        </div>
-      </div>
+function toDateKey(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-8">
-          <div className="p-8 bg-zinc-900/50 border border-zinc-800 rounded-[2.5rem] backdrop-blur-xl">
+export function CalendarScreen({
+  allReminders, goals, setCurrentScreen,
+  calendarNotes, onSaveCalendarNote, onDeleteCalendarNote,
+}: CalendarScreenProps) {
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [editingNote,  setEditingNote]  = useState(false);
+  const [noteText,     setNoteText]     = useState('');
+  const [noteSaving,   setNoteSaving]   = useState(false);
+
+  const now         = new Date();
+  const selectedKey = toDateKey(selectedDate);
+
+  // Split upcoming vs completed
+  const upcoming  = allReminders
+    .filter(r => !r.task.isDone && new Date(r.reminderAt) >= now)
+    .slice(0, 6);
+  const completed = allReminders
+    .filter(r => r.task.isDone)
+    .slice(0, 6);
+
+  // Selected date items
+  const dateReminders = allReminders.filter(
+    r => toDateKey(new Date(r.reminderAt)) === selectedKey,
+  );
+  const dateNote = calendarNotes.find(n => n.date === selectedKey);
+
+  // Dot sets for calendar tiles
+  const upcomingDates  = new Set(allReminders.filter(r => !r.task.isDone).map(r => toDateKey(new Date(r.reminderAt))));
+  const completedDates = new Set(allReminders.filter(r => r.task.isDone).map(r => toDateKey(new Date(r.reminderAt))));
+  const noteDates      = new Set(calendarNotes.map(n => n.date));
+
+  const startEdit = () => { setNoteText(dateNote?.text ?? ''); setEditingNote(true); };
+
+  const saveNote = async () => {
+    if (noteSaving || !noteText.trim()) return;
+    setNoteSaving(true);
+    try {
+      await onSaveCalendarNote(selectedKey, noteText.trim());
+      setEditingNote(false);
+    } catch (e) { console.error(e); } finally { setNoteSaving(false); }
+  };
+
+  const deleteNote = async () => {
+    if (noteSaving) return;
+    setNoteSaving(true);
+    try {
+      await onDeleteCalendarNote(selectedKey);
+      setNoteText('');
+      setEditingNote(false);
+    } catch (e) { console.error(e); } finally { setNoteSaving(false); }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+      className="max-w-4xl mx-auto px-5 pt-12 pb-32">
+
+      <h1 className="text-page-title mb-8">Calendar</h1>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        {/* ── Left: calendar + selected date ────────────────────────── */}
+        <div className="lg:col-span-2 space-y-6">
+
+          {/* react-calendar */}
+          <div className="p-4 rounded-3xl overflow-hidden"
+               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
             <Calendar
+              value={selectedDate}
+              onChange={v => { setSelectedDate(v as Date); setEditingNote(false); }}
               className="w-full"
               tileContent={({ date, view }) => {
-                if (view === 'month') {
-                  const hasReminder = allReminders.some(r => {
-                    const reminderDate = new Date(r.reminderAt);
-                    return reminderDate.toDateString() === date.toDateString();
-                  });
-                  return hasReminder ? <div className="w-1 h-1 bg-white rounded-full mx-auto mt-1" /> : null;
-                }
-                return null;
+                if (view !== 'month') return null;
+                const key = toDateKey(date);
+                const dots: React.ReactNode[] = [];
+                if (upcomingDates.has(key))
+                  dots.push(<span key="u" className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--c-gold)' }} />);
+                if (completedDates.has(key))
+                  dots.push(<span key="c" className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--c-success, #4a7c59)' }} />);
+                if (noteDates.has(key))
+                  dots.push(<span key="n" className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: '#7c6af7' }} />);
+                if (!dots.length) return null;
+                return <div className="flex justify-center gap-0.5 mt-0.5">{dots}</div>;
               }}
             />
           </div>
 
-          <div className="space-y-4">
-            <h3 className="text-xs uppercase tracking-widest text-zinc-500 font-bold ml-2">{t('upcomingReminders')}</h3>
-            <div className="grid gap-3">
-              {allReminders.length > 0 ? (
-                allReminders.slice(0, 5).map((reminder, idx) => (
-                  <div key={idx} className="p-5 bg-zinc-900/30 border border-zinc-800/50 rounded-3xl flex items-center justify-between group hover:border-zinc-700 transition-all">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-2xl bg-zinc-800 flex items-center justify-center text-zinc-400">
-                        <Bell size={20} />
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-sm text-zinc-200 break-words">{reminder.task.text}</h4>
-                        {reminder.noteText && <p className="text-xs text-zinc-500 mt-1 break-words">{reminder.noteText}</p>}
-                        <p className="text-[10px] text-zinc-600 mt-1 uppercase tracking-tighter break-words">
-                          {reminder.goal.title} • {new Date(reminder.reminderAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setCurrentScreen({ name: 'goal-detail', goalId: reminder.goal.id, initialTab: 'plan' });
-                      }}
-                      className="px-4 py-2 bg-zinc-800 rounded-xl text-[10px] uppercase font-bold opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      {t('view')}
-                    </button>
-                  </div>
-                ))
-              ) : (
-                <div className="p-12 text-center bg-zinc-900/20 border border-dashed border-zinc-800 rounded-[2rem]">
-                  <p className="text-zinc-600 text-sm">{t('noReminders')}</p>
+          {/* Selected date detail */}
+          <div className="space-y-3">
+            <p className="text-meta uppercase tracking-widest"
+               style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>
+              {selectedDate.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}
+            </p>
+
+            {/* Reminders on selected date */}
+            {dateReminders.map((r, i) => (
+              <button key={i}
+                onClick={() => setCurrentScreen({ name: 'goal-detail', goalId: r.goal.id, initialTab: 'plan' })}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
+                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+                {r.task.isDone
+                  ? <CheckCircle2 size={14} style={{ color: 'var(--c-success, #4a7c59)', flexShrink: 0 }} />
+                  : <Bell        size={14} style={{ color: 'var(--c-gold)',              flexShrink: 0 }} />}
+                <div className="flex-1 min-w-0">
+                  <p className="text-body truncate"
+                     style={{ color: r.task.isDone ? 'var(--c-text-3)' : 'var(--c-text)',
+                              textDecoration: r.task.isDone ? 'line-through' : 'none' }}>
+                    {r.task.text}
+                  </p>
+                  <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>
+                    {r.goal.title} · {new Date(r.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </p>
                 </div>
-              )}
-            </div>
+              </button>
+            ))}
+
+            {/* Date note: editor / display / add button */}
+            {editingNote ? (
+              <div className="space-y-2">
+                <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
+                  autoFocus rows={3} placeholder="Note for this day…"
+                  className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+                <div className="flex gap-2">
+                  <button onClick={saveNote} disabled={noteSaving || !noteText.trim()}
+                    className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                    {noteSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save
+                  </button>
+                  {dateNote && (
+                    <button onClick={deleteNote} disabled={noteSaving}
+                      className="px-4 py-2 rounded-xl text-meta disabled:opacity-40"
+                      style={{ background: 'rgba(220,53,69,.08)', border: '1px solid rgba(220,53,69,.2)', color: '#e05260' }}>
+                      Remove
+                    </button>
+                  )}
+                  <button onClick={() => setEditingNote(false)}
+                    className="px-4 py-2 rounded-xl text-meta"
+                    style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : dateNote ? (
+              <button onClick={startEdit}
+                className="w-full flex items-start gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
+                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+                <FileText size={14} style={{ color: '#7c6af7', flexShrink: 0, marginTop: 2 }} />
+                <p className="text-body flex-1 leading-snug" style={{ color: 'var(--c-text)' }}>{dateNote.text}</p>
+              </button>
+            ) : (
+              <button onClick={startEdit}
+                className="flex items-center gap-2 text-meta transition-opacity hover:opacity-70"
+                style={{ color: 'var(--c-text-3)' }}>
+                <Plus size={14} /> Add a note for this day
+              </button>
+            )}
+
+            {dateReminders.length === 0 && !dateNote && !editingNote && (
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Nothing scheduled for this day.</p>
+            )}
           </div>
         </div>
 
+        {/* ── Right: upcoming + completed + legend ──────────────────── */}
         <div className="space-y-6">
-          <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl">
-            <h3 className="text-sm font-bold mb-4">Goal Breakdown</h3>
-            <div className="space-y-3">
-              {goals.map(goal => {
-                const goalReminders = allReminders.filter(r => r.goal.id === goal.id);
-                if (goalReminders.length === 0) return null;
-                return (
-                  <div key={goal.id} className="p-4 bg-zinc-800/30 rounded-2xl border border-zinc-700/30">
-                    <p className="text-xs font-bold text-zinc-300 mb-1 break-words">{goal.title}</p>
-                    <div className="flex items-center gap-2 text-[10px] text-zinc-500">
-                      <Bell size={10} />
-                      <span>{goalReminders.length} reminder{goalReminders.length > 1 ? 's' : ''}</span>
-                    </div>
+
+          {/* Upcoming reminders */}
+          <div>
+            <p className="text-meta uppercase tracking-widest mb-3"
+               style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Upcoming</p>
+            <div className="space-y-2">
+              {upcoming.length > 0 ? upcoming.map((r, i) => (
+                <button key={i}
+                  onClick={() => setCurrentScreen({ name: 'goal-detail', goalId: r.goal.id, initialTab: 'plan' })}
+                  className="w-full flex items-start gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
+                  style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                  <Bell size={13} style={{ color: 'var(--c-gold)', flexShrink: 0, marginTop: 2 }} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-body truncate">{r.task.text}</p>
+                    <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>
+                      {new Date(r.reminderAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                      {' · '}
+                      {new Date(r.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
                   </div>
-                );
-              })}
-              {allReminders.length === 0 && (
-                <p className="text-xs text-zinc-600 italic">No goals with active reminders</p>
+                </button>
+              )) : (
+                <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No upcoming reminders.</p>
               )}
             </div>
           </div>
 
-          <div className="p-6 bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-3xl">
-            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-4">
-              <CalendarIcon size={20} className="text-white" />
+          {/* Completed reminders */}
+          {completed.length > 0 && (
+            <div>
+              <p className="text-meta uppercase tracking-widest mb-3"
+                 style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Completed</p>
+              <div className="space-y-2">
+                {completed.map((r, i) => (
+                  <button key={i}
+                    onClick={() => setCurrentScreen({ name: 'goal-detail', goalId: r.goal.id, initialTab: 'plan' })}
+                    className="w-full flex items-start gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
+                    style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                    <CheckCircle2 size={13} style={{ color: 'var(--c-success, #4a7c59)', flexShrink: 0, marginTop: 2 }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-body truncate"
+                         style={{ color: 'var(--c-text-3)', textDecoration: 'line-through' }}>
+                        {r.task.text}
+                      </p>
+                      <p className="text-meta mt-0.5" style={{ color: 'var(--c-text-3)' }}>{r.goal.title}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
-            <h3 className="font-bold text-sm mb-2">Internal Sync</h3>
-            <p className="text-xs text-zinc-500 leading-relaxed">
-              Your calendar is automatically synced with all task reminders and notes you create within the app.
-            </p>
+          )}
+
+          {/* Legend */}
+          <div className="px-4 py-4 rounded-2xl space-y-2"
+               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+            <p className="text-meta uppercase tracking-widest mb-2"
+               style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Legend</p>
+            {[
+              { color: 'var(--c-gold)',              label: 'Reminder due' },
+              { color: 'var(--c-success, #4a7c59)',  label: 'Task completed' },
+              { color: '#7c6af7',                    label: 'Day note' },
+            ].map(({ color, label }) => (
+              <div key={label} className="flex items-center gap-2 text-meta"
+                   style={{ color: 'var(--c-text-2)' }}>
+                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
+                {label}
+              </div>
+            ))}
           </div>
+
         </div>
       </div>
     </motion.div>

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch } from 'firebase/firestore';
-import { Goal, GoalTask, User } from './types';
+import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
+import { Goal, GoalTask, User, CalendarNote } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Calendar as CalendarIcon, Trophy } from 'lucide-react';
@@ -67,6 +67,7 @@ export default function App() {
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
   const [allReminders,   setAllReminders]   = useState<{task: GoalTask; goal: Goal; reminderAt: string; noteText?: string}[]>([]);
+  const [calendarNotes,  setCalendarNotes]  = useState<CalendarNote[]>([]);
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
   const [navVisible,     setNavVisible]     = useState(true);
   const lastScrollY = useRef(0);
@@ -191,6 +192,27 @@ export default function App() {
 
     return () => { unsubT(); unsubN(); };
   }, [user, goals]);
+
+  // ── Calendar notes ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'users', user.uid, 'calendarNotes'), orderBy('date', 'asc'));
+    const unsub = onSnapshot(q, snap => {
+      setCalendarNotes(snap.docs.map(d => ({ id: d.id, ...d.data() } as CalendarNote)));
+    }, err => handleFirestoreError(err, OperationType.GET, `users/${user.uid}/calendarNotes`));
+    return () => unsub();
+  }, [user]);
+
+  const saveCalendarNote = async (date: string, text: string) => {
+    if (!user) return;
+    const ref = doc(db, 'users', user.uid, 'calendarNotes', date);
+    await setDoc(ref, { id: date, date, text, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true });
+  };
+
+  const deleteCalendarNote = async (date: string) => {
+    if (!user) return;
+    await deleteDoc(doc(db, 'users', user.uid, 'calendarNotes', date));
+  };
 
   // ── Auth ────────────────────────────────────────────────────────────────
   const handleLogin = async () => {
@@ -350,6 +372,9 @@ export default function App() {
               allReminders={allReminders}
               goals={displayGoals}
               setCurrentScreen={navigate}
+              calendarNotes={calendarNotes}
+              onSaveCalendarNote={saveCalendarNote}
+              onDeleteCalendarNote={deleteCalendarNote}
             />
           </motion.div>
         )}
