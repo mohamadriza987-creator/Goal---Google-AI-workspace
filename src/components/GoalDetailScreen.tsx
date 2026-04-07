@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Goal, GoalTask, GoalRoomThread, GoalRoomReply, User, ThreadBadge } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import {
@@ -177,16 +177,16 @@ function TaskCard({ task, goalId, isNextStep, onOpenDetail }: {
 // Task Detail Sheet
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskDetailSheet({ task, goalId, onClose }: {
+function TaskDetailSheet({ task, goalId, onClose, onDelete }: {
   task: GoalTask | null; goalId: string; onClose: () => void;
+  onDelete: (t: GoalTask) => void;
 }) {
-  const [editing,     setEditing]     = useState(false);
-  const [editText,    setEditText]    = useState('');
-  const [saving,      setSaving]      = useState(false);
-  const [deleting,    setDeleting]    = useState(false);
-  const [addingNote,  setAddingNote]  = useState(false);
-  const [noteText,    setNoteText]    = useState('');
-  const [noteSaving,  setNoteSaving]  = useState(false);
+  const [editing,    setEditing]    = useState(false);
+  const [editText,   setEditText]   = useState('');
+  const [saving,     setSaving]     = useState(false);
+  const [addingNote, setAddingNote] = useState(false);
+  const [noteText,   setNoteText]   = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
 
   useEffect(() => {
     if (task) { setEditText(task.text); setEditing(false); setAddingNote(false); setNoteText(''); }
@@ -199,15 +199,6 @@ function TaskDetailSheet({ task, goalId, onClose }: {
       await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), { text: editText.trim() });
       setEditing(false);
     } catch(e) { console.error(e); } finally { setSaving(false); }
-  };
-
-  const deleteTask = async () => {
-    if (!task || deleting) return;
-    setDeleting(true);
-    try {
-      await deleteDoc(doc(db, 'goals', goalId, 'tasks', task.id));
-      onClose();
-    } catch(e) { console.error(e); setDeleting(false); }
   };
 
   const saveNote = async () => {
@@ -277,7 +268,6 @@ function TaskDetailSheet({ task, goalId, onClose }: {
                 </button>
               )}
             </div>
-
             {(task.notes?.length ?? 0) === 0 && !addingNote && (
               <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No notes yet.</p>
             )}
@@ -288,7 +278,6 @@ function TaskDetailSheet({ task, goalId, onClose }: {
                 <p className="text-meta mt-1" style={{ color: 'var(--c-text-3)' }}>{timeAgo(n.createdAt)}</p>
               </div>
             ))}
-
             {addingNote && (
               <div className="space-y-2">
                 <textarea value={noteText} onChange={e => setNoteText(e.target.value)} autoFocus rows={3}
@@ -318,10 +307,10 @@ function TaskDetailSheet({ task, goalId, onClose }: {
                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
                 <Edit2 size={15} /> Edit
               </button>
-              <button onClick={deleteTask} disabled={deleting}
-                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium disabled:opacity-40"
+              <button onClick={() => onDelete(task)}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium"
                 style={{ background: 'rgba(220,53,69,.08)', border: '1px solid rgba(220,53,69,.2)', color: '#e05260' }}>
-                {deleting ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} Delete
+                <Trash2 size={15} /> Delete
               </button>
             </div>
           )}
@@ -335,22 +324,46 @@ function TaskDetailSheet({ task, goalId, onClose }: {
 // Plan Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+type PendingDelete = { task: GoalTask; timerId: ReturnType<typeof setTimeout> };
+
 function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const [tasks,       setTasks]       = useState<GoalTask[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [addingTask,  setAddingTask]  = useState(false);
-  const [newTaskText, setNewTaskText] = useState('');
-  const [saving,      setSaving]      = useState(false);
-  const [detailTask,  setDetailTask]  = useState<GoalTask | null>(null);
+  const [tasks,         setTasks]         = useState<GoalTask[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [addingTask,    setAddingTask]    = useState(false);
+  const [newTaskText,   setNewTaskText]   = useState('');
+  const [saving,        setSaving]        = useState(false);
+  const [detailTask,    setDetailTask]    = useState<GoalTask | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const pendingDeleteRef = useRef<PendingDelete | null>(null);
 
   const isTemp = goal.id.startsWith('temp-');
+
+  useEffect(() => { pendingDeleteRef.current = pendingDelete; }, [pendingDelete]);
+
+  // Commit any in-flight delete on unmount
+  useEffect(() => {
+    return () => {
+      const pd = pendingDeleteRef.current;
+      if (pd) {
+        clearTimeout(pd.timerId);
+        deleteDoc(doc(db, 'goals', goal.id, 'tasks', pd.task.id)).catch(console.error);
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (isTemp) { setLoading(false); return; }
     return onSnapshot(
       query(collection(db, 'goals', goal.id, 'tasks'), orderBy('order', 'asc')),
-      (snap) => { setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalTask)); setLoading(false); },
-      (err)  => { console.error(err); setLoading(false); }
+      (snap) => {
+        const updated = snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalTask);
+        setTasks(updated);
+        setLoading(false);
+        // Keep open detail sheet in sync with live data
+        setDetailTask(prev => prev ? (updated.find(t => t.id === prev.id) ?? prev) : null);
+      },
+      (err) => { console.error(err); setLoading(false); }
     );
   }, [goal.id]);
 
@@ -366,8 +379,30 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     } catch(e) { console.error(e); } finally { setSaving(false); }
   };
 
-  const todo = tasks.filter(t => !t.isDone);
-  const done = tasks.filter(t =>  t.isDone);
+  const requestDelete = (task: GoalTask) => {
+    // Commit any prior pending delete immediately
+    const prev = pendingDeleteRef.current;
+    if (prev) {
+      clearTimeout(prev.timerId);
+      deleteDoc(doc(db, 'goals', goal.id, 'tasks', prev.task.id)).catch(console.error);
+    }
+    setDetailTask(null);
+    const timerId = setTimeout(() => {
+      deleteDoc(doc(db, 'goals', goal.id, 'tasks', task.id)).catch(console.error);
+      setPendingDelete(null);
+    }, 5000);
+    setPendingDelete({ task, timerId });
+  };
+
+  const undoDelete = () => {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timerId);
+    setPendingDelete(null);
+  };
+
+  const displayTasks = tasks.filter(t => t.id !== pendingDelete?.task.id);
+  const todo = displayTasks.filter(t => !t.isDone);
+  const done = displayTasks.filter(t =>  t.isDone);
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>;
   if (isTemp)  return <div className="px-5 py-10 text-center"><Loader2 size={20} className="animate-spin mx-auto mb-3" style={{ color: 'var(--c-gold)' }} /><p className="text-body" style={{ color: 'var(--c-text-2)' }}>Saving your goal…</p></div>;
@@ -437,7 +472,29 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         task={detailTask}
         goalId={goal.id}
         onClose={() => setDetailTask(null)}
+        onDelete={requestDelete}
       />
+
+      {/* Undo delete toast */}
+      <AnimatePresence>
+        {pendingDelete && (
+          <motion.div
+            key="undo-toast"
+            initial={{ y: 24, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 24, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 36 }}
+            className="fixed bottom-24 left-4 right-4 z-50 flex items-center justify-between px-4 py-3 rounded-2xl"
+            style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', boxShadow: '0 4px 20px rgba(0,0,0,.35)' }}>
+            <span className="text-body" style={{ color: 'var(--c-text-2)' }}>Task deleted</span>
+            <button onClick={undoDelete}
+              className="text-body font-semibold px-2 py-1 rounded-lg"
+              style={{ color: 'var(--c-gold)' }}>
+              Undo
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
