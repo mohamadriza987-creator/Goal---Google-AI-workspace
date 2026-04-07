@@ -81,6 +81,7 @@ export interface GoalTask {
   completedAt?: string;
   reminderAt?: string;
   notes?: TaskNote[];
+  microSteps?: string[];
   createdAt: string;
 }
 

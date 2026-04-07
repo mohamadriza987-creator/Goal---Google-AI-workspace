@@ -96,22 +96,19 @@ function BottomSheet({ open, onClose, title, children }: {
 // Task Card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskCard({ task, goalId, isNextStep, onOpenDetail }: {
-  task: GoalTask; goalId: string; isNextStep: boolean;
+function TaskCard({ task, isNextStep, onOpenDetail, onToggleDone }: {
+  task: GoalTask; isNextStep: boolean;
   onOpenDetail: (t: GoalTask) => void;
+  onToggleDone: (task: GoalTask) => Promise<void>;
 }) {
   const [toggling, setToggling] = useState(false);
 
-  const toggleDone = async (e: React.MouseEvent) => {
+  const handleToggle = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (toggling) return;
     setToggling(true);
-    try {
-      await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), {
-        isDone:      !task.isDone,
-        completedAt: !task.isDone ? new Date().toISOString() : null,
-      });
-    } catch (e) { console.error(e); }
+    try { await onToggleDone(task); }
+    catch (e) { console.error(e); }
     finally { setToggling(false); }
   };
 
@@ -132,7 +129,7 @@ function TaskCard({ task, goalId, isNextStep, onOpenDetail }: {
       )}
       <div className="px-4 py-3 flex items-center gap-3">
         {/* Done toggle */}
-        <button onClick={toggleDone} disabled={toggling}
+        <button onClick={handleToggle} disabled={toggling}
           className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
           style={task.isDone
             ? { background: 'var(--c-success)', borderColor: 'var(--c-success)' }
@@ -177,26 +174,35 @@ function TaskCard({ task, goalId, isNextStep, onOpenDetail }: {
 // Task Detail Sheet
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskDetailSheet({ task, goalId, onClose, onDelete }: {
-  task: GoalTask | null; goalId: string; onClose: () => void;
+function TaskDetailSheet({ task, goal, onClose, onDelete }: {
+  task: GoalTask | null; goal: Goal; onClose: () => void;
   onDelete: (t: GoalTask) => void;
 }) {
-  const [editing,    setEditing]    = useState(false);
-  const [editText,   setEditText]   = useState('');
-  const [saving,     setSaving]     = useState(false);
-  const [addingNote, setAddingNote] = useState(false);
-  const [noteText,   setNoteText]   = useState('');
-  const [noteSaving, setNoteSaving] = useState(false);
+  const [editing,      setEditing]      = useState(false);
+  const [editText,     setEditText]     = useState('');
+  const [saving,       setSaving]       = useState(false);
+  const [addingNote,   setAddingNote]   = useState(false);
+  const [noteText,     setNoteText]     = useState('');
+  const [noteSaving,   setNoteSaving]   = useState(false);
+  const [showHelp,     setShowHelp]     = useState(false);
+  const [helpType,     setHelpType]     = useState('');
+  const [helpBlocking, setHelpBlocking] = useState('');
+  const [helpSaving,   setHelpSaving]   = useState(false);
+  const [helpDone,     setHelpDone]     = useState(false);
 
   useEffect(() => {
-    if (task) { setEditText(task.text); setEditing(false); setAddingNote(false); setNoteText(''); }
+    if (task) {
+      setEditText(task.text); setEditing(false);
+      setAddingNote(false); setNoteText('');
+      setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
+    }
   }, [task?.id]);
 
   const saveEdit = async () => {
     if (!task || !editText.trim() || saving) return;
     setSaving(true);
     try {
-      await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), { text: editText.trim() });
+      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { text: editText.trim() });
       setEditing(false);
     } catch(e) { console.error(e); } finally { setSaving(false); }
   };
@@ -206,11 +212,37 @@ function TaskDetailSheet({ task, goalId, onClose, onDelete }: {
     setNoteSaving(true);
     try {
       const existing = task.notes ?? [];
-      await updateDoc(doc(db, 'goals', goalId, 'tasks', task.id), {
+      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
         notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
       });
       setNoteText(''); setAddingNote(false);
     } catch(e) { console.error(e); } finally { setNoteSaving(false); }
+  };
+
+  const submitHelp = async () => {
+    if (!task || !goal.groupId || !helpType || helpSaving) return;
+    const uid  = auth.currentUser?.uid;
+    const name = auth.currentUser?.displayName || 'Member';
+    if (!uid) return;
+    setHelpSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
+        goalId:         goal.id, badge: 'help', title: task.text,
+        linkedTaskId:   task.id, linkedTaskText: task.text,
+        authorId: uid, authorName: name,
+        previewText:    helpBlocking.trim() || `${helpType} needed`,
+        replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
+      });
+      if (helpBlocking.trim()) {
+        await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
+          threadId: threadRef.id, goalId: goal.id, authorId: uid, authorName: name,
+          text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
+          reactions: {}, createdAt: now,
+        });
+      }
+      setHelpDone(true); setHelpType(''); setHelpBlocking('');
+    } catch(e) { console.error(e); } finally { setHelpSaving(false); }
   };
 
   return (
@@ -240,6 +272,25 @@ function TaskDetailSheet({ task, goalId, onClose, onDelete }: {
                style={{ color: task.isDone ? 'var(--c-text-3)' : 'var(--c-text)', textDecoration: task.isDone ? 'line-through' : 'none' }}>
               {task.text}
             </p>
+          )}
+
+          {/* Micro-steps */}
+          {(task.microSteps?.length ?? 0) > 0 && (
+            <div className="space-y-2">
+              <span className="text-meta uppercase tracking-widest"
+                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Steps</span>
+              <div className="space-y-1">
+                {task.microSteps!.map((step, i) => (
+                  <div key={i} className="flex items-start gap-2.5 py-1.5">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center"
+                          style={{ background: 'var(--c-surface-2)', color: 'var(--c-text-3)', fontSize: 10, fontWeight: 700 }}>
+                      {i + 1}
+                    </span>
+                    <p className="text-body flex-1 leading-snug">{step}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
           {/* Reminder */}
@@ -301,7 +352,7 @@ function TaskDetailSheet({ task, goalId, onClose, onDelete }: {
 
           {/* Edit + Delete */}
           {!editing && (
-            <div className="flex gap-2 pt-1">
+            <div className="flex gap-2">
               <button onClick={() => setEditing(true)}
                 className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-body font-medium"
                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
@@ -312,6 +363,57 @@ function TaskDetailSheet({ task, goalId, onClose, onDelete }: {
                 style={{ background: 'rgba(220,53,69,.08)', border: '1px solid rgba(220,53,69,.2)', color: '#e05260' }}>
                 <Trash2 size={15} /> Delete
               </button>
+            </div>
+          )}
+
+          {/* Ask for Help */}
+          {!editing && goal.groupId && (
+            <div style={{ borderTop: '1px solid var(--c-border)', paddingTop: 16 }}>
+              {helpDone ? (
+                <div className="flex items-center gap-2 px-4 py-3 rounded-xl"
+                     style={{ background: 'rgba(74,124,89,.1)', border: '1px solid rgba(74,124,89,.2)' }}>
+                  <Check size={14} style={{ color: 'var(--c-success)' }} />
+                  <span className="text-body" style={{ color: 'var(--c-success)' }}>Posted to Goal Room</span>
+                </div>
+              ) : !showHelp ? (
+                <button onClick={() => setShowHelp(true)}
+                  className="flex items-center gap-2 text-body w-full py-1 transition-opacity hover:opacity-70"
+                  style={{ color: 'var(--c-text-3)' }}>
+                  <HelpCircle size={15} /> Ask for help with this task
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-meta uppercase tracking-widest"
+                     style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em' }}>Ask for Help</p>
+                  <div className="flex flex-wrap gap-2">
+                    {['Advice', 'Accountability', 'Resource', 'Practice partner'].map(type => (
+                      <button key={type} onClick={() => setHelpType(type)}
+                        className="px-3 py-1.5 rounded-xl text-meta font-medium transition-all"
+                        style={helpType === type
+                          ? { background: 'var(--c-gold)', color: '#000' }
+                          : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea value={helpBlocking} onChange={e => setHelpBlocking(e.target.value)}
+                    placeholder="What's blocking you? (optional)" rows={2}
+                    className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
+                    style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
+                  <div className="flex gap-2">
+                    <button onClick={submitHelp} disabled={helpSaving || !helpType}
+                      className="btn-gold flex-1 flex items-center justify-center gap-2 disabled:opacity-40">
+                      {helpSaving ? <Loader2 size={14} className="animate-spin" /> : <HelpCircle size={14} />}
+                      Post to Goal Room
+                    </button>
+                    <button onClick={() => { setShowHelp(false); setHelpType(''); setHelpBlocking(''); }}
+                      className="px-4 py-2 rounded-xl text-meta"
+                      style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -360,12 +462,32 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         const updated = snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalTask);
         setTasks(updated);
         setLoading(false);
-        // Keep open detail sheet in sync with live data
         setDetailTask(prev => prev ? (updated.find(t => t.id === prev.id) ?? prev) : null);
+        // Keep goal progress in sync with actual task completion
+        const active = updated.filter(t => t.id !== pendingDeleteRef.current?.task.id);
+        if (active.length > 0) {
+          const pct = Math.round(active.filter(t => t.isDone).length / active.length * 100);
+          updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
+        }
       },
       (err) => { console.error(err); setLoading(false); }
     );
   }, [goal.id]);
+
+  const toggleDone = async (task: GoalTask): Promise<void> => {
+    const newDone = !task.isDone;
+    // Optimistic progress: compute before Firestore confirms
+    const active = tasks.filter(t => t.id !== pendingDeleteRef.current?.task.id);
+    const newDoneCount = active.filter(t => t.id === task.id ? newDone : t.isDone).length;
+    const newPct = active.length > 0 ? Math.round(newDoneCount / active.length * 100) : 0;
+    await Promise.all([
+      updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
+        isDone: newDone,
+        completedAt: newDone ? new Date().toISOString() : null,
+      }),
+      updateDoc(doc(db, 'goals', goal.id), { progressPercent: newPct }),
+    ]);
+  };
 
   const addTask = async () => {
     if (!newTaskText.trim() || saving || isTemp) return;
@@ -380,15 +502,22 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
   };
 
   const requestDelete = (task: GoalTask) => {
-    // Commit any prior pending delete immediately
     const prev = pendingDeleteRef.current;
     if (prev) {
       clearTimeout(prev.timerId);
       deleteDoc(doc(db, 'goals', goal.id, 'tasks', prev.task.id)).catch(console.error);
     }
     setDetailTask(null);
-    const timerId = setTimeout(() => {
-      deleteDoc(doc(db, 'goals', goal.id, 'tasks', task.id)).catch(console.error);
+    const timerId = setTimeout(async () => {
+      await deleteDoc(doc(db, 'goals', goal.id, 'tasks', task.id)).catch(console.error);
+      // Recalculate progress after hard delete
+      const remaining = tasks.filter(t => t.id !== task.id);
+      if (remaining.length > 0) {
+        const pct = Math.round(remaining.filter(t => t.isDone).length / remaining.length * 100);
+        updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
+      } else {
+        updateDoc(doc(db, 'goals', goal.id), { progressPercent: 0 }).catch(console.error);
+      }
       setPendingDelete(null);
     }, 5000);
     setPendingDelete({ task, timerId });
@@ -415,8 +544,8 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
           <div className="space-y-2">
             <AnimatePresence>
               {todo.map((t, i) => (
-                <TaskCard key={t.id} task={t} goalId={goal.id} isNextStep={i === 0}
-                  onOpenDetail={setDetailTask} />
+                <TaskCard key={t.id} task={t} isNextStep={i === 0}
+                  onOpenDetail={setDetailTask} onToggleDone={toggleDone} />
               ))}
             </AnimatePresence>
           </div>
@@ -453,8 +582,8 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
           <div className="space-y-2">
             <AnimatePresence>
               {done.map(t => (
-                <TaskCard key={t.id} task={t} goalId={goal.id} isNextStep={false}
-                  onOpenDetail={setDetailTask} />
+                <TaskCard key={t.id} task={t} isNextStep={false}
+                  onOpenDetail={setDetailTask} onToggleDone={toggleDone} />
               ))}
             </AnimatePresence>
           </div>
@@ -470,7 +599,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
 
       <TaskDetailSheet
         task={detailTask}
-        goalId={goal.id}
+        goal={goal}
         onClose={() => setDetailTask(null)}
         onDelete={requestDelete}
       />
