@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Goal, User } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, Users, MessageCircle, HelpCircle, ChevronRight } from 'lucide-react';
+import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
 import { transcribeAudio, generateGoalFromTranscript, StructuredGoal } from '../services/geminiService';
@@ -60,94 +60,56 @@ function motivational() {
   return lines[new Date().getDay() % lines.length];
 }
 
-// ── Goal Card ─────────────────────────────────────────────────────────────────
+// ── Goal Card (carousel) ──────────────────────────────────────────────────────
 function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
-  const similarCount = goal.similarGoals?.length ?? 0;
-  const threadCount  = 0; // will be populated when Goal Room is built
-  const helpCount    = goal.similarGoals?.filter(g => g.similarityScore >= 0.85).length ?? 0;
-
-  // Find first task text if stored in draftData (before Firestore tasks load)
   const nextStep = (goal as any).nextStep || null;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="card p-5 flex flex-col gap-4"
-      style={{ borderRadius: 20 }}
+      initial={{ opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="card flex flex-col gap-3 snap-start flex-shrink-0"
+      style={{ borderRadius: 18, minWidth: 240, maxWidth: 260, padding: '16px 16px 14px' }}
     >
       {/* Top row — title + ring */}
-      <div className="flex items-start gap-4">
+      <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
-          <h3 className="text-card-title leading-snug mb-1 truncate">{goal.title}</h3>
-          <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-2)' }}>
+          <h3 className="text-card-title leading-snug truncate" style={{ fontSize: 14 }}>{goal.title}</h3>
+          <p className="text-meta line-clamp-2 mt-0.5" style={{ color: 'var(--c-text-2)', fontSize: 12 }}>
             {goal.description}
           </p>
         </div>
-        <ProgressRing pct={goal.progressPercent ?? 0} />
+        <ProgressRing pct={goal.progressPercent ?? 0} size={44} />
       </div>
 
       {/* Next step */}
       {nextStep && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl"
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
              style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-          <ChevronRight size={14} style={{ color: 'var(--c-gold)', flexShrink: 0 }} />
-          <p className="text-meta truncate" style={{ color: 'var(--c-text-2)' }}>
+          <ChevronRight size={12} style={{ color: 'var(--c-gold)', flexShrink: 0 }} />
+          <p className="text-meta truncate" style={{ color: 'var(--c-text-2)', fontSize: 11 }}>
             {nextStep}
           </p>
         </div>
       )}
 
-      {/* Support strip */}
-      {similarCount > 0 && (
-        <div className="flex items-center gap-4"
-             style={{ borderTop: '1px solid var(--c-border)', paddingTop: 12 }}>
-          {similarCount > 0 && (
-            <div className="flex items-center gap-1.5">
-              <Users size={12} style={{ color: 'var(--c-text-3)' }} />
-              <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                {similarCount} similar
-              </span>
-            </div>
-          )}
-          {threadCount > 0 && (
-            <div className="flex items-center gap-1.5">
-              <MessageCircle size={12} style={{ color: 'var(--c-text-3)' }} />
-              <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                {threadCount} threads
-              </span>
-            </div>
-          )}
-          {helpCount > 0 && (
-            <div className="flex items-center gap-1.5">
-              <HelpCircle size={12} style={{ color: 'var(--c-text-3)' }} />
-              <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                {helpCount} can help
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Saving indicator */}
       {goal.savingStatus === 'saving' && (
-        <div className="flex items-center gap-2" style={{ color: 'var(--c-text-3)' }}>
-          <Loader2 size={12} className="animate-spin" />
-          <span className="text-meta">Saving…</span>
+        <div className="flex items-center gap-1.5" style={{ color: 'var(--c-text-3)' }}>
+          <Loader2 size={11} className="animate-spin" />
+          <span className="text-meta" style={{ fontSize: 11 }}>Saving…</span>
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex gap-3">
-        <button
-          onClick={onOpen}
-          disabled={goal.savingStatus === 'saving'}
-          className="btn-gold flex-1 text-center text-sm"
-          style={{ padding: '11px 0', borderRadius: 14 }}
-        >
-          Open Goal
-        </button>
-      </div>
+      {/* Open button */}
+      <button
+        onClick={onOpen}
+        disabled={goal.savingStatus === 'saving'}
+        className="btn-gold w-full text-center mt-auto"
+        style={{ padding: '9px 0', borderRadius: 12, fontSize: 12, fontWeight: 600 }}
+      >
+        Open
+      </button>
     </motion.div>
   );
 }
@@ -396,106 +358,83 @@ export function HomeScreen({
               </button>
             </div>
 
-            {/* Voice input card */}
+            {/* Add goal — compact bar */}
             <div className="px-4 mt-4">
-              <div className="card p-5" style={{ borderRadius: 20 }}>
-                <p className="text-card-title mb-1" style={{ fontSize: 16 }}>
-                  What do you want to move forward?
-                </p>
-                <p className="text-meta mb-5" style={{ color: 'var(--c-text-3)' }}>
-                  Speak naturally in any language
-                </p>
+              <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
+                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                {/* Mic button */}
+                <motion.button
+                  onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
+                  whileTap={{ scale: 0.92 }}
+                  disabled={loading}
+                  className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
+                  style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
+                >
+                  <Mic size={16} style={{ color: '#000' }} />
+                </motion.button>
 
                 {!isTyping ? (
-                  <div className="flex flex-col items-center gap-4">
-                    {/* Mic button */}
-                    <motion.button
-                      onClick={async () => {
-                        setProcessingError(null);
-                        setCurrentView('recording');
-                        await startRecording();
-                      }}
-                      whileTap={{ scale: 0.94 }}
-                      disabled={loading}
-                      className="w-full flex items-center justify-center gap-3 py-4 rounded-2xl font-semibold text-sm transition-all"
-                      style={{
-                        background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)',
-                        color: '#000',
-                        boxShadow: '0 0 24px rgba(201,168,76,.2)',
-                      }}
-                    >
-                      <Mic size={20} />
-                      Tap to speak your goal
-                    </motion.button>
-
-                    <button
-                      onClick={() => setIsTyping(true)}
-                      className="text-meta flex items-center gap-2 transition-colors hover:opacity-80"
-                      style={{ color: 'var(--c-text-3)' }}
-                    >
-                      <Edit2 size={13} />
-                      Type instead
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setIsTyping(true)}
+                    className="flex-1 text-left text-sm"
+                    style={{ color: 'var(--c-text-3)' }}
+                  >
+                    New goal…
+                  </button>
                 ) : (
-                  <div className="relative">
-                    <textarea
+                  <>
+                    <input
                       autoFocus
+                      type="text"
                       placeholder="Describe your goal…"
                       value={typedGoal}
-                      onChange={(e) => {
-                        setTypedGoal(e.target.value);
-                        e.target.style.height = 'auto';
-                        e.target.style.height = e.target.scrollHeight + 'px';
-                      }}
+                      onChange={(e) => setTypedGoal(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTypedGoalSubmit(); }
+                        if (e.key === 'Enter') handleTypedGoalSubmit();
+                        if (e.key === 'Escape') { setIsTyping(false); setTypedGoal(''); }
                       }}
-                      className="w-full rounded-2xl p-4 pr-14 text-sm focus:outline-none resize-none overflow-hidden"
-                      style={{
-                        background: 'var(--c-surface-2)',
-                        border: '1px solid var(--c-border)',
-                        color: 'var(--c-text)',
-                        minHeight: 100,
-                      }}
+                      className="flex-1 bg-transparent border-none outline-none text-sm"
+                      style={{ color: 'var(--c-text)' }}
                     />
                     <button
                       onClick={handleTypedGoalSubmit}
                       disabled={!typedGoal.trim() || loading}
-                      className="absolute bottom-3 right-3 p-2.5 rounded-xl font-bold transition-all disabled:opacity-40 active:scale-95"
-                      style={{ background: 'var(--c-gold)', color: '#000' }}
+                      className="flex-shrink-0 disabled:opacity-40 transition-opacity"
+                      style={{ color: 'var(--c-gold)' }}
                     >
-                      {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                      {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
                     </button>
                     <button
                       onClick={() => { setIsTyping(false); setTypedGoal(''); }}
-                      className="mt-3 text-meta block transition-colors hover:opacity-70"
+                      className="flex-shrink-0"
                       style={{ color: 'var(--c-text-3)' }}
                     >
-                      Cancel
+                      <X size={15} />
                     </button>
-                  </div>
-                )}
-
-                {(processingError || recorderError) && (
-                  <p className="text-meta mt-3 text-center" style={{ color: '#e07070' }}>
-                    {processingError || recorderError}
-                  </p>
+                  </>
                 )}
               </div>
+
+              {(processingError || recorderError) && (
+                <p className="text-meta mt-2 px-1" style={{ color: '#e07070', fontSize: 12 }}>
+                  {processingError || recorderError}
+                </p>
+              )}
             </div>
 
-            {/* My Goals section */}
+            {/* My Goals — horizontal carousel */}
             {goals.length > 0 && (
-              <div className="px-4 mt-8">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-section-title" style={{ fontSize: 18 }}>My Goals</h2>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+              <div className="mt-6">
+                <div className="flex items-center justify-between px-4 mb-3">
+                  <h2 style={{ fontSize: 16, fontWeight: 600, letterSpacing: -0.3 }}>My Goals</h2>
+                  <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>
                     {goals.length} {goals.length === 1 ? 'goal' : 'goals'}
                   </span>
                 </div>
-
-                <div className="flex flex-col gap-4">
+                <div
+                  className="flex gap-3 overflow-x-auto snap-x snap-mandatory pl-4 pr-4 pb-1"
+                  style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+                >
                   {goals.map((goal) => (
                     <GoalCard
                       key={goal.id}
