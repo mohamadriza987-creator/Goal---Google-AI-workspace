@@ -14,7 +14,7 @@ import { db } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
   doc, updateDoc, addDoc, deleteDoc, increment, serverTimestamp,
-  getDoc, getDocs,
+  getDoc, getDocs, writeBatch,
 } from 'firebase/firestore';
 import { auth } from '../firebase';
 
@@ -774,17 +774,48 @@ function ThreadCard({ thread, onOpen }: { thread: GoalRoomThread; onOpen: () => 
 // Thread Detail
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
+interface AuthorCredit {
+  similarityPct?: number;   // from goal.similarGoals
+  usefulGiven:   number;    // sum of usefulCount on their threads in this room
+  helpOffered:   number;    // count of threads they posted with help/support badge
+}
+
+function buildAuthorCredit(
+  authorId: string,
+  allThreads: GoalRoomThread[],
+  similarGoals: Goal['similarGoals'],
+): AuthorCredit {
+  const theirThreads = allThreads.filter(t => t.authorId === authorId);
+  const usefulGiven  = theirThreads.reduce((s, t) => s + (t.usefulCount ?? 0), 0);
+  const helpOffered  = theirThreads.filter(t => t.badge === 'help' || t.badge === 'support').length;
+  const simEntry     = similarGoals?.find(g => g.userId === authorId);
+  return {
+    similarityPct: simEntry ? Math.round(simEntry.similarityScore * 100) : undefined,
+    usefulGiven,
+    helpOffered,
+  };
+}
+
+function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals, onBack }: {
   thread: GoalRoomThread; groupId: string; goalId: string;
-  user: FirebaseUser | null; onBack: () => void;
+  user: FirebaseUser | null;
+  allThreads: GoalRoomThread[];
+  similarGoals: Goal['similarGoals'];
+  onBack: () => void;
 }) {
-  const [replies,     setReplies]   = useState<GoalRoomReply[]>([]);
-  const [loading,     setLoading]   = useState(true);
-  const [replyText,   setReplyText] = useState('');
-  const [sending,     setSending]   = useState(false);
-  const [savedNotes,  setSavedNotes]= useState<Set<string>>(new Set());
+  const [replies,    setReplies]  = useState<GoalRoomReply[]>([]);
+  const [loading,    setLoading]  = useState(true);
+  const [replyText,  setReplyText]= useState('');
+  const [sending,    setSending]  = useState(false);
+  const [savedNotes, setSavedNotes] = useState<Set<string>>(new Set());
+  // Track reactions this session to prevent double-counting
+  const [myReactions, setMyReactions] = useState<Set<string>>(new Set());
 
   const meta = BADGE_META[thread.badge];
+  const isHelpThread = thread.badge === 'help' || thread.badge === 'support';
+  const authorCredit = isHelpThread
+    ? buildAuthorCredit(thread.authorId, allThreads, similarGoals)
+    : null;
 
   useEffect(() => {
     return onSnapshot(
@@ -797,33 +828,46 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
   const sendReply = async () => {
     if (!replyText.trim() || sending || !user) return;
     setSending(true);
+    const text = replyText.trim();
+    setReplyText('');
     const now = new Date().toISOString();
     try {
-      await addDoc(collection(db, 'groups', groupId, 'threads', thread.id, 'replies'), {
+      // Atomic: write reply + increment counters in one batch
+      const replyRef = doc(collection(db, 'groups', groupId, 'threads', thread.id, 'replies'));
+      const threadRef = doc(db, 'groups', groupId, 'threads', thread.id);
+      const batch = writeBatch(db);
+      batch.set(replyRef, {
         threadId: thread.id, goalId,
         authorId: user.uid, authorName: user.displayName || 'Member',
-        text: replyText.trim(), reactions: {}, createdAt: now,
+        text, reactions: {}, createdAt: now,
       });
-      await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id), {
-        replyCount:     increment(1),
-        lastActivityAt: now,
-      });
-      setReplyText('');
-    } catch(e) { console.error(e); }
-    finally { setSending(false); }
+      batch.update(threadRef, { replyCount: increment(1), lastActivityAt: now });
+      await batch.commit();
+    } catch(e) {
+      console.error(e);
+      setReplyText(text); // restore on failure
+    } finally {
+      setSending(false);
+    }
   };
 
   const reactToReply = async (replyId: string, reaction: string) => {
+    const key = `${replyId}-${reaction}`;
+    if (myReactions.has(key) || !user) return;
+    setMyReactions(prev => new Set([...prev, key])); // optimistic lock
     try {
-      await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id, 'replies', replyId), {
-        [`reactions.${reaction}`]: increment(1),
-      });
+      const replyRef  = doc(db, 'groups', groupId, 'threads', thread.id, 'replies', replyId);
+      const threadRef = doc(db, 'groups', groupId, 'threads', thread.id);
+      const batch = writeBatch(db);
+      batch.update(replyRef, { [`reactions.${reaction}`]: increment(1) });
       if (reaction === 'useful') {
-        await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id), {
-          usefulCount: increment(1),
-        });
+        batch.update(threadRef, { usefulCount: increment(1) });
       }
-    } catch(e) { console.error(e); }
+      await batch.commit();
+    } catch(e) {
+      console.error(e);
+      setMyReactions(prev => { const n = new Set(prev); n.delete(key); return n; }); // rollback lock
+    }
   };
 
   const saveReplyToNotes = async (reply: GoalRoomReply) => {
@@ -831,27 +875,24 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
     try {
       await addDoc(collection(db, 'goals', goalId, 'notes'), {
         goalId, ownerId: user.uid,
-        text:           reply.text,
-        source:         'saved_from_room',
-        privacy:        'private',
-        savedFromAuthorName: reply.authorName,
-        savedFromReplyId:    reply.id,
-        createdAt:      new Date().toISOString(),
+        text: reply.text, source: 'saved_from_room', privacy: 'private',
+        savedFromAuthorName: reply.authorName, savedFromReplyId: reply.id,
+        createdAt: new Date().toISOString(),
       });
       setSavedNotes(prev => new Set([...prev, reply.id]));
     } catch(e) { console.error(e); }
   };
 
   const REACTIONS = [
-    { key: 'useful',   icon: <ThumbsUp  size={13} />, label: 'Useful'       },
-    { key: 'proud',    icon: <Star      size={13} />, label: 'Proud of you' },
-    { key: 'me_too',   icon: <Heart     size={13} />, label: 'Me too'       },
-    { key: 'can_help', icon: <Hand      size={13} />, label: 'I can help'   },
+    { key: 'useful',   icon: <ThumbsUp size={13} />, label: 'Useful'       },
+    { key: 'proud',    icon: <Star     size={13} />, label: 'Proud'        },
+    { key: 'me_too',   icon: <Heart    size={13} />, label: 'Me too'       },
+    { key: 'can_help', icon: <Hand     size={13} />, label: 'I can help'   },
   ];
 
   return (
     <div className="flex flex-col" style={{ minHeight: 'calc(100dvh - 280px)' }}>
-      {/* Header */}
+      {/* Back + badge */}
       <div className="px-4 py-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--c-border)' }}>
         <button onClick={onBack} className="transition-opacity hover:opacity-70" style={{ color: 'var(--c-text-2)' }}>
           <ArrowLeft size={20} />
@@ -867,26 +908,52 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
             <ChevronRight size={11} /> {thread.linkedTaskText}
           </p>
         )}
-        <p className="text-body leading-relaxed mb-2" style={{ color: 'var(--c-text-2)' }}>
+        <p className="text-body leading-relaxed mb-3" style={{ color: 'var(--c-text-2)' }}>
           {thread.previewText}
         </p>
-        <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-          {thread.authorName} · {timeAgo(thread.createdAt)}
-        </p>
+
+        {/* Author row — with credibility for help/support threads */}
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+            {thread.authorName} · {timeAgo(thread.createdAt)}
+          </p>
+          {authorCredit && (
+            <div className="flex items-center gap-3 flex-wrap">
+              {authorCredit.similarityPct !== undefined && (
+                <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                  {authorCredit.similarityPct}% match
+                </span>
+              )}
+              {authorCredit.usefulGiven > 0 && (
+                <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)', fontSize: 11 }}>
+                  <ThumbsUp size={10} /> {authorCredit.usefulGiven} useful
+                </span>
+              )}
+              {authorCredit.helpOffered > 0 && (
+                <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                  <Hand size={10} /> helped {authorCredit.helpOffered}×
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Replies */}
       <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto" style={{ paddingBottom: 100 }}>
-        {loading && <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>}
-
+        {loading && (
+          <div className="flex justify-center py-8">
+            <Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
+          </div>
+        )}
         {!loading && replies.length === 0 && (
           <p className="text-center text-meta py-8" style={{ color: 'var(--c-text-3)' }}>
             No replies yet. Be the first to respond.
           </p>
         )}
-
         {replies.map(reply => (
-          <div key={reply.id} className="p-4 rounded-2xl" style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+          <div key={reply.id} className="p-4 rounded-2xl"
+               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-meta font-semibold" style={{ color: 'var(--c-text-2)' }}>{reply.authorName}</span>
               <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>{timeAgo(reply.createdAt)}</span>
@@ -895,20 +962,26 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
 
             {/* Reactions */}
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              {REACTIONS.map(r => (
-                <button key={r.key}
-                  onClick={() => reactToReply(reply.id, r.key)}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
-                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
-                  {r.icon}
-                  <span style={{ fontSize: 11 }}>{r.label}</span>
-                  {(reply.reactions?.[r.key as keyof typeof reply.reactions] ?? 0) > 0 && (
-                    <span style={{ color: 'var(--c-gold)', fontWeight: 700, fontSize: 11 }}>
-                      {reply.reactions![r.key as keyof typeof reply.reactions]}
-                    </span>
-                  )}
-                </button>
-              ))}
+              {REACTIONS.map(r => {
+                const count = reply.reactions?.[r.key as keyof typeof reply.reactions] ?? 0;
+                const reacted = myReactions.has(`${reply.id}-${r.key}`);
+                return (
+                  <button key={r.key}
+                    onClick={() => reactToReply(reply.id, r.key)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
+                    style={{
+                      background: reacted ? 'rgba(201,168,76,.12)' : 'var(--c-surface-2)',
+                      border: `1px solid ${reacted ? 'var(--c-gold)' : 'var(--c-border)'}`,
+                      color: reacted ? 'var(--c-gold)' : 'var(--c-text-3)',
+                    }}>
+                    {r.icon}
+                    <span style={{ fontSize: 11 }}>{r.label}</span>
+                    {count > 0 && (
+                      <span style={{ color: 'var(--c-gold)', fontWeight: 700, fontSize: 11 }}>{count}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
             {/* Save to notes */}
@@ -923,12 +996,12 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
         ))}
       </div>
 
-      {/* Reply input */}
+      {/* Reply composer */}
       <div className="sticky bottom-0 px-4 pb-6 pt-3"
            style={{ background: 'var(--c-bg)', borderTop: '1px solid var(--c-border)' }}>
         <div className="flex gap-2">
           <input value={replyText} onChange={e => setReplyText(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') sendReply(); }}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
             placeholder="Write a reply…"
             className="flex-1 px-4 py-3 rounded-xl text-sm focus:outline-none"
             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
@@ -948,17 +1021,16 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const [threads,        setThreads]       = useState<GoalRoomThread[]>([]);
-  const [loading,        setLoading]       = useState(true);
-  const [filter,         setFilter]        = useState<ThreadBadge | 'all'>('all');
-  const [selectedThread, setSelectedThread]= useState<GoalRoomThread | null>(null);
-  const [creating,       setCreating]      = useState(false);
+  const [serverThreads,  setServerThreads]  = useState<GoalRoomThread[]>([]);
+  const [pendingThread,  setPendingThread]  = useState<GoalRoomThread | null>(null);
+  const [loading,        setLoading]        = useState(true);
+  const [filter,         setFilter]         = useState<ThreadBadge | 'all'>('all');
+  const [selectedThread, setSelectedThread] = useState<GoalRoomThread | null>(null);
+  const [creating,       setCreating]       = useState(false);
 
-  // Create thread form
-  const [newBadge,    setNewBadge]    = useState<ThreadBadge>('help');
-  const [newTitle,    setNewTitle]    = useState('');
-  const [newBody,     setNewBody]     = useState('');
-  const [newSaving,   setNewSaving]   = useState(false);
+  const [newBadge, setNewBadge] = useState<ThreadBadge>('help');
+  const [newTitle, setNewTitle] = useState('');
+  const [newBody,  setNewBody]  = useState('');
 
   const groupId = goal.groupId;
 
@@ -966,30 +1038,65 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
     if (!groupId) { setLoading(false); return; }
     return onSnapshot(
       query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
-      (snap) => { setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)); setLoading(false); },
-      (err)  => { console.error(err); setLoading(false); }
+      (snap) => {
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread);
+        setServerThreads(list);
+        setLoading(false);
+        // Clear optimistic thread once its server copy has arrived
+        setPendingThread(pt => {
+          if (!pt) return null;
+          const arrived = list.some(t =>
+            t.authorId === pt.authorId &&
+            t.title    === pt.title &&
+            Math.abs(new Date(t.createdAt).getTime() - new Date(pt.createdAt).getTime()) < 10_000
+          );
+          return arrived ? null : pt;
+        });
+      },
+      (err) => { console.error(err); setLoading(false); }
     );
   }, [groupId]);
 
-  const createThread = async () => {
-    if (!newTitle.trim() || newSaving || !user || !groupId) return;
-    setNewSaving(true);
-    const now = new Date().toISOString();
-    try {
-      await addDoc(collection(db, 'groups', groupId, 'threads'), {
-        goalId: goal.id, badge: newBadge, title: newTitle.trim(),
-        authorId: user.uid, authorName: user.displayName || 'Member',
-        previewText: newBody.trim() || newTitle.trim(),
-        replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
-      });
-      setCreating(false); setNewTitle(''); setNewBody(''); setNewBadge('help');
-    } catch(e) { console.error(e); }
-    finally { setNewSaving(false); }
+  const createThread = () => {
+    if (!newTitle.trim() || !user || !groupId) return;
+
+    const title = newTitle.trim();
+    const body  = newBody.trim();
+    const badge = newBadge;
+    const now   = new Date().toISOString();
+
+    // Optimistic: add to UI immediately
+    const tempId: string = `opt-${Date.now()}`;
+    const optimistic: GoalRoomThread = {
+      id: tempId, goalId: goal.id, badge, title,
+      authorId: user.uid, authorName: user.displayName || 'Member',
+      previewText: body || title,
+      replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
+    };
+    setPendingThread(optimistic);
+
+    // Close composer immediately
+    setCreating(false);
+    setNewTitle('');
+    setNewBody('');
+    setNewBadge('help');
+
+    // Write in background; rollback on failure
+    addDoc(collection(db, 'groups', groupId, 'threads'), {
+      goalId: goal.id, badge, title,
+      authorId: user.uid, authorName: user.displayName || 'Member',
+      previewText: body || title,
+      replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
+    }).catch(() => {
+      setPendingThread(pt => (pt?.id === tempId ? null : pt));
+    });
   };
 
-  const filtered = filter === 'all' ? threads : threads.filter(t => t.badge === filter);
+  // Merge: pending first (if not yet in server list), then server list
+  const allThreads = pendingThread ? [pendingThread, ...serverThreads] : serverThreads;
+  const filtered   = filter === 'all' ? allThreads : allThreads.filter(t => t.badge === filter);
 
-  // ── No room assigned yet
+  // ── No room assigned
   if (!groupId) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
@@ -1009,8 +1116,13 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   if (selectedThread) {
     return (
       <ThreadDetail
-        thread={selectedThread} groupId={groupId} goalId={goal.id}
-        user={user} onBack={() => setSelectedThread(null)}
+        thread={selectedThread}
+        groupId={groupId}
+        goalId={goal.id}
+        user={user}
+        allThreads={allThreads}
+        similarGoals={goal.similarGoals}
+        onBack={() => setSelectedThread(null)}
       />
     );
   }
@@ -1020,43 +1132,42 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
     <div className="flex flex-col" style={{ paddingBottom: 100 }}>
       {/* Filter pills */}
       <div className="flex gap-2 px-4 py-3 overflow-x-auto" style={{ borderBottom: '1px solid var(--c-border)' }}>
-        <button onClick={() => setFilter('all')}
-          className="btn-pill flex-shrink-0 text-meta font-semibold transition-all"
-          style={filter === 'all'
-            ? { background: 'var(--c-gold)', color: '#000' }
-            : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
-          All
-        </button>
-        {ALL_BADGES.map(b => (
+        {(['all', ...ALL_BADGES] as const).map(b => (
           <button key={b} onClick={() => setFilter(b)}
-            className="flex-shrink-0 text-meta font-semibold transition-all"
+            className="flex-shrink-0 text-meta font-semibold"
             style={filter === b
-              ? { ...{}, background: 'var(--c-gold)', color: '#000', borderRadius: 999, padding: '6px 14px' }
+              ? { background: 'var(--c-gold)', color: '#000', borderRadius: 999, padding: '6px 14px' }
               : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)', borderRadius: 999, padding: '6px 14px' }}>
-            {BADGE_META[b].label}
+            {b === 'all' ? 'All' : BADGE_META[b].label}
           </button>
         ))}
       </div>
 
       {/* Thread list */}
       <div className="px-4 py-4 space-y-3 flex-1">
-        {loading && <div className="flex justify-center py-12"><Loader2 size={22} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>}
-
+        {loading && (
+          <div className="flex justify-center py-12">
+            <Loader2 size={22} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
+          </div>
+        )}
         {!loading && filtered.length === 0 && (
           <div className="text-center py-16">
             <p className="text-body mb-1" style={{ color: 'var(--c-text-2)' }}>No threads yet.</p>
             <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Start a conversation below.</p>
           </div>
         )}
-
         <AnimatePresence>
           {filtered.map(thread => (
-            <ThreadCard key={thread.id} thread={thread} onOpen={() => setSelectedThread(thread)} />
+            <ThreadCard
+              key={thread.id}
+              thread={thread}
+              onOpen={() => thread.id.startsWith('opt-') ? undefined : setSelectedThread(thread)}
+            />
           ))}
         </AnimatePresence>
       </div>
 
-      {/* FAB — create thread */}
+      {/* FAB */}
       <button onClick={() => setCreating(true)}
         className="fixed z-30 flex items-center gap-2 px-5 py-3.5 rounded-full font-semibold shadow-xl"
         style={{ bottom: 100, right: 20, background: 'var(--c-gold)', color: '#000', boxShadow: '0 4px 24px rgba(201,168,76,.35)' }}>
@@ -1072,7 +1183,11 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
               {ALL_BADGES.map(b => (
                 <button key={b} onClick={() => setNewBadge(b)}
                   className={cn(newBadge === b ? BADGE_META[b].cls : '')}
-                  style={newBadge !== b ? { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase' } : {}}>
+                  style={newBadge !== b ? {
+                    background: 'var(--c-surface-2)', border: '1px solid var(--c-border)',
+                    color: 'var(--c-text-3)', borderRadius: 999, padding: '3px 10px',
+                    fontSize: 11, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
+                  } : {}}>
                   {BADGE_META[b].label}
                 </button>
               ))}
@@ -1092,10 +1207,9 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
               className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
               style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
           </div>
-          <button onClick={createThread} disabled={newSaving || !newTitle.trim()}
+          <button onClick={createThread} disabled={!newTitle.trim()}
             className="btn-gold w-full flex items-center justify-center gap-2 disabled:opacity-40">
-            {newSaving ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-            Post Thread
+            <Send size={16} /> Post Thread
           </button>
         </div>
       </BottomSheet>
