@@ -68,7 +68,8 @@ function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
     <motion.div
       initial={{ opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="card flex flex-col gap-3 snap-start flex-shrink-0"
+      onClick={onOpen}
+      className="card flex flex-col gap-3 snap-start flex-shrink-0 cursor-pointer"
       style={{ borderRadius: 18, minWidth: 240, maxWidth: 260, padding: '16px 16px 14px' }}
     >
       {/* Top row — title + ring */}
@@ -101,15 +102,6 @@ function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
         </div>
       )}
 
-      {/* Open button */}
-      <button
-        onClick={onOpen}
-        disabled={goal.savingStatus === 'saving'}
-        className="btn-gold w-full text-center mt-auto"
-        style={{ padding: '9px 0', borderRadius: 12, fontSize: 12, fontWeight: 600 }}
-      >
-        Open
-      </button>
     </motion.div>
   );
 }

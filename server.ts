@@ -189,23 +189,37 @@ async function findOrCreateGroupForGoal(goalId: string) {
 
       const groupRef = db.collection("groups").doc(bestGroup.id);
       const goalRef = db.collection("goals").doc(goal.id);
-      const eligibleAt = nowIso();
+      const joinedAt = nowIso();
 
       await db.runTransaction(async (transaction) => {
+        const gDoc = await transaction.get(groupRef);
+        const gData = gDoc.data() as GroupDoc;
+        const members: any[] = gData?.members || [];
+        const memberIds: string[] = gData?.memberIds || [];
+        const alreadyMember = members.some((m) => m.goalId === goal.id);
+
         transaction.update(goalRef, {
           groupId: bestGroup!.id,
-          groupJoined: false,
-          eligibleAt,
-          joinedAt: admin.firestore.FieldValue.delete(),
+          groupJoined: true,
+          joinedAt,
+          eligibleAt: joinedAt,
         });
 
-        transaction.set(
-          groupRef,
-          {
-            eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goal.id),
-          },
-          { merge: true },
-        );
+        const groupUpdate: any = {
+          eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goal.id),
+        };
+        if (!alreadyMember) {
+          groupUpdate.members = admin.firestore.FieldValue.arrayUnion({
+            goalId: goal.id,
+            userId: goal.ownerId,
+            joinedAt,
+          });
+          if (!memberIds.includes(goal.ownerId)) {
+            groupUpdate.memberIds = admin.firestore.FieldValue.arrayUnion(goal.ownerId);
+            groupUpdate.memberCount = admin.firestore.FieldValue.increment(1);
+          }
+        }
+        transaction.set(groupRef, groupUpdate, { merge: true });
       });
 
       return {
@@ -243,22 +257,30 @@ async function findOrCreateGroupForGoal(goalId: string) {
       );
 
       const eligibleGoalIds = uniqueStrings(clusterGoals.map((g) => g.id));
-      const eligibleAt = nowIso();
+      const joinedAt = nowIso();
+
+      const initialMembers = clusterGoals.map((g) => ({
+        goalId: g.id,
+        userId: g.ownerId,
+        joinedAt,
+      }));
+      const initialMemberIds = uniqueStrings(clusterGoals.map((g) => g.ownerId));
 
       const groupData = {
         derivedGoalTheme: groupName,
         representativeEmbedding: goal.embedding,
         localityCenter: goal.matchingMetadata?.locality || "Global",
         maxMembers: 70,
-        members: [],
+        members: initialMembers,
+        memberIds: initialMemberIds,
         eligibleGoalIds,
-        memberCount: 0,
+        memberCount: initialMemberIds.length,
         matchingCriteria: {
           category: goal.category,
           timeHorizon: goal.timeHorizon,
           privacy: goalIsPrivate ? "private" : "public",
         },
-        createdAt: eligibleAt,
+        createdAt: joinedAt,
       };
 
       const groupRef = await db.collection("groups").add(groupData);
@@ -267,9 +289,9 @@ async function findOrCreateGroupForGoal(goalId: string) {
       for (const g of clusterGoals) {
         batch.update(db.collection("goals").doc(g.id), {
           groupId: groupRef.id,
-          groupJoined: false,
-          eligibleAt,
-          joinedAt: admin.firestore.FieldValue.delete(),
+          groupJoined: true,
+          joinedAt,
+          eligibleAt: joinedAt,
         });
       }
       await batch.commit();
