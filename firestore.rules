@@ -121,7 +121,18 @@ service cloud.firestore {
                        request.auth.uid in
                          get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []) &&
                        request.resource.data.authorId == request.auth.uid;
-      allow update: if isAdmin();
+      // Members may increment replyCount (+1), lastActivityAt (string), or usefulCount (+1).
+      // No other fields may be touched. Each counter is monotonically increasing only.
+      allow update: if isAdmin() ||
+                      (isAuthenticated() &&
+                         request.auth.uid in
+                           get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []) &&
+                         request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['replyCount', 'lastActivityAt', 'usefulCount']) &&
+                         (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['replyCount']) ||
+                           request.resource.data.replyCount == resource.data.get('replyCount', 0) + 1) &&
+                         (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['usefulCount']) ||
+                           request.resource.data.usefulCount == resource.data.get('usefulCount', 0) + 1));
       allow delete: if isAdmin();
     }
 
@@ -134,7 +145,17 @@ service cloud.firestore {
                        request.auth.uid in
                          get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []) &&
                        request.resource.data.authorId == request.auth.uid;
-      allow update: if isAdmin();
+      // Members may only update the reactions map.
+      // Each known reaction key is monotonically increasing — values cannot decrease.
+      allow update: if isAdmin() ||
+                      (isAuthenticated() &&
+                         request.auth.uid in
+                           get(/databases/$(database)/documents/groups/$(groupId)).data.get('memberIds', []) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']) &&
+                         request.resource.data.reactions.get('useful',   0) >= resource.data.get('reactions', {}).get('useful',   0) &&
+                         request.resource.data.reactions.get('proud',    0) >= resource.data.get('reactions', {}).get('proud',    0) &&
+                         request.resource.data.reactions.get('me_too',   0) >= resource.data.get('reactions', {}).get('me_too',   0) &&
+                         request.resource.data.reactions.get('can_help', 0) >= resource.data.get('reactions', {}).get('can_help', 0));
       allow delete: if isAdmin();
     }
 

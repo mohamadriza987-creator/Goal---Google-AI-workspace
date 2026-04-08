@@ -62,6 +62,11 @@ function motivational() {
 
 // ── Goal Card (carousel) ──────────────────────────────────────────────────────
 function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
+  const similarCount = goal.similarGoals?.length ?? 0;
+  const threadCount  = 0; // will be populated when Goal Room is built
+  const helpCount    = goal.similarGoals?.filter(g => g.similarityScore >= 0.9).length ?? 0;
+
+  // Find first task text if stored in draftData (before Firestore tasks load)
   const nextStep = (goal as any).nextStep || null;
 
   return (
