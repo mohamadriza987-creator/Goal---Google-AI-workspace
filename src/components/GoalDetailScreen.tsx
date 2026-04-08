@@ -1107,43 +1107,76 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 // People Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PeopleTab({ goal }: { goal: Goal; user: FirebaseUser | null }) {
-  const similar = goal.similarGoals ?? [];
-  const top     = similar.slice(0, 5);
+interface PeopleData {
+  members:      { userId: string; goalTitle: string; joinedAt: string }[];
+  similarTasks: { text: string }[];
+  popularTasks: { text: string; count: number }[];
+}
+
+function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+  const [data,    setData]    = useState<PeopleData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) { setLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await user.getIdToken();
+        const res   = await fetch(`/api/goals/${goal.id}/people-tasks`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!cancelled && res.ok) setData(await res.json());
+      } catch (e) {
+        console.error('PeopleTab load error:', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [goal.id, user]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
+      </div>
+    );
+  }
+
+  const { similarTasks = [], popularTasks = [] } = data ?? {};
+
+  const TaskList = ({ items }: { items: { text: string }[] }) => (
+    <div className="space-y-2">
+      {items.map((item, i) => (
+        <div key={i} className="flex items-start gap-2.5 px-4 py-3 rounded-2xl"
+             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+          <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+          <p className="text-sm leading-snug" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
+        </div>
+      ))}
+    </div>
+  );
+
+  const Empty = ({ msg }: { msg: string }) => (
+    <div className="px-4 py-5 rounded-2xl text-center"
+         style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>{msg}</p>
+    </div>
+  );
 
   return (
     <div className="px-5 pt-6 pb-32 space-y-8">
 
-      {/* Similar Goals */}
+      {/* Similar Tasks */}
       <section>
         <h3 className="text-meta uppercase tracking-widest mb-3"
             style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
-          Similar Goals
+          Similar Tasks
         </h3>
-        {top.length > 0 ? (
-          <div className="space-y-2">
-            {top.map((g) => (
-              <div key={g.goalId}
-                   className="flex items-center justify-between px-4 py-3 rounded-2xl"
-                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                <p className="text-sm flex-1 min-w-0 truncate" style={{ color: 'var(--c-text-2)' }}>
-                  {g.goalTitle}
-                </p>
-                <span className="ml-3 text-meta flex-shrink-0"
-                      style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                  {Math.round(g.similarityScore * 100)}%
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="px-4 py-5 rounded-2xl text-center"
-               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-            <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-              No similar goals matched yet.
-            </p>
-          </div>
-        )}
+        {similarTasks.length > 0
+          ? <TaskList items={similarTasks} />
+          : <Empty msg="Tasks from room members appear here as the group grows." />}
       </section>
 
       {/* Most Popular Tasks */}
@@ -1152,12 +1185,27 @@ function PeopleTab({ goal }: { goal: Goal; user: FirebaseUser | null }) {
             style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
           Most Popular Tasks
         </h3>
-        <div className="px-4 py-5 rounded-2xl text-center"
-             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-            Aggregated community tasks coming soon.
-          </p>
-        </div>
+        {popularTasks.length > 0 ? (
+          <div className="space-y-2">
+            {popularTasks.map((item, i) => (
+              <div key={i} className="flex items-center justify-between px-4 py-3 rounded-2xl"
+                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                  <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+                  <p className="text-sm leading-snug truncate" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
+                </div>
+                {item.count > 1 && (
+                  <span className="ml-3 flex-shrink-0 text-meta"
+                        style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                    ×{item.count}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty msg="Popular tasks appear as the room grows." />
+        )}
       </section>
 
     </div>

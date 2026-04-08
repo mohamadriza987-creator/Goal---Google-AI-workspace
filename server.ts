@@ -968,6 +968,77 @@ async function startServer() {
     }
   });
 
+  // ── People tab: tasks from room members (admin SDK bypasses task read rules) ──
+  app.get("/api/goals/:goalId/people-tasks", authMiddleware, async (req: any, res) => {
+    try {
+      const { goalId } = req.params;
+
+      // Verify caller owns or can see this goal
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists) return res.status(404).json({ error: "Goal not found" });
+      const goalData = goalDoc.data()!;
+      if (goalData.ownerId !== req.userId && goalData.visibility !== "public") {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const groupId: string | undefined = goalData.groupId;
+      if (!groupId) return res.json({ members: [], similarTasks: [], popularTasks: [] });
+
+      const groupDoc = await db.collection("groups").doc(groupId).get();
+      if (!groupDoc.exists) return res.json({ members: [], similarTasks: [], popularTasks: [] });
+
+      const groupData = groupDoc.data()!;
+      const members: { goalId: string; userId: string; joinedAt: string }[] =
+        (groupData.members || []).filter((m: any) => m.goalId !== goalId);
+
+      const allTaskTexts: string[] = [];
+      const memberInfo: { userId: string; goalTitle: string; joinedAt: string }[] = [];
+
+      for (const member of members.slice(0, 6)) {
+        const mgDoc = await db.collection("goals").doc(member.goalId).get();
+        if (!mgDoc.exists) continue;
+        const mgData = mgDoc.data()!;
+        memberInfo.push({ userId: member.userId, goalTitle: mgData.title || "", joinedAt: member.joinedAt });
+
+        const tasksSnap = await db
+          .collection("goals")
+          .doc(member.goalId)
+          .collection("tasks")
+          .where("isDone", "==", false)
+          .get();
+        tasksSnap.forEach((t) => {
+          const txt = t.data().text as string;
+          if (txt) allTaskTexts.push(txt);
+        });
+      }
+
+      // Aggregate popular tasks by normalised text
+      const counts = new Map<string, { text: string; count: number }>();
+      allTaskTexts.forEach((text) => {
+        const key = text.toLowerCase().trim();
+        if (counts.has(key)) counts.get(key)!.count++;
+        else counts.set(key, { text, count: 1 });
+      });
+
+      const popularTasks = [...counts.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 8);
+
+      // Similar tasks = unique task texts from members (not duplicating popularTasks already shown)
+      const seen = new Set(popularTasks.map((t) => t.text.toLowerCase().trim()));
+      const similarTasks = allTaskTexts
+        .filter((t) => !seen.has(t.toLowerCase().trim()))
+        .filter((t, i, a) => a.findIndex((x) => x.toLowerCase() === t.toLowerCase()) === i)
+        .slice(0, 8)
+        .map((text) => ({ text }));
+
+      res.json({ members: memberInfo, similarTasks, popularTasks });
+    } catch (error: any) {
+      console.error("/api/goals/:goalId/people-tasks error:", error);
+      res.status(500).json({ error: "Failed to load people data" });
+    }
+  });
+
   app.post("/api/media/upload", authMiddleware, async (req: any, res) => {
     try {
       const validation = MediaUploadSchema.safeParse(req.body);
