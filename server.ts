@@ -1219,6 +1219,14 @@ async function startServer() {
         status: "pending",
       });
 
+      // Persist hide/block to the user's own document so client-side filtering works
+      if (action === "hide" || action === "block") {
+        const field = action === "hide" ? "hiddenUsers" : "blockedUsers";
+        await db.collection("users").doc(userId).update({
+          [field]: admin.firestore.FieldValue.arrayUnion(targetUserId),
+        });
+      }
+
       res.json({ success: true });
     } catch (error: any) {
       console.error("Moderation signal error:", error);

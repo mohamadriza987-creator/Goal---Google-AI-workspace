@@ -131,23 +131,6 @@ export interface Group {
   updatedAt?: string;
 }
 
-export interface CommunityMessage {
-  id: string;
-  groupId: string;
-  userId: string;
-  content: string;
-  contentType: 'text' | 'image' | 'video' | 'link' | 'poll';
-  mediaUrl?: string;
-  mediaType?: 'image' | 'video';
-  viewOnce?: boolean;
-  viewedBy?: string[]; // Array of user IDs who have viewed it
-  replyToMessageId?: string;
-  threadRootId?: string;
-  reactions?: Record<string, number>;
-  attachmentMetadata?: Record<string, any>;
-  createdAt: string;
-}
-
 // ─────────────────────────────────────────────
 // GOAL ROOM — structured threads
 // ─────────────────────────────────────────────
@@ -189,75 +172,3 @@ export interface GoalRoomReply {
   createdAt: string;
 }
 
-// ─────────────────────────────────────────────
-// PEOPLE — suggested rooms & person cards
-// ─────────────────────────────────────────────
-
-export interface SuggestedRoom {
-  groupId: string;
-  roomTitle: string;
-  similarityPercent: number;
-  memberCount: number;
-  activityLevel: 'low' | 'medium' | 'high';
-  completedCurrentTask: number;
-}
-
-export interface PersonCard {
-  userId: string;
-  firstName: string;
-  avatarUrl?: string;
-  sharedTaskCount: number;
-  localityBand: string;
-  helpfulnessScore: number;
-}
-
-// ─────────────────────────────────────────────
-// NOTES — personal + saved from room
-// ─────────────────────────────────────────────
-
-export type NotePrivacy = 'private' | 'shared';
-export type NoteSource = 'manual' | 'saved_from_room' | 'ai_suggestion';
-
-export interface Note {
-  id: string;
-  goalId: string;
-  ownerId: string;
-  title?: string;
-  text: string;
-  privacy: NotePrivacy;
-  source: NoteSource;
-  linkedTaskId?: string;
-  linkedTaskText?: string;
-  savedFromAuthorName?: string;
-  savedFromReplyId?: string;
-  createdAt: string;
-  updatedAt?: string;
-}
-
-// ─────────────────────────────────────────────
-// ACTIVITY
-// ─────────────────────────────────────────────
-
-export type ActivityItemType =
-  | 'reply_to_my_thread'
-  | 'someone_helped_me'
-  | 'useful_response'
-  | 'stuck_on_my_task'
-  | 'help_request_match'
-  | 'new_thread'
-  | 'new_useful_resource'
-  | 'together_session'
-  | 'local_opportunity';
-
-export interface ActivityItem {
-  id: string;
-  type: ActivityItemType;
-  goalId?: string;
-  goalTitle?: string;
-  threadId?: string;
-  actorName: string;
-  actorAvatar?: string;
-  previewText: string;
-  createdAt: string;
-  isRead: boolean;
-}

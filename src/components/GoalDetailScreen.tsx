@@ -774,9 +774,12 @@ function ThreadCard({ thread, onOpen }: { thread: GoalRoomThread; onOpen: () => 
 // Thread Detail
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
+function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers, onBack }: {
   thread: GoalRoomThread; groupId: string; goalId: string;
-  user: FirebaseUser | null; onBack: () => void;
+  user: FirebaseUser | null;
+  blockedUsers: string[];
+  hiddenUsers: string[];
+  onBack: () => void;
 }) {
   const [replies,     setReplies]   = useState<GoalRoomReply[]>([]);
   const [loading,     setLoading]   = useState(true);
@@ -785,6 +788,7 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
   const [savedNotes,  setSavedNotes]= useState<Set<string>>(new Set());
 
   const meta = BADGE_META[thread.badge];
+  const filtered = replies.filter(r => !blockedUsers.includes(r.authorId) && !hiddenUsers.includes(r.authorId));
 
   useEffect(() => {
     return onSnapshot(
@@ -879,13 +883,13 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
       <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto" style={{ paddingBottom: 100 }}>
         {loading && <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>}
 
-        {!loading && replies.length === 0 && (
+        {!loading && filtered.length === 0 && (
           <p className="text-center text-meta py-8" style={{ color: 'var(--c-text-3)' }}>
             No replies yet. Be the first to respond.
           </p>
         )}
 
-        {replies.map(reply => (
+        {filtered.map(reply => (
           <div key={reply.id} className="p-4 rounded-2xl" style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-meta font-semibold" style={{ color: 'var(--c-text-2)' }}>{reply.authorName}</span>
@@ -947,7 +951,10 @@ function ThreadDetail({ thread, groupId, goalId, user, onBack }: {
 // Goal Room Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
+  goal: Goal; user: FirebaseUser | null;
+  blockedUsers: string[]; hiddenUsers: string[];
+}) {
   const [threads,        setThreads]       = useState<GoalRoomThread[]>([]);
   const [loading,        setLoading]       = useState(true);
   const [filter,         setFilter]        = useState<ThreadBadge | 'all'>('all');
@@ -1010,7 +1017,8 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
     return (
       <ThreadDetail
         thread={selectedThread} groupId={groupId} goalId={goal.id}
-        user={user} onBack={() => setSelectedThread(null)}
+        user={user} blockedUsers={blockedUsers} hiddenUsers={hiddenUsers}
+        onBack={() => setSelectedThread(null)}
       />
     );
   }
@@ -1405,7 +1413,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'people',    label: 'People'    },
 ];
 
-export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
+export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const goal = goals.find(g => g.id === goalId);
 
@@ -1471,7 +1479,12 @@ export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentSc
 
             {activeTab === 'plan' && <PlanTab goal={goal} user={user} />}
 
-            {activeTab === 'goal-room' && <GoalRoomTab goal={goal} user={user} />}
+            {activeTab === 'goal-room' && (
+              <GoalRoomTab goal={goal} user={user}
+                blockedUsers={dbUser?.blockedUsers ?? []}
+                hiddenUsers={dbUser?.hiddenUsers ?? []}
+              />
+            )}
 
             {activeTab === 'people' && (
               <PeopleTab goal={goal} user={user} />

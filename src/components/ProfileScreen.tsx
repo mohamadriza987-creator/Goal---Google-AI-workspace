@@ -3,7 +3,7 @@ import { User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
-import { Shield, MoreHorizontal, LogOut, Plus, RefreshCw, Search, Target, Users } from 'lucide-react';
+import { Shield, LogOut, Plus, RefreshCw, Search, Users } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
 import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -17,10 +17,12 @@ import { useTranslation } from '../contexts/LanguageContext';
 
 export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   const { t, language, setLanguage } = useTranslation();
-  const [isSyncing, setIsSyncing] = React.useState(false);
-  const [syncProgress, setSyncProgress] = React.useState(0);
-  const [syncTotal, setSyncTotal] = React.useState(0);
-  const [showGoalMap, setShowGoalMap] = React.useState(false);
+  const [isSyncing,      setIsSyncing]      = React.useState(false);
+  const [syncProgress,   setSyncProgress]   = React.useState(0);
+  const [syncTotal,      setSyncTotal]      = React.useState(0);
+  const [showGoalMap,    setShowGoalMap]    = React.useState(false);
+  const [syncResult,     setSyncResult]     = React.useState<{ ok: boolean; msg: string } | null>(null);
+  const [confirmSync,    setConfirmSync]    = React.useState(false);
   const [allGoals, setAllGoals] = React.useState<Goal[]>([]);
   const [allGroups, setAllGroups] = React.useState<Group[]>([]);
   const [showModeration, setShowModeration] = React.useState(false);
@@ -63,27 +65,25 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
 
   const handleFullSync = async () => {
     if (!user || isSyncing) return;
-    const confirm = window.confirm("This will reconcile all goals: Normalization -> Embedding -> Similarity -> Grouping. This ensures everyone is connected. Continue?");
-    if (!confirm) return;
-
     setIsSyncing(true);
+    setSyncResult(null);
+    setConfirmSync(false);
     try {
       const idToken = await user.getIdToken();
       const res = await fetch("/api/admin/reconcile", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` }
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
       });
-      
       if (res.ok) {
         const data = await res.json();
-        alert(`Reconciliation complete! Processed ${data.processed} goals.`);
+        setSyncResult({ ok: true, msg: `Done. Processed ${data.processed ?? '?'} goals.` });
       } else {
-        const errData = await res.json();
-        alert("Reconciliation failed: " + (errData.error || "Unknown error"));
+        const errData = await res.json().catch(() => ({}));
+        setSyncResult({ ok: false, msg: errData.error || "Reconciliation failed." });
       }
     } catch (err) {
       console.error("Sync error:", err);
-      alert("Sync failed.");
+      setSyncResult({ ok: false, msg: "Sync failed. Check console." });
     } finally {
       setIsSyncing(false);
     }
@@ -137,19 +137,39 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
 
         {user?.email === 'mohamadriza987@gmail.com' && (
           <div className="space-y-2">
-            <button 
-              onClick={handleFullSync}
-              disabled={isSyncing}
-              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={cn(isSyncing && "animate-spin")} />
-              <div className="flex-1 text-left">
-                <p className="font-semibold">Sync All Goals</p>
-                <p className="text-xs text-zinc-500">
-                  {isSyncing ? `Processing... (${syncProgress}/${syncTotal})` : 'Normalize, Embed, and Group all goals'}
-                </p>
+            {!confirmSync ? (
+              <button
+                onClick={() => setConfirmSync(true)}
+                disabled={isSyncing}
+                className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={cn(isSyncing && "animate-spin")} />
+                <div className="flex-1 text-left">
+                  <p className="font-semibold">Sync All Goals</p>
+                  <p className="text-xs text-zinc-500">
+                    {isSyncing
+                      ? `Processing…${syncProgress > 0 ? ` (${syncProgress}/${syncTotal})` : ''}`
+                      : syncResult
+                        ? <span style={{ color: syncResult.ok ? '#6bbf7a' : '#e07070' }}>{syncResult.msg}</span>
+                        : 'Normalize, Embed, and Group all goals'}
+                  </p>
+                </div>
+              </button>
+            ) : (
+              <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-3">
+                <p className="text-sm text-zinc-300">Reconcile all goals — normalize, embed, group. This may take a minute.</p>
+                <div className="flex gap-2">
+                  <button onClick={handleFullSync}
+                    className="flex-1 py-2.5 rounded-2xl text-sm font-semibold bg-white text-black">
+                    Confirm
+                  </button>
+                  <button onClick={() => setConfirmSync(false)}
+                    className="flex-1 py-2.5 rounded-2xl text-sm font-semibold bg-zinc-800 text-zinc-300">
+                    Cancel
+                  </button>
+                </div>
               </div>
-            </button>
+            )}
 
             <button 
               onClick={() => setShowGoalMap(!showGoalMap)}
@@ -217,16 +237,6 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
             )}
           </div>
         )}
-        <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Shield className="text-zinc-500" />
-            <div>
-              <p className="font-semibold">{t('privacy')}</p>
-              <p className="text-xs text-zinc-500">Manage blocked and hidden users</p>
-            </div>
-          </div>
-          <button className="text-zinc-500 hover:text-white"><MoreHorizontal /></button>
-        </div>
         <button 
           onClick={() => auth.signOut()}
           className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-red-500 hover:bg-red-500/10 transition-colors"
