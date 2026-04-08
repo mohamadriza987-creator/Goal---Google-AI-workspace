@@ -14,7 +14,7 @@ import { db } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot, limit,
   doc, updateDoc, addDoc, deleteDoc, increment, serverTimestamp,
-  getDoc, getDocs, writeBatch,
+  getDoc,
 } from 'firebase/firestore';
 import { auth } from '../firebase';
 
@@ -774,51 +774,21 @@ function ThreadCard({ thread, onOpen }: { thread: GoalRoomThread; onOpen: () => 
 // Thread Detail
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface AuthorCredit {
-  similarityPct?: number; // from goal.similarGoals
-  usefulReceived: number; // sum of usefulCount on their threads in this room
-  helpPosts:      number; // threads they posted with help/support badge
-  // NOTE: "people helped" (distinct users helped) is not available as data —
-  // that would require aggregating unique users per useful-reacted reply,
-  // which is not stored. The fields above are what can be computed cleanly.
-}
-
-function buildAuthorCredit(
-  authorId: string,
-  allThreads: GoalRoomThread[],
-  similarGoals: Goal['similarGoals'],
-): AuthorCredit {
-  const theirThreads = allThreads.filter(t => t.authorId === authorId);
-  const usefulReceived = theirThreads.reduce((s, t) => s + (t.usefulCount ?? 0), 0);
-  const helpPosts      = theirThreads.filter(t => t.badge === 'help' || t.badge === 'support').length;
-  const simEntry       = similarGoals?.find(g => g.userId === authorId);
-  return {
-    similarityPct: simEntry ? Math.round(simEntry.similarityScore * 100) : undefined,
-    usefulReceived,
-    helpPosts,
-  };
-}
-
-function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals, onBack }: {
+function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers, onBack }: {
   thread: GoalRoomThread; groupId: string; goalId: string;
   user: FirebaseUser | null;
-  allThreads: GoalRoomThread[];
-  similarGoals: Goal['similarGoals'];
+  blockedUsers: string[];
+  hiddenUsers: string[];
   onBack: () => void;
 }) {
-  const [replies,    setReplies]  = useState<GoalRoomReply[]>([]);
-  const [loading,    setLoading]  = useState(true);
-  const [replyText,  setReplyText]= useState('');
-  const [sending,    setSending]  = useState(false);
-  const [savedNotes, setSavedNotes] = useState<Set<string>>(new Set());
-  // Track reactions this session to prevent double-counting
-  const [myReactions, setMyReactions] = useState<Set<string>>(new Set());
+  const [replies,     setReplies]   = useState<GoalRoomReply[]>([]);
+  const [loading,     setLoading]   = useState(true);
+  const [replyText,   setReplyText] = useState('');
+  const [sending,     setSending]   = useState(false);
+  const [savedNotes,  setSavedNotes]= useState<Set<string>>(new Set());
 
   const meta = BADGE_META[thread.badge];
-  const isHelpThread = thread.badge === 'help' || thread.badge === 'support';
-  const authorCredit = isHelpThread
-    ? buildAuthorCredit(thread.authorId, allThreads, similarGoals)
-    : null;
+  const filtered = replies.filter(r => !blockedUsers.includes(r.authorId) && !hiddenUsers.includes(r.authorId));
 
   useEffect(() => {
     return onSnapshot(
@@ -831,46 +801,33 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
   const sendReply = async () => {
     if (!replyText.trim() || sending || !user) return;
     setSending(true);
-    const text = replyText.trim();
-    setReplyText('');
     const now = new Date().toISOString();
     try {
-      // Atomic: write reply + increment counters in one batch
-      const replyRef = doc(collection(db, 'groups', groupId, 'threads', thread.id, 'replies'));
-      const threadRef = doc(db, 'groups', groupId, 'threads', thread.id);
-      const batch = writeBatch(db);
-      batch.set(replyRef, {
+      await addDoc(collection(db, 'groups', groupId, 'threads', thread.id, 'replies'), {
         threadId: thread.id, goalId,
         authorId: user.uid, authorName: user.displayName || 'Member',
-        text, reactions: {}, createdAt: now,
+        text: replyText.trim(), reactions: {}, createdAt: now,
       });
-      batch.update(threadRef, { replyCount: increment(1), lastActivityAt: now });
-      await batch.commit();
-    } catch(e) {
-      console.error(e);
-      setReplyText(text); // restore on failure
-    } finally {
-      setSending(false);
-    }
+      await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id), {
+        replyCount:     increment(1),
+        lastActivityAt: now,
+      });
+      setReplyText('');
+    } catch(e) { console.error(e); }
+    finally { setSending(false); }
   };
 
   const reactToReply = async (replyId: string, reaction: string) => {
-    const key = `${replyId}-${reaction}`;
-    if (myReactions.has(key) || !user) return;
-    setMyReactions(prev => new Set([...prev, key])); // optimistic lock
     try {
-      const replyRef  = doc(db, 'groups', groupId, 'threads', thread.id, 'replies', replyId);
-      const threadRef = doc(db, 'groups', groupId, 'threads', thread.id);
-      const batch = writeBatch(db);
-      batch.update(replyRef, { [`reactions.${reaction}`]: increment(1) });
+      await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id, 'replies', replyId), {
+        [`reactions.${reaction}`]: increment(1),
+      });
       if (reaction === 'useful') {
-        batch.update(threadRef, { usefulCount: increment(1) });
+        await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id), {
+          usefulCount: increment(1),
+        });
       }
-      await batch.commit();
-    } catch(e) {
-      console.error(e);
-      setMyReactions(prev => { const n = new Set(prev); n.delete(key); return n; }); // rollback lock
-    }
+    } catch(e) { console.error(e); }
   };
 
   const saveReplyToNotes = async (reply: GoalRoomReply) => {
@@ -878,24 +835,27 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
     try {
       await addDoc(collection(db, 'goals', goalId, 'notes'), {
         goalId, ownerId: user.uid,
-        text: reply.text, source: 'saved_from_room', privacy: 'private',
-        savedFromAuthorName: reply.authorName, savedFromReplyId: reply.id,
-        createdAt: new Date().toISOString(),
+        text:           reply.text,
+        source:         'saved_from_room',
+        privacy:        'private',
+        savedFromAuthorName: reply.authorName,
+        savedFromReplyId:    reply.id,
+        createdAt:      new Date().toISOString(),
       });
       setSavedNotes(prev => new Set([...prev, reply.id]));
     } catch(e) { console.error(e); }
   };
 
   const REACTIONS = [
-    { key: 'useful',   icon: <ThumbsUp size={13} />, label: 'Useful'       },
-    { key: 'proud',    icon: <Star     size={13} />, label: 'Proud'        },
-    { key: 'me_too',   icon: <Heart    size={13} />, label: 'Me too'       },
-    { key: 'can_help', icon: <Hand     size={13} />, label: 'I can help'   },
+    { key: 'useful',   icon: <ThumbsUp  size={13} />, label: 'Useful'       },
+    { key: 'proud',    icon: <Star      size={13} />, label: 'Proud of you' },
+    { key: 'me_too',   icon: <Heart     size={13} />, label: 'Me too'       },
+    { key: 'can_help', icon: <Hand      size={13} />, label: 'I can help'   },
   ];
 
   return (
     <div className="flex flex-col" style={{ minHeight: 'calc(100dvh - 280px)' }}>
-      {/* Back + badge */}
+      {/* Header */}
       <div className="px-4 py-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--c-border)' }}>
         <button onClick={onBack} className="transition-opacity hover:opacity-70" style={{ color: 'var(--c-text-2)' }}>
           <ArrowLeft size={20} />
@@ -911,52 +871,26 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
             <ChevronRight size={11} /> {thread.linkedTaskText}
           </p>
         )}
-        <p className="text-body leading-relaxed mb-3" style={{ color: 'var(--c-text-2)' }}>
+        <p className="text-body leading-relaxed mb-2" style={{ color: 'var(--c-text-2)' }}>
           {thread.previewText}
         </p>
-
-        {/* Author row — with credibility for help/support threads */}
-        <div className="flex items-start justify-between gap-3">
-          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-            {thread.authorName} · {timeAgo(thread.createdAt)}
-          </p>
-          {authorCredit && (
-            <div className="flex items-center gap-3 flex-wrap">
-              {authorCredit.similarityPct !== undefined && (
-                <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                  {authorCredit.similarityPct}% match
-                </span>
-              )}
-              {authorCredit.usefulReceived > 0 && (
-                <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)', fontSize: 11 }}>
-                  <ThumbsUp size={10} /> {authorCredit.usefulReceived} useful
-                </span>
-              )}
-              {authorCredit.helpPosts > 0 && (
-                <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                  <Hand size={10} /> {authorCredit.helpPosts} help posts
-                </span>
-              )}
-            </div>
-          )}
-        </div>
+        <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
+          {thread.authorName} · {timeAgo(thread.createdAt)}
+        </p>
       </div>
 
       {/* Replies */}
       <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto" style={{ paddingBottom: 100 }}>
-        {loading && (
-          <div className="flex justify-center py-8">
-            <Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
-          </div>
-        )}
-        {!loading && replies.length === 0 && (
+        {loading && <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>}
+
+        {!loading && filtered.length === 0 && (
           <p className="text-center text-meta py-8" style={{ color: 'var(--c-text-3)' }}>
             No replies yet. Be the first to respond.
           </p>
         )}
-        {replies.map(reply => (
-          <div key={reply.id} className="p-4 rounded-2xl"
-               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+
+        {filtered.map(reply => (
+          <div key={reply.id} className="p-4 rounded-2xl" style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-meta font-semibold" style={{ color: 'var(--c-text-2)' }}>{reply.authorName}</span>
               <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>{timeAgo(reply.createdAt)}</span>
@@ -965,26 +899,20 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
 
             {/* Reactions */}
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              {REACTIONS.map(r => {
-                const count = reply.reactions?.[r.key as keyof typeof reply.reactions] ?? 0;
-                const reacted = myReactions.has(`${reply.id}-${r.key}`);
-                return (
-                  <button key={r.key}
-                    onClick={() => reactToReply(reply.id, r.key)}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
-                    style={{
-                      background: reacted ? 'rgba(201,168,76,.12)' : 'var(--c-surface-2)',
-                      border: `1px solid ${reacted ? 'var(--c-gold)' : 'var(--c-border)'}`,
-                      color: reacted ? 'var(--c-gold)' : 'var(--c-text-3)',
-                    }}>
-                    {r.icon}
-                    <span style={{ fontSize: 11 }}>{r.label}</span>
-                    {count > 0 && (
-                      <span style={{ color: 'var(--c-gold)', fontWeight: 700, fontSize: 11 }}>{count}</span>
-                    )}
-                  </button>
-                );
-              })}
+              {REACTIONS.map(r => (
+                <button key={r.key}
+                  onClick={() => reactToReply(reply.id, r.key)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-meta transition-opacity hover:opacity-70"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+                  {r.icon}
+                  <span style={{ fontSize: 11 }}>{r.label}</span>
+                  {(reply.reactions?.[r.key as keyof typeof reply.reactions] ?? 0) > 0 && (
+                    <span style={{ color: 'var(--c-gold)', fontWeight: 700, fontSize: 11 }}>
+                      {reply.reactions![r.key as keyof typeof reply.reactions]}
+                    </span>
+                  )}
+                </button>
+              ))}
             </div>
 
             {/* Save to notes */}
@@ -999,12 +927,12 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
         ))}
       </div>
 
-      {/* Reply composer */}
+      {/* Reply input */}
       <div className="sticky bottom-0 px-4 pb-6 pt-3"
            style={{ background: 'var(--c-bg)', borderTop: '1px solid var(--c-border)' }}>
         <div className="flex gap-2">
           <input value={replyText} onChange={e => setReplyText(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+            onKeyDown={e => { if (e.key === 'Enter') sendReply(); }}
             placeholder="Write a reply…"
             className="flex-1 px-4 py-3 rounded-xl text-sm focus:outline-none"
             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
@@ -1023,17 +951,21 @@ function ThreadDetail({ thread, groupId, goalId, user, allThreads, similarGoals,
 // Goal Room Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const [serverThreads,  setServerThreads]  = useState<GoalRoomThread[]>([]);
-  const [pendingThread,  setPendingThread]  = useState<GoalRoomThread | null>(null);
-  const [loading,        setLoading]        = useState(true);
-  const [filter,         setFilter]         = useState<ThreadBadge | 'all'>('all');
-  const [selectedThread, setSelectedThread] = useState<GoalRoomThread | null>(null);
-  const [creating,       setCreating]       = useState(false);
+function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
+  goal: Goal; user: FirebaseUser | null;
+  blockedUsers: string[]; hiddenUsers: string[];
+}) {
+  const [threads,        setThreads]       = useState<GoalRoomThread[]>([]);
+  const [loading,        setLoading]       = useState(true);
+  const [filter,         setFilter]        = useState<ThreadBadge | 'all'>('all');
+  const [selectedThread, setSelectedThread]= useState<GoalRoomThread | null>(null);
+  const [creating,       setCreating]      = useState(false);
 
-  const [newBadge, setNewBadge] = useState<ThreadBadge>('help');
-  const [newTitle, setNewTitle] = useState('');
-  const [newBody,  setNewBody]  = useState('');
+  // Create thread form
+  const [newBadge,    setNewBadge]    = useState<ThreadBadge>('help');
+  const [newTitle,    setNewTitle]    = useState('');
+  const [newBody,     setNewBody]     = useState('');
+  const [newSaving,   setNewSaving]   = useState(false);
 
   const groupId = goal.groupId;
 
@@ -1041,65 +973,30 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
     if (!groupId) { setLoading(false); return; }
     return onSnapshot(
       query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
-      (snap) => {
-        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread);
-        setServerThreads(list);
-        setLoading(false);
-        // Clear optimistic thread once its server copy has arrived
-        setPendingThread(pt => {
-          if (!pt) return null;
-          const arrived = list.some(t =>
-            t.authorId === pt.authorId &&
-            t.title    === pt.title &&
-            Math.abs(new Date(t.createdAt).getTime() - new Date(pt.createdAt).getTime()) < 10_000
-          );
-          return arrived ? null : pt;
-        });
-      },
-      (err) => { console.error(err); setLoading(false); }
+      (snap) => { setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)); setLoading(false); },
+      (err)  => { console.error(err); setLoading(false); }
     );
   }, [groupId]);
 
-  const createThread = () => {
-    if (!newTitle.trim() || !user || !groupId) return;
-
-    const title = newTitle.trim();
-    const body  = newBody.trim();
-    const badge = newBadge;
-    const now   = new Date().toISOString();
-
-    // Optimistic: add to UI immediately
-    const tempId: string = `opt-${Date.now()}`;
-    const optimistic: GoalRoomThread = {
-      id: tempId, goalId: goal.id, badge, title,
-      authorId: user.uid, authorName: user.displayName || 'Member',
-      previewText: body || title,
-      replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
-    };
-    setPendingThread(optimistic);
-
-    // Close composer immediately
-    setCreating(false);
-    setNewTitle('');
-    setNewBody('');
-    setNewBadge('help');
-
-    // Write in background; rollback on failure
-    addDoc(collection(db, 'groups', groupId, 'threads'), {
-      goalId: goal.id, badge, title,
-      authorId: user.uid, authorName: user.displayName || 'Member',
-      previewText: body || title,
-      replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
-    }).catch(() => {
-      setPendingThread(pt => (pt?.id === tempId ? null : pt));
-    });
+  const createThread = async () => {
+    if (!newTitle.trim() || newSaving || !user || !groupId) return;
+    setNewSaving(true);
+    const now = new Date().toISOString();
+    try {
+      await addDoc(collection(db, 'groups', groupId, 'threads'), {
+        goalId: goal.id, badge: newBadge, title: newTitle.trim(),
+        authorId: user.uid, authorName: user.displayName || 'Member',
+        previewText: newBody.trim() || newTitle.trim(),
+        replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
+      });
+      setCreating(false); setNewTitle(''); setNewBody(''); setNewBadge('help');
+    } catch(e) { console.error(e); }
+    finally { setNewSaving(false); }
   };
 
-  // Merge: pending first (if not yet in server list), then server list
-  const allThreads = pendingThread ? [pendingThread, ...serverThreads] : serverThreads;
-  const filtered   = filter === 'all' ? allThreads : allThreads.filter(t => t.badge === filter);
+  const filtered = filter === 'all' ? threads : threads.filter(t => t.badge === filter);
 
-  // ── No room assigned
+  // ── No room assigned yet
   if (!groupId) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-20 text-center">
@@ -1119,12 +1016,8 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
   if (selectedThread) {
     return (
       <ThreadDetail
-        thread={selectedThread}
-        groupId={groupId}
-        goalId={goal.id}
-        user={user}
-        allThreads={allThreads}
-        similarGoals={goal.similarGoals}
+        thread={selectedThread} groupId={groupId} goalId={goal.id}
+        user={user} blockedUsers={blockedUsers} hiddenUsers={hiddenUsers}
         onBack={() => setSelectedThread(null)}
       />
     );
@@ -1135,42 +1028,43 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
     <div className="flex flex-col" style={{ paddingBottom: 100 }}>
       {/* Filter pills */}
       <div className="flex gap-2 px-4 py-3 overflow-x-auto" style={{ borderBottom: '1px solid var(--c-border)' }}>
-        {(['all', ...ALL_BADGES] as const).map(b => (
+        <button onClick={() => setFilter('all')}
+          className="btn-pill flex-shrink-0 text-meta font-semibold transition-all"
+          style={filter === 'all'
+            ? { background: 'var(--c-gold)', color: '#000' }
+            : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
+          All
+        </button>
+        {ALL_BADGES.map(b => (
           <button key={b} onClick={() => setFilter(b)}
-            className="flex-shrink-0 text-meta font-semibold"
+            className="flex-shrink-0 text-meta font-semibold transition-all"
             style={filter === b
-              ? { background: 'var(--c-gold)', color: '#000', borderRadius: 999, padding: '6px 14px' }
+              ? { ...{}, background: 'var(--c-gold)', color: '#000', borderRadius: 999, padding: '6px 14px' }
               : { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)', borderRadius: 999, padding: '6px 14px' }}>
-            {b === 'all' ? 'All' : BADGE_META[b].label}
+            {BADGE_META[b].label}
           </button>
         ))}
       </div>
 
       {/* Thread list */}
       <div className="px-4 py-4 space-y-3 flex-1">
-        {loading && (
-          <div className="flex justify-center py-12">
-            <Loader2 size={22} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
-          </div>
-        )}
+        {loading && <div className="flex justify-center py-12"><Loader2 size={22} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>}
+
         {!loading && filtered.length === 0 && (
           <div className="text-center py-16">
             <p className="text-body mb-1" style={{ color: 'var(--c-text-2)' }}>No threads yet.</p>
             <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>Start a conversation below.</p>
           </div>
         )}
+
         <AnimatePresence>
           {filtered.map(thread => (
-            <ThreadCard
-              key={thread.id}
-              thread={thread}
-              onOpen={() => thread.id.startsWith('opt-') ? undefined : setSelectedThread(thread)}
-            />
+            <ThreadCard key={thread.id} thread={thread} onOpen={() => setSelectedThread(thread)} />
           ))}
         </AnimatePresence>
       </div>
 
-      {/* FAB */}
+      {/* FAB — create thread */}
       <button onClick={() => setCreating(true)}
         className="fixed z-30 flex items-center gap-2 px-5 py-3.5 rounded-full font-semibold shadow-xl"
         style={{ bottom: 100, right: 20, background: 'var(--c-gold)', color: '#000', boxShadow: '0 4px 24px rgba(201,168,76,.35)' }}>
@@ -1186,11 +1080,7 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
               {ALL_BADGES.map(b => (
                 <button key={b} onClick={() => setNewBadge(b)}
                   className={cn(newBadge === b ? BADGE_META[b].cls : '')}
-                  style={newBadge !== b ? {
-                    background: 'var(--c-surface-2)', border: '1px solid var(--c-border)',
-                    color: 'var(--c-text-3)', borderRadius: 999, padding: '3px 10px',
-                    fontSize: 11, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
-                  } : {}}>
+                  style={newBadge !== b ? { background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase' } : {}}>
                   {BADGE_META[b].label}
                 </button>
               ))}
@@ -1210,9 +1100,10 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
               className="w-full px-4 py-3 rounded-xl text-sm focus:outline-none resize-none"
               style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text)' }} />
           </div>
-          <button onClick={createThread} disabled={!newTitle.trim()}
+          <button onClick={createThread} disabled={newSaving || !newTitle.trim()}
             className="btn-gold w-full flex items-center justify-center gap-2 disabled:opacity-40">
-            <Send size={16} /> Post Thread
+            {newSaving ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            Post Thread
           </button>
         </div>
       </BottomSheet>
@@ -1224,438 +1115,282 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 // People Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface RoomMember {
-  goalId: string;
-  userId: string;
-  joinedAt: string;
-}
-
-interface MemberGoalData extends RoomMember {
-  title: string;
-  description: string;
+interface MemberDetail {
+  userId:          string;
+  goalTitle:       string;
+  goalDescription: string;
   progressPercent: number;
-  timeHorizon?: string;
-  displayName?: string;
-  avatarUrl?: string;
+  joinedAt:        string;
+  activeTasks:     string[];
+  completedTasks:  string[];
 }
 
-interface MemberTaskItem {
-  id: string;
-  goalId: string;
-  userId: string;
-  memberName: string;
-  text: string;
-  isDone: boolean;
-  completedAt?: string;
-  createdAt: string;
+interface PeopleData {
+  members:      MemberDetail[];
+  similarTasks: { text: string }[];
+  popularTasks: { text: string; count: number }[];
 }
 
-function MemberDetailSheet({
-  member,
-  tasks,
-  onClose,
-}: {
-  member: MemberGoalData;
-  tasks: MemberTaskItem[];
-  onClose: () => void;
-}) {
-  const doneTasks   = tasks.filter(t => t.isDone);
-  const activeTasks = tasks.filter(t => !t.isDone);
-
+// ── Small/medium progress ring ────────────────────────────────────────────────
+function MiniRing({ pct, size = 28 }: { pct: number; size?: number }) {
+  const sw = size <= 28 ? 3 : 4;
+  const r  = (size - sw * 2) / 2;
+  const circ = 2 * Math.PI * r;
+  const cx = size / 2, cy = size / 2;
   return (
-    <>
-      <motion.div
-        key="backdrop"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 z-40"
-        style={{ background: 'rgba(0,0,0,0.5)' }}
-        onClick={onClose}
-      />
-      <motion.div
-        key="sheet"
-        initial={{ y: '100%' }}
-        animate={{ y: 0 }}
-        exit={{ y: '100%' }}
-        transition={{ type: 'spring', damping: 32, stiffness: 320 }}
-        className="fixed bottom-0 left-0 right-0 z-50 flex flex-col"
-        style={{ background: 'var(--c-surface-1)', borderRadius: '20px 20px 0 0', maxHeight: '85vh', overflow: 'hidden' }}
-      >
-        <div className="overflow-y-auto flex-1 pb-10">
-          <div className="flex justify-center pt-3 pb-1">
-            <div className="w-9 h-1 rounded-full" style={{ background: 'var(--c-border)' }} />
-          </div>
-
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 pt-3 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold"
-                   style={{ background: 'var(--c-surface-2)', color: 'var(--c-text-2)' }}>
-                {member.displayName?.charAt(0)?.toUpperCase() ?? '?'}
-              </div>
-              <div>
-                <p style={{ fontWeight: 600 }}>{member.displayName ?? 'Member'}</p>
-                <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                  Joined {timeAgo(member.joinedAt)}
-                </p>
-              </div>
-            </div>
-            <button onClick={onClose} style={{ color: 'var(--c-text-3)' }}>
-              <X size={18} />
-            </button>
-          </div>
-
-          {/* Their goal */}
-          <div className="px-5 pb-4">
-            <div className="card p-4" style={{ borderRadius: 14 }}>
-              <p className="text-meta mb-1"
-                 style={{ color: 'var(--c-text-3)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Their Goal
-              </p>
-              <p className="text-body mb-1" style={{ fontWeight: 500 }}>{member.title}</p>
-              {member.description && (
-                <p className="text-meta" style={{ color: 'var(--c-text-2)' }}>{member.description}</p>
-              )}
-              <div className="flex items-center gap-5 mt-3">
-                <div className="flex flex-col">
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Progress</span>
-                  <span style={{ fontWeight: 600, fontSize: 18 }}>{member.progressPercent}%</span>
-                </div>
-                {member.timeHorizon && (
-                  <div className="flex flex-col">
-                    <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Timeline</span>
-                    <span style={{ fontWeight: 500 }}>{member.timeHorizon}</span>
-                  </div>
-                )}
-                {doneTasks.length > 0 && (
-                  <div className="flex flex-col">
-                    <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>Tasks done</span>
-                    <span style={{ fontWeight: 600, fontSize: 18, color: 'var(--c-gold)' }}>{doneTasks.length}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Their active tasks */}
-          {activeTasks.length > 0 && (
-            <div className="px-5 pb-4">
-              <p className="text-label mb-3"
-                 style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Working On ({activeTasks.length})
-              </p>
-              <div className="flex flex-col gap-2">
-                {activeTasks.map(t => (
-                  <div key={t.id} className="card p-3" style={{ borderRadius: 12 }}>
-                    <p className="text-body" style={{ fontWeight: 400 }}>{t.text}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Their completed tasks */}
-          {doneTasks.length > 0 && (
-            <div className="px-5 pb-6">
-              <p className="text-label mb-3"
-                 style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Completed ({doneTasks.length})
-              </p>
-              <div className="flex flex-col gap-2">
-                {doneTasks.map(t => (
-                  <div key={t.id} className="card p-3 flex items-start gap-2" style={{ borderRadius: 12 }}>
-                    <Check size={13} className="mt-0.5 flex-shrink-0" style={{ color: 'var(--c-gold)' }} />
-                    <p className="text-body" style={{ fontWeight: 400, color: 'var(--c-text-2)' }}>{t.text}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {tasks.length === 0 && (
-            <div className="px-5 pb-6">
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No tasks recorded yet.</p>
-            </div>
-          )}
-        </div>
-      </motion.div>
-    </>
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', flexShrink: 0 }}>
+      <circle cx={cx} cy={cy} r={r} strokeWidth={sw} fill="none" stroke="var(--c-border)" />
+      <circle cx={cx} cy={cy} r={r} strokeWidth={sw} fill="none" stroke="var(--c-gold)"
+        strokeLinecap="round" strokeDasharray={circ}
+        strokeDashoffset={circ - (Math.min(pct, 100) / 100) * circ}
+        style={{ transition: 'stroke-dashoffset .4s ease' }} />
+    </svg>
   );
 }
 
-function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const groupId = goal.groupId;
-  const isInRoom = goal.groupJoined === true && !!groupId;
-
-  const [groupName, setGroupName]         = useState<string>('');
-  const [roomDescription, setRoomDescription] = useState<string>('');
-  const [memberCount, setMemberCount]     = useState<number>(0);
-  const [members, setMembers]             = useState<RoomMember[]>([]);
-  const [memberGoals, setMemberGoals]     = useState<Map<string, MemberGoalData>>(new Map());
-  const [memberTasks, setMemberTasks]     = useState<MemberTaskItem[]>([]);
-  const [loading, setLoading]             = useState(true);
-  const [selectedMember, setSelectedMember] = useState<MemberGoalData | null>(null);
-
-  useEffect(() => {
-    if (!isInRoom || !groupId) { setLoading(false); return; }
-
-    getDoc(doc(db, 'groups', groupId)).then(async (snap) => {
-      if (!snap.exists()) { setLoading(false); return; }
-      const data = snap.data() as any;
-
-      setGroupName(data.derivedGoalTheme ?? 'Your Goal Room');
-      setMemberCount(data.memberCount ?? 0);
-
-      // Build description from matchingCriteria
-      const cat     = data.matchingCriteria?.category as string | undefined;
-      const horizon = data.matchingCriteria?.timeHorizon as string | undefined;
-      const parts: string[] = [];
-      if (cat)     parts.push(cat.charAt(0).toUpperCase() + cat.slice(1));
-      if (horizon) parts.push(`${horizon} timeline`);
-      setRoomDescription(
-        parts.length ? `${parts.join(' · ')} · highly matched goals` : 'Highly matched goals',
-      );
-
-      const rawMembers: RoomMember[] = (data.members ?? []).filter(
-        (m: any) => m.userId !== user?.uid,
-      );
-      setMembers(rawMembers);
-
-      // Fetch each member's goal + user profile
-      const results = await Promise.all(
-        rawMembers.map(async (m) => {
-          try {
-            const [gSnap, uSnap] = await Promise.all([
-              getDoc(doc(db, 'goals', m.goalId)),
-              getDoc(doc(db, 'users', m.userId)),
-            ]);
-            const g = gSnap.exists() ? (gSnap.data() as any) : null;
-            const u = uSnap.exists() ? (uSnap.data() as any) : null;
-            return {
-              goalId: m.goalId,
-              userId: m.userId,
-              joinedAt: m.joinedAt,
-              title: g?.title ?? 'Goal',
-              description: g?.description ?? '',
-              progressPercent: g?.progressPercent ?? 0,
-              timeHorizon: g?.timeHorizon,
-              displayName: u?.displayName ?? u?.username ?? null,
-              avatarUrl: u?.avatarUrl ?? null,
-            } as MemberGoalData;
-          } catch {
-            return {
-              goalId: m.goalId, userId: m.userId, joinedAt: m.joinedAt,
-              title: 'Goal', description: '', progressPercent: 0,
-            } as MemberGoalData;
-          }
-        }),
-      );
-
-      const map = new Map<string, MemberGoalData>();
-      results.forEach(r => map.set(r.userId, r));
-      setMemberGoals(map);
-
-      // Fetch tasks from every member's goal
-      const allTasks: MemberTaskItem[] = [];
-      await Promise.all(
-        results.map(async (mg) => {
-          try {
-            const tasksSnap = await getDocs(collection(db, 'goals', mg.goalId, 'tasks'));
-            tasksSnap.docs.forEach(td => {
-              const t = td.data() as any;
-              if (!t.text) return;
-              allTasks.push({
-                id: td.id,
-                goalId: mg.goalId,
-                userId: mg.userId,
-                memberName: mg.displayName ?? 'Member',
-                text: t.text,
-                isDone: t.isDone ?? false,
-                completedAt: t.completedAt,
-                createdAt: t.createdAt ?? '',
-              });
-            });
-          } catch { /* ignore per-member failure */ }
-        }),
-      );
-      setMemberTasks(allTasks);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [groupId, isInRoom, user?.uid]);
-
-  if (!isInRoom) {
-    return (
-      <div className="flex flex-col items-center justify-center px-6 py-24 text-center gap-4">
-        <div className="w-14 h-14 rounded-full flex items-center justify-center"
-             style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-          <Users size={22} style={{ color: 'var(--c-text-3)' }} />
+// ── Member detail sheet ───────────────────────────────────────────────────────
+function MemberSheet({ member, onClose }: { member: MemberDetail; onClose: () => void }) {
+  return (
+    <motion.div
+      key="member-sheet"
+      initial={{ opacity: 0, y: 40 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 40 }}
+      transition={{ type: 'spring', stiffness: 340, damping: 34 }}
+      className="fixed inset-0 z-50 flex flex-col justify-end"
+      style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)' }}
+      onClick={onClose}
+    >
+      <div
+        className="rounded-t-3xl pb-10 overflow-y-auto"
+        style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '85dvh' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Handle */}
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full" style={{ background: 'var(--c-border)' }} />
         </div>
-        <div>
-          <p className="text-card-title mb-1">Not in a room yet</p>
-          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-            Once your goal matches others at 90%+ similarity, you'll be placed in a shared room automatically.
-          </p>
+
+        {/* Header */}
+        <div className="flex items-start gap-4 px-5 pt-4 pb-5"
+             style={{ borderBottom: '1px solid var(--c-border)' }}>
+          <div className="flex-1 min-w-0">
+            <h2 style={{ fontSize: 17, fontWeight: 600, letterSpacing: -0.3, lineHeight: 1.25 }}
+                className="mb-1">
+              {member.goalTitle}
+            </h2>
+            {member.goalDescription && (
+              <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-2)' }}>
+                {member.goalDescription}
+              </p>
+            )}
+            <p className="text-meta mt-2" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+              Joined {new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+            </p>
+          </div>
+          {/* Progress ring */}
+          <div className="flex flex-col items-center gap-1 flex-shrink-0">
+            <MiniRing pct={member.progressPercent} size={52} />
+            <span style={{ fontSize: 10, color: 'var(--c-text-3)' }}>{member.progressPercent}%</span>
+          </div>
+        </div>
+
+        <div className="px-5 pt-5 space-y-6">
+          {/* Active tasks */}
+          <section>
+            <h3 className="text-meta uppercase tracking-widest mb-3"
+                style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+              Active Tasks
+            </h3>
+            {member.activeTasks.length > 0 ? (
+              <div className="space-y-1.5">
+                {member.activeTasks.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
+                       style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                    <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
+                         style={{ background: 'var(--c-gold)' }} />
+                    <p className="text-sm leading-snug" style={{ color: 'var(--c-text-2)' }}>{t}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No active tasks.</p>
+            )}
+          </section>
+
+          {/* Completed tasks */}
+          {member.completedTasks.length > 0 && (
+            <section>
+              <h3 className="text-meta uppercase tracking-widest mb-3"
+                  style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+                Completed
+              </h3>
+              <div className="space-y-1.5">
+                {member.completedTasks.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
+                       style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', opacity: 0.6 }}>
+                    <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+                    <p className="text-sm leading-snug line-through" style={{ color: 'var(--c-text-3)' }}>{t}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
-    );
-  }
+    </motion.div>
+  );
+}
+
+// ── People tab ────────────────────────────────────────────────────────────────
+function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+  const [data,           setData]           = useState<PeopleData | null>(null);
+  const [loading,        setLoading]        = useState(true);
+  const [selectedMember, setSelectedMember] = useState<MemberDetail | null>(null);
+
+  useEffect(() => {
+    if (!user) { setLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await user.getIdToken();
+        const res   = await fetch(`/api/goals/${goal.id}/people-tasks`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!cancelled && res.ok) setData(await res.json());
+      } catch (e) {
+        console.error('PeopleTab load error:', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [goal.id, user]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 size={22} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
+      <div className="flex items-center justify-center py-20">
+        <Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
       </div>
     );
   }
 
-  // Similar Tasks: active tasks from room members, most recent first, top 5
-  const similarTasks = memberTasks
-    .filter(t => !t.isDone)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, 5);
+  const { members = [], similarTasks = [], popularTasks = [] } = data ?? {};
 
-  // Most Popular Tasks: group by normalised text, rank by member count then completion count
-  const taskGroups = new Map<string, { text: string; memberCount: number; doneCount: number }>();
-  memberTasks.forEach(t => {
-    const key = t.text.toLowerCase().trim();
-    const existing = taskGroups.get(key);
-    if (existing) {
-      existing.memberCount++;
-      if (t.isDone) existing.doneCount++;
-    } else {
-      taskGroups.set(key, { text: t.text, memberCount: 1, doneCount: t.isDone ? 1 : 0 });
-    }
-  });
-  const popularTasks = [...taskGroups.values()]
-    .sort((a, b) => b.memberCount - a.memberCount || b.doneCount - a.doneCount)
-    .slice(0, 5);
+  const SectionLabel = ({ label }: { label: string }) => (
+    <h3 className="text-meta uppercase tracking-widest mb-3"
+        style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+      {label}
+    </h3>
+  );
+
+  const TaskList = ({ items }: { items: { text: string }[] }) => (
+    <div className="space-y-2">
+      {items.map((item, i) => (
+        <div key={i} className="flex items-start gap-2.5 px-4 py-3 rounded-2xl"
+             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+          <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+          <p className="text-sm leading-snug" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
+        </div>
+      ))}
+    </div>
+  );
+
+  const Empty = ({ msg }: { msg: string }) => (
+    <div className="px-4 py-5 rounded-2xl text-center"
+         style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+      <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>{msg}</p>
+    </div>
+  );
 
   return (
-    <div className="pb-32">
+    <>
+      <div className="px-5 pt-6 pb-32 space-y-8">
 
-      {/* Your Goal Room */}
-      <div className="px-5 pt-5 pb-3">
-        <div className="card p-4" style={{ borderRadius: 16 }}>
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
-                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
-              <Users size={16} style={{ color: 'var(--c-gold)' }} />
-            </div>
-            <div className="min-w-0">
-              <p className="text-card-title mb-0.5 truncate">{groupName}</p>
-              <p className="text-meta mb-1" style={{ color: 'var(--c-text-2)' }}>{roomDescription}</p>
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                {memberCount} {memberCount === 1 ? 'member' : 'members'}
-              </p>
-            </div>
+        {/* Members */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <SectionLabel label="Members" />
+            {members.length > 0 && (
+              <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                {members.length}
+              </span>
+            )}
           </div>
-        </div>
-      </div>
-
-      {/* Members */}
-      <section className="px-5 pt-4">
-        <p className="text-label mb-3"
-           style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-          Members
-        </p>
-        {members.length === 0 ? (
-          <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No other members yet.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {members.map(m => {
-              const mg = memberGoals.get(m.userId);
-              return (
+          {members.length > 0 ? (
+            <div className="space-y-2">
+              {members.map((m, i) => (
                 <button
-                  key={m.userId}
-                  className="card p-4 flex items-center gap-3 w-full text-left"
-                  style={{ borderRadius: 14 }}
-                  onClick={() => mg && setSelectedMember(mg)}
+                  key={i}
+                  onClick={() => setSelectedMember(m)}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-opacity active:opacity-70"
+                  style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}
                 >
-                  <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-sm font-semibold"
-                       style={{ background: 'var(--c-surface-2)', color: 'var(--c-text-2)' }}>
-                    {mg?.displayName?.charAt(0)?.toUpperCase() ?? '?'}
+                  {/* Avatar placeholder */}
+                  <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
+                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+                    {m.goalTitle[0]?.toUpperCase() ?? '?'}
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-body truncate" style={{ fontWeight: 500 }}>
-                      {mg?.displayName ?? 'Member'}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: 'var(--c-text)' }}>
+                      {m.goalTitle}
                     </p>
-                    <p className="text-meta truncate" style={{ color: 'var(--c-text-3)' }}>
-                      {mg?.title ?? '—'}
+                    <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                      {m.activeTasks.length} active · {m.completedTasks.length} done
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                      {mg?.progressPercent ?? 0}%
-                    </span>
-                    <ChevronRight size={14} style={{ color: 'var(--c-text-3)' }} />
-                  </div>
+                  <MiniRing pct={m.progressPercent} />
                 </button>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* Similar Tasks */}
-      {similarTasks.length > 0 && (
-        <section className="px-5 pt-6">
-          <p className="text-label mb-3"
-             style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Similar Tasks
-          </p>
-          <div className="flex flex-col gap-2">
-            {similarTasks.map(t => (
-              <div key={`${t.goalId}-${t.id}`} className="card p-4" style={{ borderRadius: 14 }}>
-                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{t.text}</p>
-                <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>{t.memberName}</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <Empty msg="No other members in this room yet." />
+          )}
         </section>
-      )}
 
-      {/* Most Popular Tasks */}
-      {popularTasks.length > 0 && (
-        <section className="px-5 pt-6">
-          <p className="text-label mb-3"
-             style={{ color: 'var(--c-text-2)', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Most Popular Tasks
-          </p>
-          <div className="flex flex-col gap-2">
-            {popularTasks.map((g, i) => (
-              <div key={i} className="card p-4" style={{ borderRadius: 14 }}>
-                <p className="text-body mb-1" style={{ fontWeight: 500 }}>{g.text}</p>
-                <div className="flex items-center gap-3">
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>
-                    {g.memberCount} {g.memberCount === 1 ? 'member' : 'members'}
-                  </span>
-                  {g.doneCount > 0 && (
-                    <>
-                      <span className="text-meta" style={{ color: 'var(--c-text-3)' }}>·</span>
-                      <span className="flex items-center gap-1 text-meta" style={{ color: 'var(--c-gold)' }}>
-                        <Check size={12} /> {g.doneCount} completed
-                      </span>
-                    </>
+        {/* Similar Tasks */}
+        <section>
+          <SectionLabel label="Similar Tasks" />
+          {similarTasks.length > 0
+            ? <TaskList items={similarTasks} />
+            : <Empty msg="Tasks from room members appear here as the group grows." />}
+        </section>
+
+        {/* Most Popular Tasks */}
+        <section>
+          <SectionLabel label="Most Popular Tasks" />
+          {popularTasks.length > 0 ? (
+            <div className="space-y-2">
+              {popularTasks.map((item, i) => (
+                <div key={i} className="flex items-center justify-between px-4 py-3 rounded-2xl"
+                     style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                  <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                    <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+                    <p className="text-sm leading-snug truncate" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
+                  </div>
+                  {item.count > 1 && (
+                    <span className="ml-3 flex-shrink-0 text-meta"
+                          style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                      ×{item.count}
+                    </span>
                   )}
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <Empty msg="Popular tasks appear as the room grows." />
+          )}
         </section>
-      )}
+
+      </div>
 
       {/* Member detail sheet */}
       <AnimatePresence>
         {selectedMember && (
-          <MemberDetailSheet
-            member={selectedMember}
-            tasks={memberTasks.filter(t => t.userId === selectedMember.userId)}
-            onClose={() => setSelectedMember(null)}
-          />
+          <MemberSheet member={selectedMember} onClose={() => setSelectedMember(null)} />
         )}
       </AnimatePresence>
-    </div>
+    </>
   );
 }
 
@@ -1678,7 +1413,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'people',    label: 'People'    },
 ];
 
-export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
+export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const goal = goals.find(g => g.id === goalId);
 
@@ -1744,7 +1479,12 @@ export function GoalDetailScreen({ user, goalId, goals, initialTab, setCurrentSc
 
             {activeTab === 'plan' && <PlanTab goal={goal} user={user} />}
 
-            {activeTab === 'goal-room' && <GoalRoomTab goal={goal} user={user} />}
+            {activeTab === 'goal-room' && (
+              <GoalRoomTab goal={goal} user={user}
+                blockedUsers={dbUser?.blockedUsers ?? []}
+                hiddenUsers={dbUser?.hiddenUsers ?? []}
+              />
+            )}
 
             {activeTab === 'people' && (
               <PeopleTab goal={goal} user={user} />

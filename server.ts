@@ -162,8 +162,8 @@ async function findOrCreateGroupForGoal(goalId: string) {
       (d) => ({ id: d.id, ...d.data() }) as GroupDoc,
     );
 
-    const SIMILARITY_THRESHOLD_EXISTING = 0.90;
-    const SIMILARITY_THRESHOLD_NEW = 0.90;
+    const SIMILARITY_THRESHOLD_EXISTING = 0.78;
+    const SIMILARITY_THRESHOLD_NEW = 0.72;
 
     let bestGroup: GroupDoc | null = null;
     let maxScore = -1;
@@ -189,39 +189,37 @@ async function findOrCreateGroupForGoal(goalId: string) {
 
       const groupRef = db.collection("groups").doc(bestGroup.id);
       const goalRef = db.collection("goals").doc(goal.id);
-      const eligibleAt = nowIso();
+      const joinedAt = nowIso();
 
       await db.runTransaction(async (transaction) => {
         const gDoc = await transaction.get(groupRef);
-        const gData = (gDoc.data() || {}) as GroupDoc;
-        const existingMembers: GroupDoc["members"] = gData.members || [];
-        const existingMemberIds: string[] = gData.memberIds || [];
-        const alreadyMember = existingMembers.some((m) => m.goalId === goal.id);
+        const gData = gDoc.data() as GroupDoc;
+        const members: any[] = gData?.members || [];
+        const memberIds: string[] = gData?.memberIds || [];
+        const alreadyMember = members.some((m) => m.goalId === goal.id);
 
         transaction.update(goalRef, {
           groupId: bestGroup!.id,
           groupJoined: true,
-          eligibleAt,
-          joinedAt: eligibleAt,
+          joinedAt,
+          eligibleAt: joinedAt,
         });
 
-        const groupUpdates: Record<string, any> = {
+        const groupUpdate: any = {
           eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goal.id),
         };
-
-        if (!alreadyMember && goal.ownerId) {
-          groupUpdates.members = admin.firestore.FieldValue.arrayUnion({
+        if (!alreadyMember) {
+          groupUpdate.members = admin.firestore.FieldValue.arrayUnion({
             goalId: goal.id,
             userId: goal.ownerId,
-            joinedAt: eligibleAt,
+            joinedAt,
           });
-          groupUpdates.memberCount = admin.firestore.FieldValue.increment(1);
-          if (!existingMemberIds.includes(goal.ownerId)) {
-            groupUpdates.memberIds = admin.firestore.FieldValue.arrayUnion(goal.ownerId);
+          if (!memberIds.includes(goal.ownerId)) {
+            groupUpdate.memberIds = admin.firestore.FieldValue.arrayUnion(goal.ownerId);
+            groupUpdate.memberCount = admin.firestore.FieldValue.increment(1);
           }
         }
-
-        transaction.set(groupRef, groupUpdates, { merge: true });
+        transaction.set(groupRef, groupUpdate, { merge: true });
       });
 
       return {
@@ -259,30 +257,30 @@ async function findOrCreateGroupForGoal(goalId: string) {
       );
 
       const eligibleGoalIds = uniqueStrings(clusterGoals.map((g) => g.id));
-      const eligibleAt = nowIso();
+      const joinedAt = nowIso();
 
-      const autoMembers = clusterGoals
-        .filter((g) => !!g.ownerId)
-        .map((g) => ({ goalId: g.id, userId: g.ownerId!, joinedAt: eligibleAt }));
-      const autoMemberIds = uniqueStrings(
-        clusterGoals.map((g) => g.ownerId).filter(Boolean) as string[],
-      );
+      const initialMembers = clusterGoals.map((g) => ({
+        goalId: g.id,
+        userId: g.ownerId,
+        joinedAt,
+      }));
+      const initialMemberIds = uniqueStrings(clusterGoals.map((g) => g.ownerId));
 
       const groupData = {
         derivedGoalTheme: groupName,
         representativeEmbedding: goal.embedding,
         localityCenter: goal.matchingMetadata?.locality || "Global",
         maxMembers: 70,
-        members: autoMembers,
-        memberIds: autoMemberIds,
+        members: initialMembers,
+        memberIds: initialMemberIds,
         eligibleGoalIds,
-        memberCount: autoMembers.length,
+        memberCount: initialMemberIds.length,
         matchingCriteria: {
           category: goal.category,
           timeHorizon: goal.timeHorizon,
           privacy: goalIsPrivate ? "private" : "public",
         },
-        createdAt: eligibleAt,
+        createdAt: joinedAt,
       };
 
       const groupRef = await db.collection("groups").add(groupData);
@@ -292,8 +290,8 @@ async function findOrCreateGroupForGoal(goalId: string) {
         batch.update(db.collection("goals").doc(g.id), {
           groupId: groupRef.id,
           groupJoined: true,
-          eligibleAt,
-          joinedAt: eligibleAt,
+          joinedAt,
+          eligibleAt: joinedAt,
         });
       }
       await batch.commit();
@@ -354,8 +352,6 @@ async function computeAndStoreSimilarGoals(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
 
-    const currentGoalMeta = allGoals.find((g) => g.id === goalId);
-
     const matches = allGoals
       .filter((g) => g.id !== goalId && g.embedding && g.ownerId !== ownerId)
       .map((g) => {
@@ -369,44 +365,14 @@ async function computeAndStoreSimilarGoals(
           description: g.description,
         };
       })
-      .filter((m) => m.similarityScore >= 0.9)
+      .filter((m) => m.similarityScore >= 0.7)
       .sort((a, b) => b.similarityScore - a.similarityScore)
       .slice(0, 5);
 
-    const batch = db.batch();
-
-    batch.update(db.collection("goals").doc(goalId), {
+    await db.collection("goals").doc(goalId).update({
       similarGoals: matches,
       similarityComputedAt: nowIso(),
     });
-
-    // Reciprocal: update each matched goal so it reflects this goal too.
-    // Clears stale one-way entries by replacing with fresh score.
-    for (const match of matches) {
-      const matchedGoal = allGoals.find((g) => g.id === match.goalId);
-      if (!matchedGoal) continue;
-
-      const existing: GoalDoc["similarGoals"] = matchedGoal.similarGoals || [];
-      const withoutThis = existing.filter((s) => s.goalId !== goalId);
-      const reciprocalEntry = {
-        goalId,
-        userId: ownerId,
-        goalTitle: currentGoalMeta?.title || "",
-        similarityScore: match.similarityScore,
-        groupId: currentGoalMeta?.groupId,
-        description: currentGoalMeta?.description,
-      };
-      const updated = [...withoutThis, reciprocalEntry]
-        .sort((a, b) => b.similarityScore - a.similarityScore)
-        .slice(0, 5);
-
-      batch.update(db.collection("goals").doc(match.goalId), {
-        similarGoals: updated,
-        similarityComputedAt: nowIso(),
-      });
-    }
-
-    await batch.commit();
 
     const currentGoalDoc = await db.collection("goals").doc(goalId).get();
     const currentGoal = { id: goalId, ...currentGoalDoc.data() } as GoalDoc;
@@ -1024,6 +990,105 @@ async function startServer() {
     }
   });
 
+  // ── People tab: tasks from room members (admin SDK bypasses task read rules) ──
+  app.get("/api/goals/:goalId/people-tasks", authMiddleware, async (req: any, res) => {
+    try {
+      const { goalId } = req.params;
+
+      // Verify caller owns or can see this goal
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists) return res.status(404).json({ error: "Goal not found" });
+      const goalData = goalDoc.data()!;
+      if (goalData.ownerId !== req.userId && goalData.visibility !== "public") {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const groupId: string | undefined = goalData.groupId;
+      if (!groupId) return res.json({ members: [], similarTasks: [], popularTasks: [] });
+
+      const groupDoc = await db.collection("groups").doc(groupId).get();
+      if (!groupDoc.exists) return res.json({ members: [], similarTasks: [], popularTasks: [] });
+
+      const groupData = groupDoc.data()!;
+      const rawMembers: { goalId: string; userId: string; joinedAt: string }[] =
+        (groupData.members || []).filter((m: any) => m.goalId !== goalId);
+
+      const allActiveTexts: string[] = [];
+
+      interface MemberDetail {
+        userId: string;
+        goalTitle: string;
+        goalDescription: string;
+        progressPercent: number;
+        joinedAt: string;
+        activeTasks: string[];
+        completedTasks: string[];
+      }
+
+      const members: MemberDetail[] = [];
+
+      for (const member of rawMembers.slice(0, 6)) {
+        const mgDoc = await db.collection("goals").doc(member.goalId).get();
+        if (!mgDoc.exists) continue;
+        const mgData = mgDoc.data()!;
+
+        // Load all tasks for this member's goal
+        const tasksSnap = await db
+          .collection("goals")
+          .doc(member.goalId)
+          .collection("tasks")
+          .orderBy("order", "asc")
+          .get();
+
+        const activeTasks: string[]    = [];
+        const completedTasks: string[] = [];
+
+        tasksSnap.forEach((t) => {
+          const d = t.data();
+          if (d.isDone) completedTasks.push(d.text as string);
+          else          activeTasks.push(d.text as string);
+        });
+
+        members.push({
+          userId:          member.userId,
+          goalTitle:       mgData.title        || "",
+          goalDescription: mgData.description  || "",
+          progressPercent: mgData.progressPercent ?? 0,
+          joinedAt:        member.joinedAt,
+          activeTasks:     activeTasks.slice(0, 10),
+          completedTasks:  completedTasks.slice(0, 10),
+        });
+
+        activeTasks.forEach((t) => allActiveTexts.push(t));
+      }
+
+      // Aggregate popular tasks by normalised text (active tasks only)
+      const counts = new Map<string, { text: string; count: number }>();
+      allActiveTexts.forEach((text) => {
+        const key = text.toLowerCase().trim();
+        if (counts.has(key)) counts.get(key)!.count++;
+        else counts.set(key, { text, count: 1 });
+      });
+
+      const popularTasks = [...counts.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 8);
+
+      // Similar tasks = unique active tasks not already in popularTasks
+      const seen = new Set(popularTasks.map((t) => t.text.toLowerCase().trim()));
+      const similarTasks = allActiveTexts
+        .filter((t) => !seen.has(t.toLowerCase().trim()))
+        .filter((t, i, a) => a.findIndex((x) => x.toLowerCase() === t.toLowerCase()) === i)
+        .slice(0, 8)
+        .map((text) => ({ text }));
+
+      res.json({ members, similarTasks, popularTasks });
+    } catch (error: any) {
+      console.error("/api/goals/:goalId/people-tasks error:", error);
+      res.status(500).json({ error: "Failed to load people data" });
+    }
+  });
+
   app.post("/api/media/upload", authMiddleware, async (req: any, res) => {
     try {
       const validation = MediaUploadSchema.safeParse(req.body);
@@ -1175,6 +1240,14 @@ async function startServer() {
         createdAt: nowIso(),
         status: "pending",
       });
+
+      // Persist hide/block to the user's own document so client-side filtering works
+      if (action === "hide" || action === "block") {
+        const field = action === "hide" ? "hiddenUsers" : "blockedUsers";
+        await db.collection("users").doc(userId).update({
+          [field]: admin.firestore.FieldValue.arrayUnion(targetUserId),
+        });
+      }
 
       res.json({ success: true });
     } catch (error: any) {
