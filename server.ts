@@ -988,33 +988,61 @@ async function startServer() {
       if (!groupDoc.exists) return res.json({ members: [], similarTasks: [], popularTasks: [] });
 
       const groupData = groupDoc.data()!;
-      const members: { goalId: string; userId: string; joinedAt: string }[] =
+      const rawMembers: { goalId: string; userId: string; joinedAt: string }[] =
         (groupData.members || []).filter((m: any) => m.goalId !== goalId);
 
-      const allTaskTexts: string[] = [];
-      const memberInfo: { userId: string; goalTitle: string; joinedAt: string }[] = [];
+      const allActiveTexts: string[] = [];
 
-      for (const member of members.slice(0, 6)) {
+      interface MemberDetail {
+        userId: string;
+        goalTitle: string;
+        goalDescription: string;
+        progressPercent: number;
+        joinedAt: string;
+        activeTasks: string[];
+        completedTasks: string[];
+      }
+
+      const members: MemberDetail[] = [];
+
+      for (const member of rawMembers.slice(0, 6)) {
         const mgDoc = await db.collection("goals").doc(member.goalId).get();
         if (!mgDoc.exists) continue;
         const mgData = mgDoc.data()!;
-        memberInfo.push({ userId: member.userId, goalTitle: mgData.title || "", joinedAt: member.joinedAt });
 
+        // Load all tasks for this member's goal
         const tasksSnap = await db
           .collection("goals")
           .doc(member.goalId)
           .collection("tasks")
-          .where("isDone", "==", false)
+          .orderBy("order", "asc")
           .get();
+
+        const activeTasks: string[]    = [];
+        const completedTasks: string[] = [];
+
         tasksSnap.forEach((t) => {
-          const txt = t.data().text as string;
-          if (txt) allTaskTexts.push(txt);
+          const d = t.data();
+          if (d.isDone) completedTasks.push(d.text as string);
+          else          activeTasks.push(d.text as string);
         });
+
+        members.push({
+          userId:          member.userId,
+          goalTitle:       mgData.title        || "",
+          goalDescription: mgData.description  || "",
+          progressPercent: mgData.progressPercent ?? 0,
+          joinedAt:        member.joinedAt,
+          activeTasks:     activeTasks.slice(0, 10),
+          completedTasks:  completedTasks.slice(0, 10),
+        });
+
+        activeTasks.forEach((t) => allActiveTexts.push(t));
       }
 
-      // Aggregate popular tasks by normalised text
+      // Aggregate popular tasks by normalised text (active tasks only)
       const counts = new Map<string, { text: string; count: number }>();
-      allTaskTexts.forEach((text) => {
+      allActiveTexts.forEach((text) => {
         const key = text.toLowerCase().trim();
         if (counts.has(key)) counts.get(key)!.count++;
         else counts.set(key, { text, count: 1 });
@@ -1024,15 +1052,15 @@ async function startServer() {
         .sort((a, b) => b.count - a.count)
         .slice(0, 8);
 
-      // Similar tasks = unique task texts from members (not duplicating popularTasks already shown)
+      // Similar tasks = unique active tasks not already in popularTasks
       const seen = new Set(popularTasks.map((t) => t.text.toLowerCase().trim()));
-      const similarTasks = allTaskTexts
+      const similarTasks = allActiveTexts
         .filter((t) => !seen.has(t.toLowerCase().trim()))
         .filter((t, i, a) => a.findIndex((x) => x.toLowerCase() === t.toLowerCase()) === i)
         .slice(0, 8)
         .map((text) => ({ text }));
 
-      res.json({ members: memberInfo, similarTasks, popularTasks });
+      res.json({ members, similarTasks, popularTasks });
     } catch (error: any) {
       console.error("/api/goals/:goalId/people-tasks error:", error);
       res.status(500).json({ error: "Failed to load people data" });

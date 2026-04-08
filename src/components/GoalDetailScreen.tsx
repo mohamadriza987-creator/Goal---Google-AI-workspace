@@ -1107,15 +1107,138 @@ function GoalRoomTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) 
 // People Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface MemberDetail {
+  userId:          string;
+  goalTitle:       string;
+  goalDescription: string;
+  progressPercent: number;
+  joinedAt:        string;
+  activeTasks:     string[];
+  completedTasks:  string[];
+}
+
 interface PeopleData {
-  members:      { userId: string; goalTitle: string; joinedAt: string }[];
+  members:      MemberDetail[];
   similarTasks: { text: string }[];
   popularTasks: { text: string; count: number }[];
 }
 
+// ── Small/medium progress ring ────────────────────────────────────────────────
+function MiniRing({ pct, size = 28 }: { pct: number; size?: number }) {
+  const sw = size <= 28 ? 3 : 4;
+  const r  = (size - sw * 2) / 2;
+  const circ = 2 * Math.PI * r;
+  const cx = size / 2, cy = size / 2;
+  return (
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', flexShrink: 0 }}>
+      <circle cx={cx} cy={cy} r={r} strokeWidth={sw} fill="none" stroke="var(--c-border)" />
+      <circle cx={cx} cy={cy} r={r} strokeWidth={sw} fill="none" stroke="var(--c-gold)"
+        strokeLinecap="round" strokeDasharray={circ}
+        strokeDashoffset={circ - (Math.min(pct, 100) / 100) * circ}
+        style={{ transition: 'stroke-dashoffset .4s ease' }} />
+    </svg>
+  );
+}
+
+// ── Member detail sheet ───────────────────────────────────────────────────────
+function MemberSheet({ member, onClose }: { member: MemberDetail; onClose: () => void }) {
+  return (
+    <motion.div
+      key="member-sheet"
+      initial={{ opacity: 0, y: 40 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 40 }}
+      transition={{ type: 'spring', stiffness: 340, damping: 34 }}
+      className="fixed inset-0 z-50 flex flex-col justify-end"
+      style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)' }}
+      onClick={onClose}
+    >
+      <div
+        className="rounded-t-3xl pb-10 overflow-y-auto"
+        style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '85dvh' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Handle */}
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full" style={{ background: 'var(--c-border)' }} />
+        </div>
+
+        {/* Header */}
+        <div className="flex items-start gap-4 px-5 pt-4 pb-5"
+             style={{ borderBottom: '1px solid var(--c-border)' }}>
+          <div className="flex-1 min-w-0">
+            <h2 style={{ fontSize: 17, fontWeight: 600, letterSpacing: -0.3, lineHeight: 1.25 }}
+                className="mb-1">
+              {member.goalTitle}
+            </h2>
+            {member.goalDescription && (
+              <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-2)' }}>
+                {member.goalDescription}
+              </p>
+            )}
+            <p className="text-meta mt-2" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+              Joined {new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+            </p>
+          </div>
+          {/* Progress ring */}
+          <div className="flex flex-col items-center gap-1 flex-shrink-0">
+            <MiniRing pct={member.progressPercent} size={52} />
+            <span style={{ fontSize: 10, color: 'var(--c-text-3)' }}>{member.progressPercent}%</span>
+          </div>
+        </div>
+
+        <div className="px-5 pt-5 space-y-6">
+          {/* Active tasks */}
+          <section>
+            <h3 className="text-meta uppercase tracking-widest mb-3"
+                style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+              Active Tasks
+            </h3>
+            {member.activeTasks.length > 0 ? (
+              <div className="space-y-1.5">
+                {member.activeTasks.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
+                       style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                    <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
+                         style={{ background: 'var(--c-gold)' }} />
+                    <p className="text-sm leading-snug" style={{ color: 'var(--c-text-2)' }}>{t}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No active tasks.</p>
+            )}
+          </section>
+
+          {/* Completed tasks */}
+          {member.completedTasks.length > 0 && (
+            <section>
+              <h3 className="text-meta uppercase tracking-widest mb-3"
+                  style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+                Completed
+              </h3>
+              <div className="space-y-1.5">
+                {member.completedTasks.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
+                       style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', opacity: 0.6 }}>
+                    <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+                    <p className="text-sm leading-snug line-through" style={{ color: 'var(--c-text-3)' }}>{t}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── People tab ────────────────────────────────────────────────────────────────
 function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
-  const [data,    setData]    = useState<PeopleData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data,           setData]           = useState<PeopleData | null>(null);
+  const [loading,        setLoading]        = useState(true);
+  const [selectedMember, setSelectedMember] = useState<MemberDetail | null>(null);
 
   useEffect(() => {
     if (!user) { setLoading(false); return; }
@@ -1144,7 +1267,14 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     );
   }
 
-  const { similarTasks = [], popularTasks = [] } = data ?? {};
+  const { members = [], similarTasks = [], popularTasks = [] } = data ?? {};
+
+  const SectionLabel = ({ label }: { label: string }) => (
+    <h3 className="text-meta uppercase tracking-widest mb-3"
+        style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+      {label}
+    </h3>
+  );
 
   const TaskList = ({ items }: { items: { text: string }[] }) => (
     <div className="space-y-2">
@@ -1166,49 +1296,93 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
   );
 
   return (
-    <div className="px-5 pt-6 pb-32 space-y-8">
+    <>
+      <div className="px-5 pt-6 pb-32 space-y-8">
 
-      {/* Similar Tasks */}
-      <section>
-        <h3 className="text-meta uppercase tracking-widest mb-3"
-            style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
-          Similar Tasks
-        </h3>
-        {similarTasks.length > 0
-          ? <TaskList items={similarTasks} />
-          : <Empty msg="Tasks from room members appear here as the group grows." />}
-      </section>
-
-      {/* Most Popular Tasks */}
-      <section>
-        <h3 className="text-meta uppercase tracking-widest mb-3"
-            style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
-          Most Popular Tasks
-        </h3>
-        {popularTasks.length > 0 ? (
-          <div className="space-y-2">
-            {popularTasks.map((item, i) => (
-              <div key={i} className="flex items-center justify-between px-4 py-3 rounded-2xl"
-                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                <div className="flex items-start gap-2.5 flex-1 min-w-0">
-                  <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
-                  <p className="text-sm leading-snug truncate" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
-                </div>
-                {item.count > 1 && (
-                  <span className="ml-3 flex-shrink-0 text-meta"
-                        style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                    ×{item.count}
-                  </span>
-                )}
-              </div>
-            ))}
+        {/* Members */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <SectionLabel label="Members" />
+            {members.length > 0 && (
+              <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                {members.length}
+              </span>
+            )}
           </div>
-        ) : (
-          <Empty msg="Popular tasks appear as the room grows." />
-        )}
-      </section>
+          {members.length > 0 ? (
+            <div className="space-y-2">
+              {members.map((m, i) => (
+                <button
+                  key={i}
+                  onClick={() => setSelectedMember(m)}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-opacity active:opacity-70"
+                  style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}
+                >
+                  {/* Avatar placeholder */}
+                  <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
+                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+                    {m.goalTitle[0]?.toUpperCase() ?? '?'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: 'var(--c-text)' }}>
+                      {m.goalTitle}
+                    </p>
+                    <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                      {m.activeTasks.length} active · {m.completedTasks.length} done
+                    </p>
+                  </div>
+                  <MiniRing pct={m.progressPercent} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <Empty msg="No other members in this room yet." />
+          )}
+        </section>
 
-    </div>
+        {/* Similar Tasks */}
+        <section>
+          <SectionLabel label="Similar Tasks" />
+          {similarTasks.length > 0
+            ? <TaskList items={similarTasks} />
+            : <Empty msg="Tasks from room members appear here as the group grows." />}
+        </section>
+
+        {/* Most Popular Tasks */}
+        <section>
+          <SectionLabel label="Most Popular Tasks" />
+          {popularTasks.length > 0 ? (
+            <div className="space-y-2">
+              {popularTasks.map((item, i) => (
+                <div key={i} className="flex items-center justify-between px-4 py-3 rounded-2xl"
+                     style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                  <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                    <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+                    <p className="text-sm leading-snug truncate" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
+                  </div>
+                  {item.count > 1 && (
+                    <span className="ml-3 flex-shrink-0 text-meta"
+                          style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                      ×{item.count}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty msg="Popular tasks appear as the room grows." />
+          )}
+        </section>
+
+      </div>
+
+      {/* Member detail sheet */}
+      <AnimatePresence>
+        {selectedMember && (
+          <MemberSheet member={selectedMember} onClose={() => setSelectedMember(null)} />
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
