@@ -91,7 +91,8 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
       const data = await r.json();
       if (r.ok) {
         setForceRebuildStatus('done');
-        setForceRebuildMsg(`Done — ${data.groups ?? 0} groups, ${data.goals ?? 0} unassigned goals indexed`);
+        const fixedNote = data.fixedMissingLastLoggedIn > 0 ? ` (fixed ${data.fixedMissingLastLoggedIn} missing timestamps)` : '';
+        setForceRebuildMsg(`Done — ${data.groups ?? 0} groups, ${data.goals ?? 0} unassigned goals indexed${fixedNote}`);
         await loadIndexStatus();
       } else {
         setForceRebuildStatus('error');
@@ -443,6 +444,18 @@ function formatCell(val: unknown): string {
   return String(val);
 }
 
+function LastLoggedInCell({ val }: { val: unknown }) {
+  if (!val || val === '') {
+    return <span style={{ color: '#f59e0b' }}>— missing</span>;
+  }
+  const str = String(val);
+  const d = new Date(str);
+  const daysAgo = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+  const label = `${str.slice(0, 10)} (${daysAgo}d ago)`;
+  const color = daysAgo <= 30 ? '#6bbf7a' : '#e07070';
+  return <span style={{ color }}>{label}</span>;
+}
+
 function IndexInspector({
   dataset, onDatasetChange, rows, loading,
 }: {
@@ -492,7 +505,9 @@ function IndexInspector({
                       <td key={col}
                           className="px-3 py-2 text-zinc-300 align-top max-w-[180px] break-all"
                           style={{ whiteSpace: 'pre-wrap' }}>
-                        {formatCell(row[col])}
+                        {col === 'lastLoggedInAt'
+                          ? <LastLoggedInCell val={row[col]} />
+                          : formatCell(row[col])}
                       </td>
                     ))}
                   </tr>

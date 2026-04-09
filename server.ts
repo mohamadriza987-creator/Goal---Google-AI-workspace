@@ -149,7 +149,7 @@ function computeAgeCategory(age?: number | null): string {
 
 const IDX_ACTIVE_DAYS = 30;
 function isActiveUser(lastLoggedInAt?: string): boolean {
-  if (!lastLoggedInAt) return false;
+  if (!lastLoggedInAt) return true; // missing = treat as active (never penalise new users)
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - IDX_ACTIVE_DAYS);
   return new Date(lastLoggedInAt) >= cutoff;
@@ -458,7 +458,10 @@ async function removeGroupIndex(groupId: string): Promise<void> {
   await db.collection("group_index").doc(groupId).delete().catch(() => {});
 }
 
-async function upsertGoalToUnassignedIndex(goalId: string): Promise<void> {
+async function upsertGoalToUnassignedIndex(
+  goalId: string,
+  opts: { stampNow?: boolean } = {},
+): Promise<void> {
   const goalDoc = await db.collection("goals").doc(goalId).get();
   if (!goalDoc.exists) return;
   const goal = { id: goalDoc.id, ...goalDoc.data() } as GoalDoc;
@@ -480,8 +483,22 @@ async function upsertGoalToUnassignedIndex(goalId: string): Promise<void> {
   const currentLocation: string = u.locality || goal.matchingMetadata?.locality || "";
   const nationality: string    = u.nationality || "";
   const languages: string[]    = u.languages || (u.preferredLanguage ? [u.preferredLanguage] : []);
-  const lastLoggedInAt: string = u.lastLoggedInAt || "";
-  const activityStatus         = isActiveUser(lastLoggedInAt) ? "active" : "inactive";
+
+  // Stamp lastLoggedInAt = now when:
+  //   - caller explicitly requests it (new goal creation, re-entry after leaving group), OR
+  //   - the user has never had it set at all
+  const now = nowIso();
+  let lastLoggedInAt: string = u.lastLoggedInAt || "";
+  if (opts.stampNow || !lastLoggedInAt) {
+    lastLoggedInAt = now;
+    // Persist back to the user doc so it's consistent everywhere
+    await db.collection("users").doc(userId).update({ lastLoggedInAt }).catch(() => {
+      // If user doc doesn't exist yet (edge case), use set with merge
+      db.collection("users").doc(userId).set({ lastLoggedInAt }, { merge: true }).catch(console.error);
+    });
+  }
+
+  const activityStatus = isActiveUser(lastLoggedInAt) ? "active" : "inactive";
 
   const entry: UnassignedGoalIndexEntry = {
     goalId,
@@ -494,7 +511,7 @@ async function upsertGoalToUnassignedIndex(goalId: string): Promise<void> {
     categories: goal.category ? [goal.category] : [],
     lastLoggedInAt,
     activityStatus,
-    updatedAt: nowIso(),
+    updatedAt: now,
   };
 
   await db.collection("goals_unassigned_index").doc(goalId).set(entry);
@@ -590,11 +607,8 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
 
   // No embedding yet — place in unassigned index with correct activity status
   if (!goal.embedding) {
-    await upsertGoalToUnassignedIndex(goalId);
-    const uid = goal.ownerId || "";
-    const uDoc = uid ? await db.collection("users").doc(uid).get() : null;
-    const u: any = uDoc?.exists ? uDoc.data() : {};
-    return { action: "placed-unassigned", activityStatus: isActiveUser(u.lastLoggedInAt) ? "active" : "inactive" };
+    await upsertGoalToUnassignedIndex(goalId, { stampNow: true });
+    return { action: "placed-unassigned", activityStatus: "active" };
   }
 
   // Resolve owner metadata
@@ -726,11 +740,49 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
   }
 
   // ── Step 3: No match — place in unassigned index ──────────────────────────
-  await upsertGoalToUnassignedIndex(goalId);
+  await upsertGoalToUnassignedIndex(goalId, { stampNow: true });
   return {
     action: "placed-unassigned",
-    activityStatus: isActiveUser(u.lastLoggedInAt) ? "active" : "inactive",
+    activityStatus: "active",
   };
+}
+
+// ── Fix existing unassigned index entries that are missing lastLoggedInAt ────
+// Stamps lastLoggedInAt = now on the user doc + index doc so activityStatus
+// gets correctly re-evaluated as "active" for those records.
+async function backfillMissingLastLoggedIn(): Promise<{ fixed: number }> {
+  const snap = await db.collection("goals_unassigned_index").get();
+  const toFix = snap.docs.filter((d) => {
+    const data = d.data();
+    return !data.lastLoggedInAt || data.lastLoggedInAt === "";
+  });
+
+  if (toFix.length === 0) return { fixed: 0 };
+
+  const now = nowIso();
+  const batches: admin.firestore.WriteBatch[] = [];
+  let batch = db.batch();
+  let opCount = 0;
+
+  for (const d of toFix) {
+    const { userId } = d.data();
+    // Stamp index doc
+    batch.update(d.ref, { lastLoggedInAt: now, activityStatus: "active", updatedAt: now });
+    opCount++;
+    if (opCount >= 400) { batches.push(batch); batch = db.batch(); opCount = 0; }
+
+    // Stamp user doc (best-effort)
+    if (userId) {
+      batch.set(db.collection("users").doc(userId), { lastLoggedInAt: now }, { merge: true });
+      opCount++;
+      if (opCount >= 400) { batches.push(batch); batch = db.batch(); opCount = 0; }
+    }
+  }
+  batches.push(batch);
+
+  for (const b of batches) await b.commit();
+  console.log(`[backfillMissingLastLoggedIn] Fixed ${toFix.length} docs`);
+  return { fixed: toFix.length };
 }
 
 // ── One-time Index Backfill ───────────────────────────────────────────────────
@@ -1860,9 +1912,14 @@ async function startServer() {
     try {
       if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
 
+      // Step 1: stamp lastLoggedInAt=now on any existing entries missing it
+      const fixResult = await backfillMissingLastLoggedIn();
+
+      // Step 2: delete flag then re-run full rebuild (which re-computes all entries fresh)
       await db.collection("admin_flags").doc(BACKFILL_FLAG).delete().catch(() => {});
       const result = await backfillIndexIfNeeded();
-      res.json({ success: true, ...result });
+
+      res.json({ success: true, ...result, fixedMissingLastLoggedIn: fixResult.fixed });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
