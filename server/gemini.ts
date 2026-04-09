@@ -18,21 +18,27 @@ function getAI() {
   return aiInstance;
 }
 
+export interface GoalTask {
+  text: string;
+  microSteps: string[];
+}
+
 export interface StructuredGoal {
   transcript: string;
-  goalTitle: string;
-  goalDescription: string;
-  suggestedTasks: string[];
-  category: string;
+  title: string;
+  description: string;
+  categories: string[];
+  languages: string[];
+  tasks: GoalTask[];
   tags: string[];
   timeHorizon: string;
   privacy: 'private' | 'public';
-  language: string;
   normalizedMatchingText: string;
 }
 
 export interface UserContext {
   age?: number;
+  nationality?: string;
   locality?: string;
 }
 
@@ -155,39 +161,49 @@ function cleanJson(text: string): string {
 const GOAL_PRIMARY  = "gemini-2.5-flash-lite-preview-06-17";
 const GOAL_FALLBACK = "gemini-2.5-flash-preview-04-17";
 
+const GOAL_TASK_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    text:       { type: Type.STRING },
+    microSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
+  },
+  required: ["text", "microSteps"],
+};
+
 const GOAL_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     transcript:             { type: Type.STRING },
-    goalTitle:              { type: Type.STRING },
-    goalDescription:        { type: Type.STRING },
-    suggestedTasks:         { type: Type.ARRAY, items: { type: Type.STRING } },
-    category:               { type: Type.STRING },
+    title:                  { type: Type.STRING },
+    description:            { type: Type.STRING },
+    categories:             { type: Type.ARRAY, items: { type: Type.STRING } },
+    languages:              { type: Type.ARRAY, items: { type: Type.STRING } },
+    tasks:                  { type: Type.ARRAY, items: GOAL_TASK_SCHEMA },
     tags:                   { type: Type.ARRAY, items: { type: Type.STRING } },
     timeHorizon:            { type: Type.STRING },
     privacy:                { type: Type.STRING, enum: ['private', 'public'] },
-    language:               { type: Type.STRING },
     normalizedMatchingText: { type: Type.STRING },
   },
-  required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"],
+  required: ["transcript", "title", "description", "categories", "languages", "tasks", "tags", "timeHorizon", "privacy", "normalizedMatchingText"],
 };
 
 function buildGoalSystemInstruction(userContext?: UserContext): string {
-  const ctx = userContext
-    ? `\nUser context — age: ${userContext.age ?? "unknown"}, location: ${userContext.locality ?? "unknown"}.`
-    : "";
+  const parts: string[] = [];
+  if (userContext?.age)         parts.push(`age: ${userContext.age}`);
+  if (userContext?.nationality)  parts.push(`nationality: ${userContext.nationality}`);
+  const ctx = parts.length ? `\nUser context — ${parts.join(", ")}.` : "";
   return `You are a goal coach. Convert the user's input into a structured goal plan.${ctx}
-Return ONLY valid JSON. All text fields must be in the same language as the user's input.
+Return ONLY valid JSON. All text fields must match the language of the user's input.
 - transcript: exact input text or accurate audio transcription.
-- goalTitle: ≤60 chars, clear and motivating.
-- goalDescription: ≤200 chars.
-- suggestedTasks: 5–8 specific, practical steps ordered by priority (most important first). No generic motivational fluff.
-- category: health | finance | learning | business | personal | social | other.
+- title: ≤60 chars, clear and motivating.
+- description: ≤200 chars.
+- categories: array of ALL applicable categories from [health, finance, learning, business, personal, social, other]. Include every category that genuinely applies — do not limit to one.
+- languages: array of ALL languages relevant to this goal (e.g. a language-learning goal includes both the native language and the target language). At minimum include the language of the user's input.
+- tasks: 5–8 items. Each task must be specific, realistic, and directly actionable — no filler like "stay motivated" or "work hard". Order by priority (most important first). For each task include 2–4 microSteps: short concrete sub-actions (4–8 words each) that break the task down further.
 - tags: 3–5 keywords.
 - timeHorizon: realistic estimate.
 - privacy: public unless user says otherwise.
-- language: detected language name (e.g. "English", "Arabic").
-- normalizedMatchingText: "Goal: [intent], [category], [sub-focus], [time horizon], [privacy]" — no filler words.`;
+- normalizedMatchingText: "Goal: [intent], [categories], [sub-focus], [time horizon], [privacy]" — no filler words.`;
 }
 
 export async function generateGoal(

@@ -1151,7 +1151,7 @@ async function startServer() {
 
       console.log(`[API] /api/generate-goal - user ${req.userId}, input: ${text ? "text" : "audio"}`);
       const structuredGoal = await generateGoal(input, userContext);
-      console.log(`[API] /api/generate-goal - done: "${structuredGoal.goalTitle}"`);
+      console.log(`[API] /api/generate-goal - done: "${structuredGoal.title}"`);
       res.json(structuredGoal);
     } catch (error: any) {
       console.error(`[API] /api/generate-goal - Error for user ${req.userId}:`, error);

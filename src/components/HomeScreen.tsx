@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
-import { generateGoal, StructuredGoal } from '../services/geminiService';
+import { generateGoal, StructuredGoal, GoalTask } from '../services/geminiService';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
@@ -174,10 +174,13 @@ export function HomeScreen({
     try {
       const idToken = await user.getIdToken();
       const structured = await generateGoal(input, idToken, {
-        age: dbUser?.age, locality: dbUser?.locality,
+        age: dbUser?.age,
+        nationality: dbUser?.nationality,
+        locality: dbUser?.locality,
       });
-      if (structured.language) {
-        const code = mapLanguageNameToCode(structured.language);
+      const primaryLang = structured.languages?.[0];
+      if (primaryLang) {
+        const code = mapLanguageNameToCode(primaryLang);
         if (code !== 'en') setLanguage(code);
       }
       setCurrentTranscript(structured.transcript || ('text' in input ? input.text : null));
@@ -263,8 +266,8 @@ export function HomeScreen({
     const createdAt = new Date().toISOString();
     const optimistic: Goal = {
       id: tempId, ownerId: user.uid,
-      title: structuredGoal.goalTitle, description: structuredGoal.goalDescription,
-      category: structuredGoal.category, visibility: structuredGoal.privacy,
+      title: structuredGoal.title, description: structuredGoal.description,
+      category: structuredGoal.categories[0], visibility: structuredGoal.privacy,
       progressPercent: 0, likesCount: 0, status: 'active', createdAt,
       savingStatus: 'saving', sourceText: structuredGoal.transcript,
       normalizedMatchingText: structuredGoal.normalizedMatchingText,
@@ -291,12 +294,12 @@ export function HomeScreen({
     setRefinementCount(0); setIsAddingDetails(false); setAdditionalDetails('');
   };
 
-  const toggleTaskSelection = (task: string) => {
+  const toggleTaskSelection = (taskText: string) => {
     if (!structuredGoal) return;
-    const has = structuredGoal.suggestedTasks.includes(task);
-    setStructuredGoal({ ...structuredGoal, suggestedTasks: has
-      ? structuredGoal.suggestedTasks.filter(t => t !== task)
-      : [...structuredGoal.suggestedTasks, task] });
+    const has = structuredGoal.tasks.some(t => t.text === taskText);
+    setStructuredGoal({ ...structuredGoal, tasks: has
+      ? structuredGoal.tasks.filter(t => t.text !== taskText)
+      : [...structuredGoal.tasks, { text: taskText, microSteps: [] }] });
   };
 
   const addManualTask = () => {
@@ -613,8 +616,8 @@ export function HomeScreen({
                        style={{ color:'var(--c-text-3)', letterSpacing:'0.12em' }}>
                   {t('reviewGoal')}
                 </label>
-                <textarea value={structuredGoal.goalTitle} rows={1}
-                  onChange={(e) => { setStructuredGoal({...structuredGoal, goalTitle:e.target.value}); e.target.style.height='auto'; e.target.style.height=e.target.scrollHeight+'px'; }}
+                <textarea value={structuredGoal.title} rows={1}
+                  onChange={(e) => { setStructuredGoal({...structuredGoal, title:e.target.value}); e.target.style.height='auto'; e.target.style.height=e.target.scrollHeight+'px'; }}
                   className="text-3xl font-bold bg-transparent border-none focus:ring-0 w-full p-0 tracking-tight resize-none overflow-hidden"
                   style={{ color:'var(--c-text)' }}
                 />
@@ -626,8 +629,8 @@ export function HomeScreen({
                        style={{ color:'var(--c-text-3)', letterSpacing:'0.12em' }}>
                   {t('goalDescription')}
                 </label>
-                <textarea value={structuredGoal.goalDescription}
-                  onChange={(e) => { setStructuredGoal({...structuredGoal, goalDescription:e.target.value}); e.target.style.height='auto'; e.target.style.height=e.target.scrollHeight+'px'; }}
+                <textarea value={structuredGoal.description}
+                  onChange={(e) => { setStructuredGoal({...structuredGoal, description:e.target.value}); e.target.style.height='auto'; e.target.style.height=e.target.scrollHeight+'px'; }}
                   className="text-lg bg-transparent border-none focus:ring-0 w-full p-0 leading-relaxed resize-none overflow-hidden"
                   style={{ color:'var(--c-text-2)', minHeight:'5rem' }}
                 />
@@ -640,23 +643,35 @@ export function HomeScreen({
                   {t('suggestedTasks')}
                 </label>
                 <div className="space-y-2">
-                  {structuredGoal.suggestedTasks.map((task, i) => (
-                    <div key={i} className="flex items-start gap-3 p-4 rounded-xl"
+                  {structuredGoal.tasks.map((task, i) => (
+                    <div key={i} className="rounded-xl overflow-hidden"
                          style={{ background:'var(--c-surface)', border:'1px solid var(--c-border)' }}>
-                      <div onClick={() => toggleTaskSelection(task)}
-                        className="w-5 h-5 rounded-full border flex items-center justify-center flex-shrink-0 cursor-pointer mt-0.5"
-                        style={{ borderColor:'var(--c-success)', background:'rgba(74,124,89,.15)' }}>
-                        <Check size={11} style={{ color:'var(--c-success)' }} />
+                      <div className="flex items-start gap-3 p-4">
+                        <div onClick={() => toggleTaskSelection(task.text)}
+                          className="w-5 h-5 rounded-full border flex items-center justify-center flex-shrink-0 cursor-pointer mt-0.5"
+                          style={{ borderColor:'var(--c-success)', background:'rgba(74,124,89,.15)' }}>
+                          <Check size={11} style={{ color:'var(--c-success)' }} />
+                        </div>
+                        <textarea value={task.text} rows={1}
+                          onChange={(e) => { const updated=[...structuredGoal.tasks]; updated[i]={...updated[i],text:e.target.value}; setStructuredGoal({...structuredGoal,tasks:updated}); e.target.style.height='auto'; e.target.style.height=e.target.scrollHeight+'px'; }}
+                          className="flex-1 bg-transparent border-none focus:ring-0 p-0 text-sm resize-none overflow-hidden font-medium"
+                          style={{ color:'var(--c-text)' }}
+                        />
+                        <button onClick={() => setStructuredGoal({...structuredGoal, tasks:structuredGoal.tasks.filter((_,j)=>j!==i)})}
+                          style={{ color:'var(--c-text-3)' }} className="hover:opacity-70 mt-0.5">
+                          <X size={13} />
+                        </button>
                       </div>
-                      <textarea value={task} rows={1}
-                        onChange={(e) => { const t=[...structuredGoal.suggestedTasks]; t[i]=e.target.value; setStructuredGoal({...structuredGoal,suggestedTasks:t}); e.target.style.height='auto'; e.target.style.height=e.target.scrollHeight+'px'; }}
-                        className="flex-1 bg-transparent border-none focus:ring-0 p-0 text-sm resize-none overflow-hidden"
-                        style={{ color:'var(--c-text)' }}
-                      />
-                      <button onClick={() => setStructuredGoal({...structuredGoal, suggestedTasks:structuredGoal.suggestedTasks.filter((_,j)=>j!==i)})}
-                        style={{ color:'var(--c-text-3)' }} className="hover:opacity-70 mt-0.5">
-                        <X size={13} />
-                      </button>
+                      {task.microSteps.length > 0 && (
+                        <div className="px-4 pb-3 space-y-1">
+                          {task.microSteps.map((step, si) => (
+                            <div key={si} className="flex items-start gap-2 pl-8">
+                              <span className="text-xs mt-0.5 flex-shrink-0" style={{ color:'var(--c-text-3)' }}>›</span>
+                              <span className="text-xs" style={{ color:'var(--c-text-3)' }}>{step}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -702,8 +717,8 @@ export function HomeScreen({
                          style={{ color:'var(--c-text-3)', letterSpacing:'0.12em' }}>
                     {t('category')}
                   </label>
-                  <select value={structuredGoal.category}
-                    onChange={(e) => setStructuredGoal({...structuredGoal, category:e.target.value})}
+                  <select value={structuredGoal.categories[0] ?? ''}
+                    onChange={(e) => setStructuredGoal({...structuredGoal, categories:[e.target.value, ...structuredGoal.categories.slice(1)]})}
                     className="w-full px-3 py-2.5 rounded-xl text-sm focus:outline-none"
                     style={{ background:'var(--c-surface-2)', border:'1px solid var(--c-border)', color:'var(--c-text)' }}>
                     {['health','finance','learning','business','personal','social','other'].map(c => (

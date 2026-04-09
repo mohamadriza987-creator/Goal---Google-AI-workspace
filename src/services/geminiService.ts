@@ -1,18 +1,24 @@
+export interface GoalTask {
+  text: string;
+  microSteps: string[];
+}
+
 export interface StructuredGoal {
   transcript: string;
-  goalTitle: string;
-  goalDescription: string;
-  suggestedTasks: string[];
-  category: string;
+  title: string;
+  description: string;
+  categories: string[];
+  languages: string[];
+  tasks: GoalTask[];
   tags: string[];
   timeHorizon: string;
   privacy: 'private' | 'public';
-  language: string;
   normalizedMatchingText: string;
 }
 
 export interface UserContext {
   age?: number;
+  nationality?: string;
   locality?: string;
 }
 

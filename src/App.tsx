@@ -252,9 +252,10 @@ export default function App() {
       const visibility = structuredGoal.privacy === 'private' ? 'private' : 'public';
       const goalRef = await addDoc(collection(db, 'goals'), {
         ownerId: user.uid,
-        title:   structuredGoal.goalTitle,
-        description: structuredGoal.goalDescription,
-        category: structuredGoal.category,
+        title:   structuredGoal.title,
+        description: structuredGoal.description,
+        category: structuredGoal.categories[0],
+        categories: structuredGoal.categories,
         tags:     structuredGoal.tags,
         timeHorizon: structuredGoal.timeHorizon,
         progressPercent: 0,
@@ -270,14 +271,23 @@ export default function App() {
       });
 
       // 3. Tasks batch
-      const batch    = writeBatch(db);
-      const allTasks = [...structuredGoal.suggestedTasks, ...manualTasks];
-      allTasks.forEach((text, i) => {
+      const batch = writeBatch(db);
+      structuredGoal.tasks.forEach((task, i) => {
         const tRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
         batch.set(tRef, {
-          text, isDone: false, order: i,
+          text: task.text, isDone: false, order: i,
+          microSteps: task.microSteps,
           createdAt: new Date().toISOString(),
-          source: structuredGoal.suggestedTasks.includes(text) ? 'ai' : 'manual',
+          source: 'ai',
+        });
+      });
+      manualTasks.forEach((text, i) => {
+        const tRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
+        batch.set(tRef, {
+          text, isDone: false, order: structuredGoal.tasks.length + i,
+          microSteps: [],
+          createdAt: new Date().toISOString(),
+          source: 'manual',
         });
       });
       await batch.commit();
