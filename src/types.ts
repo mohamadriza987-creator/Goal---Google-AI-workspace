@@ -110,6 +110,22 @@ export interface GoalNote {
   createdAt: string;
 }
 
+export type NotePrivacy = 'private' | 'shared';
+
+export interface Note {
+  id: string;
+  goalId: string;
+  ownerId: string;
+  text: string;
+  title?: string | null;
+  privacy: NotePrivacy;
+  source: 'manual' | 'saved_from_room';
+  savedFromAuthorName?: string;
+  linkedTaskText?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface Group {
   id: string;
   derivedGoalTheme: string;
