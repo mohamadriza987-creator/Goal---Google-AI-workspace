@@ -161,11 +161,41 @@ function cleanJson(text: string): string {
 const GOAL_PRIMARY  = "gemini-2.5-flash-lite-preview-06-17";
 const GOAL_FALLBACK = "gemini-2.5-flash-preview-04-17";
 
+export const GOAL_CATEGORIES = [
+  "Career & Jobs",
+  "Professional Qualification & Certifications",
+  "Education & Exams",
+  "Language Learning",
+  "Finance & Wealth",
+  "Business & Entrepreneurship",
+  "Health & Fitness",
+  "Weight Loss & Body Transformation",
+  "Mental Health & Emotional Wellbeing",
+  "Habits & Self Discipline",
+  "Productivity & Time Management",
+  "Communication & Public Speaking",
+  "Relationships & Dating",
+  "Marriage & Family",
+  "Parenting",
+  "Spirituality & Religion",
+  "Technology & Coding",
+  "Creativity & Art",
+  "Music & Performance",
+  "Content Creation & Personal Branding",
+  "Travel & Relocation",
+  "Home & Lifestyle",
+  "Sports & Athletic Training",
+  "Community & Social Impact",
+  "Hobbies & Leisure",
+] as const;
+
+export type GoalCategory = typeof GOAL_CATEGORIES[number];
+
 const GOAL_TASK_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     text:       { type: Type.STRING },
-    microSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
+    microSteps: { type: Type.ARRAY, items: { type: Type.STRING }, minItems: 3, maxItems: 5 },
   },
   required: ["text", "microSteps"],
 };
@@ -176,9 +206,9 @@ const GOAL_SCHEMA = {
     transcript:             { type: Type.STRING },
     title:                  { type: Type.STRING },
     description:            { type: Type.STRING },
-    categories:             { type: Type.ARRAY, items: { type: Type.STRING } },
-    languages:              { type: Type.ARRAY, items: { type: Type.STRING } },
-    tasks:                  { type: Type.ARRAY, items: GOAL_TASK_SCHEMA },
+    categories:             { type: Type.ARRAY, items: { type: Type.STRING, enum: GOAL_CATEGORIES as unknown as string[] }, minItems: 1 },
+    languages:              { type: Type.ARRAY, items: { type: Type.STRING }, minItems: 1 },
+    tasks:                  { type: Type.ARRAY, items: GOAL_TASK_SCHEMA, minItems: 1 },
     tags:                   { type: Type.ARRAY, items: { type: Type.STRING } },
     timeHorizon:            { type: Type.STRING },
     privacy:                { type: Type.STRING, enum: ['private', 'public'] },
@@ -187,23 +217,65 @@ const GOAL_SCHEMA = {
   required: ["transcript", "title", "description", "categories", "languages", "tasks", "tags", "timeHorizon", "privacy", "normalizedMatchingText"],
 };
 
+const CATEGORIES_PROMPT = GOAL_CATEGORIES.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
+
 function buildGoalSystemInstruction(userContext?: UserContext): string {
   const parts: string[] = [];
-  if (userContext?.age)         parts.push(`age: ${userContext.age}`);
-  if (userContext?.nationality)  parts.push(`nationality: ${userContext.nationality}`);
+  if (userContext?.age)        parts.push(`age: ${userContext.age}`);
+  if (userContext?.nationality) parts.push(`nationality: ${userContext.nationality}`);
   const ctx = parts.length ? `\nUser context — ${parts.join(", ")}.` : "";
   return `You are a goal coach. Convert the user's input into a structured goal plan.${ctx}
-Return ONLY valid JSON. All text fields must match the language of the user's input.
-- transcript: exact input text or accurate audio transcription.
-- title: ≤60 chars, clear and motivating.
-- description: ≤200 chars.
-- categories: array of ALL applicable categories from [health, finance, learning, business, personal, social, other]. Include every category that genuinely applies — do not limit to one.
-- languages: array of ALL languages relevant to this goal (e.g. a language-learning goal includes both the native language and the target language). At minimum include the language of the user's input.
-- tasks: 5–8 items. Each task must be specific, realistic, and directly actionable — no filler like "stay motivated" or "work hard". Order by priority (most important first). For each task include 2–4 microSteps: short concrete sub-actions (4–8 words each) that break the task down further.
-- tags: 3–5 keywords.
-- timeHorizon: realistic estimate.
-- privacy: public unless user says otherwise.
-- normalizedMatchingText: "Goal: [intent], [categories], [sub-focus], [time horizon], [privacy]" — no filler words.`;
+
+STRICT OUTPUT RULES:
+- Return ONLY a single valid JSON object. No markdown. No code fences. No prose before or after JSON.
+- All human-readable text fields must be written in the same language as the user's input.
+
+FIELD RULES:
+- transcript: Exact input text, or accurate verbatim transcription of audio.
+- title: ≤60 chars. Clear, specific, motivating. No vague openers.
+- description: ≤200 chars. One concrete sentence describing the goal outcome.
+- categories: Array of ALL categories that genuinely apply to this goal. Choose ONLY from this fixed list (use exact strings):
+${CATEGORIES_PROMPT}
+  At least one category is required. Do not invent category names.
+- languages: Array of all languages relevant to this goal. For a language-learning goal include both native and target languages. At minimum include the detected language of the user's input. At least one entry is required.
+- tasks: 5–8 items ordered by priority (most impactful first). Each task:
+  - text: Specific, actionable step — no filler phrases like "stay motivated" or "be consistent".
+  - microSteps: Exactly 3–5 concrete sub-actions (4–8 words each) that break the task into immediate next actions.
+- tags: 3–5 lowercase keywords (no # prefix).
+- timeHorizon: Realistic human-readable estimate (e.g. "3 months", "6 weeks").
+- privacy: "public" unless the user explicitly says to keep it private.
+- normalizedMatchingText: Single line — "Goal: [intent], [categories], [sub-focus], [time horizon]" — no filler words.`;
+}
+
+/** Validate the parsed Gemini output against all required rules.
+ *  Returns an array of error strings; empty array means valid. */
+function validateGoalOutput(g: any): string[] {
+  const errors: string[] = [];
+  if (!g || typeof g !== "object")          { errors.push("output is not an object"); return errors; }
+  if (!g.title || typeof g.title !== "string" || !g.title.trim())
+                                             errors.push("title is missing or empty");
+  if (!g.description || typeof g.description !== "string" || !g.description.trim())
+                                             errors.push("description is missing or empty");
+  if (!Array.isArray(g.categories) || g.categories.length === 0)
+                                             errors.push("categories must be a non-empty array");
+  else {
+    const invalid = g.categories.filter((c: any) => !(GOAL_CATEGORIES as readonly string[]).includes(c));
+    if (invalid.length > 0) errors.push(`categories contain invalid values: ${invalid.join(", ")}`);
+  }
+  if (!Array.isArray(g.languages) || g.languages.length === 0)
+                                             errors.push("languages must be a non-empty array");
+  if (!Array.isArray(g.tasks) || g.tasks.length === 0)
+                                             errors.push("tasks must be a non-empty array");
+  else {
+    g.tasks.forEach((task: any, i: number) => {
+      if (!task || typeof task !== "object")  { errors.push(`task[${i}] is not an object`); return; }
+      if (!task.text || !task.text.trim())    errors.push(`task[${i}].text is missing or empty`);
+      if (!Array.isArray(task.microSteps))    errors.push(`task[${i}].microSteps is not an array`);
+      else if (task.microSteps.length < 3)    errors.push(`task[${i}].microSteps has ${task.microSteps.length} items — minimum 3 required`);
+      else if (task.microSteps.length > 5)    errors.push(`task[${i}].microSteps has ${task.microSteps.length} items — maximum 5 allowed`);
+    });
+  }
+  return errors;
 }
 
 export async function generateGoal(
@@ -240,35 +312,46 @@ export async function generateGoal(
       800,
     );
 
+  /** Parse raw text → object and run validation. Returns the object if valid, null otherwise. */
+  const parseAndValidate = (raw: string | null | undefined, label: string): StructuredGoal | null => {
+    if (!raw) { console.warn(`[generateGoal] ${label} returned empty response`); return null; }
+    let obj: any;
+    try {
+      obj = JSON.parse(cleanJson(raw));
+    } catch {
+      console.warn(`[generateGoal] ${label} returned invalid JSON`);
+      return null;
+    }
+    const errors = validateGoalOutput(obj);
+    if (errors.length > 0) {
+      console.warn(`[generateGoal] ${label} failed validation: ${errors.join("; ")}`);
+      return null;
+    }
+    return obj as StructuredGoal;
+  };
+
   let parsed: StructuredGoal | null = null;
 
   // Try primary (Flash-Lite)
   try {
     console.log(`[generateGoal] primary: ${GOAL_PRIMARY}`);
     const res = await call(GOAL_PRIMARY);
-    const raw = res.text;
-    if (raw) {
-      try {
-        parsed = JSON.parse(cleanJson(raw)) as StructuredGoal;
-      } catch {
-        console.warn("[generateGoal] primary returned invalid JSON — falling back");
-      }
-    }
+    parsed = parseAndValidate(res.text, "primary");
   } catch (err: any) {
-    console.warn(`[generateGoal] primary failed: ${err.message}`);
+    console.warn(`[generateGoal] primary threw: ${err.message}`);
   }
 
-  // Fallback (Flash) only if primary failed or returned invalid output
+  // Fallback (Flash) if primary failed, returned invalid JSON, or failed validation
   if (!parsed) {
     console.log(`[generateGoal] fallback: ${GOAL_FALLBACK}`);
-    const res = await call(GOAL_FALLBACK);
-    const raw = res?.text;
-    if (!raw) throw new Error("No response from AI");
+    let res: any;
     try {
-      parsed = JSON.parse(cleanJson(raw)) as StructuredGoal;
-    } catch {
-      throw new Error("AI returned an invalid response format. Please try again.");
+      res = await call(GOAL_FALLBACK);
+    } catch (err: any) {
+      throw new Error(`AI unavailable: ${err.message}`);
     }
+    parsed = parseAndValidate(res?.text, "fallback");
+    if (!parsed) throw new Error("AI returned an invalid response format. Please try again.");
   }
 
   // For typed input always preserve the original text as transcript

@@ -5,6 +5,7 @@ import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRi
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
 import { generateGoal, StructuredGoal, GoalTask } from '../services/geminiService';
+import { GOAL_CATEGORIES } from '../lib/goalCategories';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
@@ -721,8 +722,8 @@ export function HomeScreen({
                     onChange={(e) => setStructuredGoal({...structuredGoal, categories:[e.target.value, ...structuredGoal.categories.slice(1)]})}
                     className="w-full px-3 py-2.5 rounded-xl text-sm focus:outline-none"
                     style={{ background:'var(--c-surface-2)', border:'1px solid var(--c-border)', color:'var(--c-text)' }}>
-                    {['health','finance','learning','business','personal','social','other'].map(c => (
-                      <option key={c} value={c}>{c.charAt(0).toUpperCase()+c.slice(1)}</option>
+                    {GOAL_CATEGORIES.map(c => (
+                      <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
                 </div>
