@@ -6,7 +6,7 @@ import { motion } from 'motion/react';
 import { Shield, LogOut, Plus, RefreshCw, Search, Users } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
-import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot, where } from 'firebase/firestore';
 
 interface ProfileScreenProps {
   user: FirebaseUser | null;
@@ -29,8 +29,35 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   const [reports, setReports] = React.useState<any[]>([]);
   const [backfillStatus, setBackfillStatus] = React.useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [backfillMsg, setBackfillMsg] = React.useState('');
+  const [showIndexDebug, setShowIndexDebug] = React.useState(false);
+  const [indexDataset, setIndexDataset] = React.useState<'group_index' | 'unassigned_active' | 'unassigned_inactive'>('group_index');
+  const [indexRows, setIndexRows] = React.useState<any[]>([]);
+  const [indexLoading, setIndexLoading] = React.useState(false);
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
+
+  React.useEffect(() => {
+    if (!showIndexDebug || !isAdminUser) return;
+    setIndexLoading(true);
+    setIndexRows([]);
+    (async () => {
+      try {
+        let snap;
+        if (indexDataset === 'group_index') {
+          snap = await getDocs(collection(db, 'group_index'));
+        } else {
+          const status = indexDataset === 'unassigned_active' ? 'active' : 'inactive';
+          snap = await getDocs(query(collection(db, 'goals_unassigned_index'), where('activityStatus', '==', status)));
+        }
+        setIndexRows(snap.docs.map(d => ({ _id: d.id, ...d.data() })));
+      } catch (e) {
+        console.error('Index debug fetch error:', e);
+        setIndexRows([]);
+      } finally {
+        setIndexLoading(false);
+      }
+    })();
+  }, [showIndexDebug, indexDataset, isAdminUser]);
 
   React.useEffect(() => {
     if (showModeration && isAdminUser) {
@@ -263,6 +290,30 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
             )}
           </div>
         )}
+        {/* Index Inspector — admin only, read-only */}
+        {isAdminUser && (
+          <div className="space-y-2">
+            <button
+              onClick={() => setShowIndexDebug(v => !v)}
+              className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors"
+            >
+              <Search size={20} />
+              <div className="flex-1 text-left">
+                <p className="font-semibold text-sm">Index Inspector</p>
+                <p className="text-xs text-zinc-500">Read-only view of matching index data</p>
+              </div>
+            </button>
+            {showIndexDebug && (
+              <IndexInspector
+                dataset={indexDataset}
+                onDatasetChange={setIndexDataset}
+                rows={indexRows}
+                loading={indexLoading}
+              />
+            )}
+          </div>
+        )}
+
         {/* One-time index backfill — admin only, self-hides after success */}
         {isAdminUser && backfillStatus !== 'done' && (
           <button
@@ -293,6 +344,81 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
         </button>
       </div>
     </motion.div>
+  );
+}
+
+type IndexDataset = 'group_index' | 'unassigned_active' | 'unassigned_inactive';
+
+const GROUP_INDEX_COLS = ['_id', 'memberCount', 'categories', 'languages', 'ageCategories', 'locations', 'nationalities', 'updatedAt'] as const;
+const UNASSIGNED_COLS  = ['_id', 'userId', 'ageCategory', 'activityStatus', 'categories', 'languages', 'currentLocation', 'nationality', 'lastLoggedInAt', 'updatedAt'] as const;
+
+function formatCell(val: unknown): string {
+  if (val === undefined || val === null) return '—';
+  if (Array.isArray(val)) return val.length === 0 ? '[]' : val.join(', ');
+  if (typeof val === 'object') return JSON.stringify(val);
+  return String(val);
+}
+
+function IndexInspector({
+  dataset, onDatasetChange, rows, loading,
+}: {
+  dataset: IndexDataset;
+  onDatasetChange: (d: IndexDataset) => void;
+  rows: any[];
+  loading: boolean;
+}) {
+  const cols = dataset === 'group_index' ? GROUP_INDEX_COLS : UNASSIGNED_COLS;
+
+  return (
+    <div className="p-4 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-3">
+      <select
+        value={dataset}
+        onChange={e => onDatasetChange(e.target.value as IndexDataset)}
+        className="w-full bg-zinc-800 text-white text-sm rounded-2xl px-4 py-3 border border-zinc-700 outline-none"
+      >
+        <option value="group_index">Groups Index</option>
+        <option value="unassigned_active">Goals Not Assigned — Active</option>
+        <option value="unassigned_inactive">Goals Not Assigned — Inactive</option>
+      </select>
+
+      {loading ? (
+        <p className="text-xs text-zinc-500 py-4 text-center">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-xs text-zinc-500 py-4 text-center italic">No records found.</p>
+      ) : (
+        <>
+          <p className="text-xs text-zinc-400">{rows.length} record{rows.length !== 1 ? 's' : ''}</p>
+          <div className="overflow-x-auto -mx-1">
+            <table className="min-w-full text-xs border-collapse">
+              <thead>
+                <tr>
+                  {cols.map(col => (
+                    <th key={col}
+                        className="px-3 py-2 text-left text-zinc-400 font-semibold uppercase tracking-wider whitespace-nowrap"
+                        style={{ borderBottom: '1px solid #3f3f46', background: '#18181b' }}>
+                      {col}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, i) => (
+                  <tr key={row._id ?? i} style={{ borderBottom: '1px solid #27272a' }}>
+                    {cols.map(col => (
+                      <td key={col}
+                          className="px-3 py-2 text-zinc-300 align-top max-w-[180px] break-all"
+                          style={{ whiteSpace: 'pre-wrap' }}>
+                        {formatCell(row[col])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
