@@ -158,8 +158,8 @@ function cleanJson(text: string): string {
 // ── Unified goal generation ───────────────────────────────────────────────────
 // Accepts either typed text or raw audio. Primary: Flash-Lite. Fallback: Flash.
 
-const GOAL_PRIMARY  = "gemini-3.1-flash-lite-preview";
-const GOAL_FALLBACK = "gemini-3.1-pro-preview";
+const GOAL_PRIMARY  = "gemini-2.5-flash-lite";
+const GOAL_FALLBACK = "gemini-2.5-flash";
 
 export const GOAL_CATEGORIES = [
   "Career & Jobs",
