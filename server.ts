@@ -1855,10 +1855,6 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    // One-time index backfill — runs only if admin_flags/backfillIndexV1 is not set
-    backfillIndexIfNeeded().catch((err) =>
-      console.error("[backfill] Auto-trigger failed:", err),
-    );
   });
 }
 
