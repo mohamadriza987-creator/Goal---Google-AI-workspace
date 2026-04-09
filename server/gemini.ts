@@ -221,30 +221,23 @@ const CATEGORIES_PROMPT = GOAL_CATEGORIES.map((c, i) => `  ${i + 1}. ${c}`).join
 
 function buildGoalSystemInstruction(userContext?: UserContext): string {
   const parts: string[] = [];
-  if (userContext?.age)        parts.push(`age: ${userContext.age}`);
-  if (userContext?.nationality) parts.push(`nationality: ${userContext.nationality}`);
-  const ctx = parts.length ? `\nUser context — ${parts.join(", ")}.` : "";
-  return `You are a goal coach. Convert the user's input into a structured goal plan.${ctx}
+  if (userContext?.age)         parts.push(`age: ${userContext.age}`);
+  if (userContext?.nationality)  parts.push(`nationality: ${userContext.nationality}`);
+  const ctx = parts.length ? ` User: ${parts.join(", ")}.` : "";
+  return `Goal generation.${ctx} Return ONE valid JSON object. No markdown, no code fences, no text outside JSON.
 
-STRICT OUTPUT RULES:
-- Return ONLY a single valid JSON object. No markdown. No code fences. No prose before or after JSON.
-- All human-readable text fields must be written in the same language as the user's input.
-
-FIELD RULES:
-- transcript: Exact input text, or accurate verbatim transcription of audio.
-- title: ≤60 chars. Clear, specific, motivating. No vague openers.
-- description: ≤200 chars. One concrete sentence describing the goal outcome.
-- categories: Array of ALL categories that genuinely apply to this goal. Choose ONLY from this fixed list (use exact strings):
+Fields:
+- transcript: verbatim input or audio transcription
+- title: clear specific goal title ≤60 chars
+- description: short practical outcome ≤200 chars
+- categories: all applicable from this fixed list (exact strings, ≥1, include every relevant one):
 ${CATEGORIES_PROMPT}
-  At least one category is required. Do not invent category names.
-- languages: Array of all languages relevant to this goal. For a language-learning goal include both native and target languages. At minimum include the detected language of the user's input. At least one entry is required.
-- tasks: 5–8 items ordered by priority (most impactful first). Each task:
-  - text: Specific, actionable step — no filler phrases like "stay motivated" or "be consistent".
-  - microSteps: Exactly 3–5 concrete sub-actions (4–8 words each) that break the task into immediate next actions.
-- tags: 3–5 lowercase keywords (no # prefix).
-- timeHorizon: Realistic human-readable estimate (e.g. "3 months", "6 weeks").
-- privacy: "public" unless the user explicitly says to keep it private.
-- normalizedMatchingText: Single line — "Goal: [intent], [categories], [sub-focus], [time horizon]" — no filler words.`;
+- languages: all relevant languages (≥1; language-learning goals include native + target)
+- tasks: 5–8 ordered actionable steps, most impactful first, no vague filler. Each task: { text: actionable step, microSteps: 3–5 short concrete sub-actions 5–8 words each }
+- tags: 3–5 lowercase keywords
+- timeHorizon: realistic estimate
+- privacy: "public" unless user says private
+- normalizedMatchingText: "Goal: [intent], [categories], [sub-focus], [time horizon]"`;
 }
 
 /** Validate the parsed Gemini output against all required rules.

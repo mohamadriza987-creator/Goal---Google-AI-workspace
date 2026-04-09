@@ -211,8 +211,8 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     setEditingReminder(false);
     setReminderValue(task.reminderAt ? toDatetimeLocal(task.reminderAt) : '');
 
-    // Auto-generate micro-steps if not already stored
-    if (!task.microSteps?.length) {
+    // Auto-generate micro-steps only for manual tasks — AI tasks always have embedded microSteps
+    if (!task.microSteps?.length && task.source !== 'ai') {
       const run = async () => {
         const user = auth.currentUser;
         if (!user) return;
