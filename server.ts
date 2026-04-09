@@ -6,9 +6,8 @@ import cookieParser from "cookie-parser";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import {
-  structureGoalFromAudio,
+  generateGoal,
   transcribeAudio,
-  generateGoalFromTranscript,
   normalizeGoal,
   generateEmbedding,
   generateGroupName,
@@ -997,10 +996,10 @@ const TranscribeSchema = z.object({
   mimeType: z.string().min(1).max(100),
 });
 
-const GenerateGoalSchema = z.object({
-  transcript: z.string().min(1).max(10000),
-  userContext: z.any().optional(),
-});
+const GenerateGoalSchema = z.union([
+  z.object({ text:       z.string().min(1).max(10000), userContext: z.any().optional() }),
+  z.object({ audioBase64: z.string().min(1).max(50 * 1024 * 1024), mimeType: z.string().min(1).max(100), userContext: z.any().optional() }),
+]);
 
 const NormalizeGoalSchema = z.object({
   goalData: z.any(),
@@ -1139,29 +1138,24 @@ async function startServer() {
   app.post("/api/generate-goal", authMiddleware, async (req: any, res) => {
     try {
       if (!checkRateLimit(req.userId)) {
-        console.warn(`[API] /api/generate-goal - Rate limit exceeded for user ${req.userId}`);
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
-      const validation = GenerateGoalSchema.safeParse(req.body);
-      if (!validation.success) {
-        console.warn(`[API] /api/generate-goal - Invalid payload:`, validation.error.format());
-        return res
-          .status(400)
-          .json({ error: "Invalid payload", details: validation.error.format() });
+      const { text, audioBase64, mimeType, userContext } = req.body;
+      if (!text && !audioBase64) {
+        return res.status(400).json({ error: "text or audioBase64 required" });
       }
 
-      const { transcript, userContext } = validation.data;
-      console.log(`[API] /api/generate-goal - Starting goal generation for user ${req.userId}...`);
-      const structuredGoal = await generateGoalFromTranscript(transcript, userContext);
-      console.log(`[API] /api/generate-goal - Goal generation successful for user ${req.userId}: ${structuredGoal.goalTitle}`);
+      const input: { text: string } | { audioBase64: string; mimeType: string } =
+        text ? { text } : { audioBase64, mimeType };
+
+      console.log(`[API] /api/generate-goal - user ${req.userId}, input: ${text ? "text" : "audio"}`);
+      const structuredGoal = await generateGoal(input, userContext);
+      console.log(`[API] /api/generate-goal - done: "${structuredGoal.goalTitle}"`);
       res.json(structuredGoal);
     } catch (error: any) {
       console.error(`[API] /api/generate-goal - Error for user ${req.userId}:`, error);
-      res.status(500).json({
-        error: "Failed to generate goal from transcript",
-        details: error.message || String(error),
-      });
+      res.status(500).json({ error: "Failed to generate goal", details: error.message || String(error) });
     }
   });
 
@@ -1674,31 +1668,6 @@ async function startServer() {
     }
   });
 
-  app.post("/api/process-audio", authMiddleware, async (req: any, res) => {
-    try {
-      if (!checkRateLimit(req.userId)) {
-        console.warn(`[API] /api/process-audio - Rate limit exceeded for user ${req.userId}`);
-        return res.status(429).json({ error: "Too many requests. Please wait a minute." });
-      }
-
-      const { audioBase64, mimeType, userContext } = req.body;
-      if (!audioBase64 || !mimeType) {
-        console.warn(`[API] /api/process-audio - Missing audio data or mime type`);
-        return res.status(400).json({ error: "Missing audio data or mime type" });
-      }
-
-      console.log(`[API] /api/process-audio - Starting audio processing for user ${req.userId}...`);
-      const structuredGoal = await structureGoalFromAudio(audioBase64, mimeType, userContext);
-      console.log(`[API] /api/process-audio - Audio processing successful for user ${req.userId}: ${structuredGoal.goalTitle}`);
-      res.json(structuredGoal);
-    } catch (error: any) {
-      console.error(`[API] /api/process-audio - Error for user ${req.userId}:`, error);
-      res.status(500).json({
-        error: "Failed to process audio with Panda",
-        details: error.message || String(error),
-      });
-    }
-  });
 
   // NOTE: /api/groups/match is intentionally removed — it was a no-op stub
   // that returned success without doing anything. Group matching runs

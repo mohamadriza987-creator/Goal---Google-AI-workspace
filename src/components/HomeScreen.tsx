@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
-import { transcribeAudio, generateGoalFromTranscript, StructuredGoal } from '../services/geminiService';
+import { generateGoal, StructuredGoal } from '../services/geminiService';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
@@ -130,7 +130,7 @@ export function HomeScreen({
 
   // ── Voice / transcript state ─────────────────────────────────────────────
   const [loading,          setLoading]          = useState(false);
-  const [processingState,  setProcessingState]  = useState<'idle' | 'transcribing' | 'generating'>('idle');
+  const [processingState,  setProcessingState]  = useState<'idle' | 'generating'>('idle');
   const [processingError,  setProcessingError]  = useState<string | null>(null);
   const [currentTranscript,setCurrentTranscript]= useState<string | null>(null);
   const [structuredGoal,   setStructuredGoal]   = useState<StructuredGoal | null>(null);
@@ -163,49 +163,24 @@ export function HomeScreen({
     return () => { clearTimeout(id); window.removeEventListener('resize', adjust); };
   }, [currentView, structuredGoal, manualTasks, editingManualTaskIndex]);
 
-  // ── Audio processing ─────────────────────────────────────────────────────
-  const processAudio = async (blob: Blob, isRefinement = false) => {
-    setLoading(true);
-    setProcessingState('transcribing');
-    setProcessingError(null);
-    if (!isRefinement) setCurrentTranscript(null);
-    try {
-      const reader = new FileReader();
-      const b64 = await new Promise<string>((res) => {
-        reader.onloadend = () => res((reader.result as string).split(',')[1]);
-        reader.readAsDataURL(blob);
-      });
-      const idToken = await user.getIdToken();
-      const transcript = await transcribeAudio(b64, blob.type, idToken);
-      if (isRefinement) {
-        const combined = `${currentTranscript}\n\nAdditional details: ${transcript}`;
-        setCurrentTranscript(combined);
-        await processTranscript(combined, idToken, true);
-      } else {
-        setCurrentTranscript(transcript);
-        await processTranscript(transcript, idToken);
-      }
-    } catch (err: any) {
-      setProcessingError(err.message || 'Error');
-    } finally {
-      setLoading(false);
-      setProcessingState('idle');
-    }
-  };
-
-  const processTranscript = async (transcript: string, idToken?: string, isRefinement = false) => {
+  // ── Goal generation — single path for both voice and typed input ──────────
+  const runGoalGeneration = async (
+    input: { text: string } | { audioBase64: string; mimeType: string },
+    isRefinement = false,
+  ) => {
     setLoading(true);
     setProcessingState('generating');
     setProcessingError(null);
     try {
-      const token = idToken || await user.getIdToken();
-      const structured = await generateGoalFromTranscript(transcript, token, {
+      const idToken = await user.getIdToken();
+      const structured = await generateGoal(input, idToken, {
         age: dbUser?.age, locality: dbUser?.locality,
       });
       if (structured.language) {
         const code = mapLanguageNameToCode(structured.language);
         if (code !== 'en') setLanguage(code);
       }
+      setCurrentTranscript(structured.transcript || ('text' in input ? input.text : null));
       setStructuredGoal(structured);
       setCurrentView('review');
       if (isRefinement) {
@@ -219,6 +194,25 @@ export function HomeScreen({
       setLoading(false);
       setProcessingState('idle');
     }
+  };
+
+  const processAudio = async (blob: Blob, isRefinement = false) => {
+    const reader = new FileReader();
+    const b64 = await new Promise<string>((res) => {
+      reader.onloadend = () => res((reader.result as string).split(',')[1]);
+      reader.readAsDataURL(blob);
+    });
+    // For refinements combine the transcribed text from Gemini's prior response
+    if (isRefinement && currentTranscript) {
+      // Send combined context as text (prior transcript + note that more audio was recorded)
+      await runGoalGeneration({ text: `${currentTranscript}\n\n[User recorded additional audio — refine the goal accordingly]` }, true);
+    } else {
+      await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false);
+    }
+  };
+
+  const processTranscript = async (transcript: string, _idToken?: string, isRefinement = false) => {
+    await runGoalGeneration({ text: transcript }, isRefinement);
   };
 
   const handlePandaClick = async () => {
@@ -472,7 +466,7 @@ export function HomeScreen({
                        style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
                     <Loader2 size={16} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
                     <span className="text-body" style={{ color: 'var(--c-text-2)' }}>
-                      {processingState === 'transcribing' ? 'Transcribing…' : 'Generating your goal…'}
+                      Generating your goal…
                     </span>
                   </div>
                   <button

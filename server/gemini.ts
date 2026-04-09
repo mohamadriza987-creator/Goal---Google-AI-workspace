@@ -149,129 +149,116 @@ function cleanJson(text: string): string {
   return cleaned.trim();
 }
 
-export async function generateGoalFromTranscript(transcript: string, userContext?: UserContext): Promise<StructuredGoal> {
-  console.log(`Generating goal from transcript: "${transcript.substring(0, 50)}..."`);
-  
+// ── Unified goal generation ───────────────────────────────────────────────────
+// Accepts either typed text or raw audio. Primary: Flash-Lite. Fallback: Flash.
+
+const GOAL_PRIMARY  = "gemini-2.5-flash-lite-preview-06-17";
+const GOAL_FALLBACK = "gemini-2.5-flash-preview-04-17";
+
+const GOAL_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    transcript:             { type: Type.STRING },
+    goalTitle:              { type: Type.STRING },
+    goalDescription:        { type: Type.STRING },
+    suggestedTasks:         { type: Type.ARRAY, items: { type: Type.STRING } },
+    category:               { type: Type.STRING },
+    tags:                   { type: Type.ARRAY, items: { type: Type.STRING } },
+    timeHorizon:            { type: Type.STRING },
+    privacy:                { type: Type.STRING, enum: ['private', 'public'] },
+    language:               { type: Type.STRING },
+    normalizedMatchingText: { type: Type.STRING },
+  },
+  required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"],
+};
+
+function buildGoalSystemInstruction(userContext?: UserContext): string {
+  const ctx = userContext
+    ? `\nUser context — age: ${userContext.age ?? "unknown"}, location: ${userContext.locality ?? "unknown"}.`
+    : "";
+  return `You are a goal coach. Convert the user's input into a structured goal plan.${ctx}
+Return ONLY valid JSON. All text fields must be in the same language as the user's input.
+- transcript: exact input text or accurate audio transcription.
+- goalTitle: ≤60 chars, clear and motivating.
+- goalDescription: ≤200 chars.
+- suggestedTasks: 5–8 specific, practical steps ordered by priority (most important first). No generic motivational fluff.
+- category: health | finance | learning | business | personal | social | other.
+- tags: 3–5 keywords.
+- timeHorizon: realistic estimate.
+- privacy: public unless user says otherwise.
+- language: detected language name (e.g. "English", "Arabic").
+- normalizedMatchingText: "Goal: [intent], [category], [sub-focus], [time horizon], [privacy]" — no filler words.`;
+}
+
+export async function generateGoal(
+  input: { text: string } | { audioBase64: string; mimeType: string },
+  userContext?: UserContext,
+): Promise<StructuredGoal> {
   if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
-    throw new Error("The 'gemfree' or 'GEMINI_API_KEY' secret is not set in the environment");
+    throw new Error("Gemini API key not set");
   }
 
   const ai = getAI();
 
-  const contextPrompt = userContext ? `
-  User Context:
-  - Age: ${userContext.age || 'Not provided'}
-  - Locality: ${userContext.locality || 'Not provided'}
-  Use this context to make suggested tasks more relevant and practical for the user's specific situation.
-  ` : '';
-
-  const generateWithModel = async (modelName: string) => {
-    return await withRetry(() => ai.models.generateContent({
-      model: modelName,
-      contents: {
-        parts: [
-          {
-            text: `Analyze the following transcript and convert it into a structured goal. ${contextPrompt}
-            
-            Transcript: "${transcript}"`
-          }
+  const contentParts: object[] =
+    "audioBase64" in input
+      ? [
+          { inlineData: { mimeType: input.mimeType, data: input.audioBase64 } },
+          { text: "Transcribe and structure this goal from the audio." },
         ]
-      },
-      config: {
-        systemInstruction: `You are a world-class life coach and productivity expert. 
-        The user has provided a personal goal or dream. Your job is to structure it into a clear, actionable plan.
+      : [{ text: `Structure this goal: "${input.text}"` }];
 
-        CRITICAL INSTRUCTIONS:
-        1. Transcript: Use the provided transcript as the basis. If the user has provided multiple refinements or added details, use the full combined context.
-        2. Stay on subject: Do not drift off the user's actual subject. Do not invent facts or goals the user didn't mention.
-        3. Strong Title: Generate a strong, short, and inspiring goal title (max 60 chars).
-        4. Useful Description: Generate a concise and helpful description (max 200 chars).
-        5. Practical Tasks: Generate exactly 5-8 practical, non-generic suggested tasks. 
-           - PRIORITY ORDER: Tasks MUST be ordered from most important/foundational (first) to least urgent/later-stage (last).
-           - Tasks must be realistic first steps, not motivational fluff.
-           - Avoid generic trash like "stay motivated", "work hard", or "believe in yourself".
-           - Tasks should be specific (e.g., "Research 3 local photography courses" instead of "Learn photography").
-           - Tasks should match the goal type and the user's likely situation (using age/locality context if provided).
-        6. Language Consistency: The entire response (transcript, goalTitle, goalDescription, suggestedTasks, tags, timeHorizon, normalizedMatchingText) MUST be in the EXACT SAME LANGUAGE as the transcript.
-        7. Normalized Matching Text: Create one clean, comma-separated string for backend matching. 
-           - Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
-           - Remove filler words. Keep only core meaning.
-           - Do not invent facts. If age/locality aren't in the provided context, ignore them.
-        8. Strict JSON: Return ONLY a structured JSON object. Do not include any other text or markdown formatting.
-
-        Structure:
-        - transcript: The original transcript provided.
-        - goalTitle: Short, clear, actionable title in the original language.
-        - goalDescription: Concise summary in the original language.
-        - suggestedTasks: A list of 5-8 specific, practical to-do items in the original language, ordered by priority.
-        - category: One of [health, finance, learning, business, personal, social, other].
-        - tags: 3-5 relevant tags in the original language.
-        - timeHorizon: Estimated duration (e.g., "1 week", "1 month") in the original language.
-        - privacy: Default to 'public' unless the user explicitly wants it private.
-        - language: Detect the language of the input (e.g., "English", "Spanish", "Hindi").`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            transcript: { type: Type.STRING },
-            goalTitle: { type: Type.STRING },
-            goalDescription: { type: Type.STRING },
-            suggestedTasks: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            },
-            category: { type: Type.STRING },
-            tags: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            },
-            timeHorizon: { type: Type.STRING },
-            privacy: { 
-              type: Type.STRING,
-              enum: ['private', 'public']
-            },
-            language: { type: Type.STRING },
-            normalizedMatchingText: { type: Type.STRING }
+  const call = (model: string) =>
+    withRetry(
+      () =>
+        ai.models.generateContent({
+          model,
+          contents: { parts: contentParts },
+          config: {
+            systemInstruction: buildGoalSystemInstruction(userContext),
+            responseMimeType: "application/json",
+            responseSchema: GOAL_SCHEMA,
           },
-          required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"]
-        }
+        }),
+      2,
+      800,
+    );
+
+  let parsed: StructuredGoal | null = null;
+
+  // Try primary (Flash-Lite)
+  try {
+    console.log(`[generateGoal] primary: ${GOAL_PRIMARY}`);
+    const res = await call(GOAL_PRIMARY);
+    const raw = res.text;
+    if (raw) {
+      try {
+        parsed = JSON.parse(cleanJson(raw)) as StructuredGoal;
+      } catch {
+        console.warn("[generateGoal] primary returned invalid JSON — falling back");
       }
-    }), 2, 1000); // Reduce retries for goal generation
-  };
+    }
+  } catch (err: any) {
+    console.warn(`[generateGoal] primary failed: ${err.message}`);
+  }
 
-  let response;
-  const models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"];
-  let lastError: any;
-
-  for (const model of models) {
+  // Fallback (Flash) only if primary failed or returned invalid output
+  if (!parsed) {
+    console.log(`[generateGoal] fallback: ${GOAL_FALLBACK}`);
+    const res = await call(GOAL_FALLBACK);
+    const raw = res?.text;
+    if (!raw) throw new Error("No response from AI");
     try {
-      console.log(`Attempting goal generation with model: ${model}`);
-      response = await generateWithModel(model);
-      if (response) break;
-    } catch (error: any) {
-      lastError = error;
-      const isQuotaError = error.message?.includes("429") || error.message?.includes("RESOURCE_EXHAUSTED");
-      if (isQuotaError) {
-        console.warn(`${model} quota exceeded. Falling back...`);
-        continue;
-      } else {
-        throw error;
-      }
+      parsed = JSON.parse(cleanJson(raw)) as StructuredGoal;
+    } catch {
+      throw new Error("AI returned an invalid response format. Please try again.");
     }
   }
 
-  if (!response) throw lastError;
+  // For typed input always preserve the original text as transcript
+  if ("text" in input) parsed.transcript = input.text;
 
-  const text = response.text;
-  if (!text) throw new Error("No response from AI");
-  
-  try {
-    const cleaned = cleanJson(text);
-    return JSON.parse(cleaned) as StructuredGoal;
-  } catch (parseError) {
-    console.error("Failed to parse AI response as JSON:", text);
-    throw new Error("AI returned an invalid response format. Please try again.");
-  }
+  return parsed;
 }
 
 export async function normalizeGoal(goalData: { title: string, description: string, category: string, tags: string[], timeHorizon: string, privacy: string, sourceText?: string }, userContext?: UserContext): Promise<string> {
@@ -404,142 +391,6 @@ export async function generateGroupName(goals: { title: string, description: str
   return text.trim().replace(/["']/g, '');
 }
 
-export async function structureGoalFromAudio(audioBase64: string, mimeType: string, userContext?: UserContext): Promise<StructuredGoal> {
-  console.log(`Processing audio: ${mimeType}, size: ${audioBase64.length}, prefix: ${audioBase64.substring(0, 50)}...`);
-  
-  if (!process.env.gemfree && !process.env.GEMINI_API_KEY) {
-    throw new Error("The 'gemfree' secret is not set in the environment");
-  }
-
-  const ai = getAI();
-
-  const contextPrompt = userContext ? `
-  User Context:
-  - Age: ${userContext.age || 'Not provided'}
-  - Locality: ${userContext.locality || 'Not provided'}
-  Use this context to make suggested tasks more relevant and practical for the user's specific situation.
-  ` : '';
-
-  const generateWithModel = async (modelName: string) => {
-    return await withRetry(() => ai.models.generateContent({
-      model: modelName,
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: audioBase64,
-            },
-          },
-          {
-            text: `Analyze the provided audio and convert it into a structured goal. ${contextPrompt}`
-          }
-        ]
-      },
-      config: {
-        systemInstruction: `You are a world-class life coach and productivity expert. 
-        The user is speaking one personal goal or dream. Your job is to transcribe it accurately and structure it into a clear, actionable plan.
-
-        CRITICAL INSTRUCTIONS:
-        1. Transcribe accurately: Capture exactly what the user said in the 'transcript' field.
-        2. Stay on subject: Do not drift off the user's actual subject. Do not invent facts or goals the user didn't mention.
-        3. Strong Title: Generate a strong, short, and inspiring goal title (max 60 chars).
-        4. Useful Description: Generate a concise and helpful description (max 200 chars).
-        5. Practical Tasks: Generate 5-8 practical, non-generic suggested tasks. 
-           - Tasks must be realistic first steps, not motivational fluff.
-           - Avoid generic trash like "stay motivated", "work hard", or "believe in yourself".
-           - Tasks should be specific (e.g., "Research 3 local photography courses" instead of "Learn photography").
-           - Tasks should match the goal type and the user's likely situation (using age/locality context if provided).
-        6. Language Consistency: The entire response (transcript, goalTitle, goalDescription, suggestedTasks, tags, timeHorizon, normalizedMatchingText) MUST be in the EXACT SAME LANGUAGE as the audio input.
-        7. Normalized Matching Text: Create one clean, comma-separated string for backend matching. 
-           - Format: "Goal: [intent], [category], [sub-focus], [time horizon], [skill level if relevant], [locality if provided], [age if relevant], [privacy]"
-           - Remove filler words. Keep only core meaning.
-           - Do not invent facts. If age/locality aren't in the provided context, ignore them.
-        8. Strict JSON: Return ONLY a structured JSON object. Do not include any other text or markdown formatting.
-
-        Structure:
-        - transcript: The accurate transcription of the audio in the original language.
-        - goalTitle: Short, clear, actionable title in the original language.
-        - goalDescription: Concise summary in the original language.
-        - suggestedTasks: A list of 5-8 specific, practical to-do items in the original language.
-        - category: One of [health, finance, learning, business, personal, social, other].
-        - tags: 3-5 relevant tags in the original language.
-        - timeHorizon: Estimated duration (e.g., "1 week", "1 month") in the original language.
-        - privacy: Default to 'public' unless the user explicitly wants it private.
-        - language: Detect the language of the input (e.g., "English", "Spanish", "Hindi").`,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            transcript: { type: Type.STRING },
-            goalTitle: { type: Type.STRING },
-            goalDescription: { type: Type.STRING },
-            suggestedTasks: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            },
-            category: { type: Type.STRING },
-            tags: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            },
-            timeHorizon: { type: Type.STRING },
-            privacy: { 
-              type: Type.STRING,
-              enum: ['private', 'public']
-            },
-            language: { type: Type.STRING },
-            normalizedMatchingText: { type: Type.STRING }
-          },
-          required: ["transcript", "goalTitle", "goalDescription", "suggestedTasks", "category", "tags", "timeHorizon", "privacy", "language", "normalizedMatchingText"]
-        }
-      }
-    }), 2, 1000); // Reduce retries for audio processing
-  };
-
-  try {
-    let response;
-    const models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"];
-    let lastError: any;
-
-    for (const model of models) {
-      try {
-        console.log(`Attempting with model: ${model}`);
-        response = await generateWithModel(model);
-        if (response) break;
-      } catch (error: any) {
-        lastError = error;
-        const isQuotaError = error.message?.includes("429") || error.message?.includes("RESOURCE_EXHAUSTED");
-        if (isQuotaError) {
-          console.warn(`${model} quota exceeded. Falling back...`);
-          continue;
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    if (!response) throw lastError;
-
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
-    try {
-      const cleaned = cleanJson(text);
-      return JSON.parse(cleaned) as StructuredGoal;
-    } catch (parseError) {
-      console.error("Failed to parse AI response as JSON:", text);
-      throw new Error("AI returned an invalid response format. Please try again.");
-    }
-  } catch (error: any) {
-    console.error("Panda API Error:", error);
-
-    if (error.message?.includes("429") || error.message?.includes("RESOURCE_EXHAUSTED")) {
-      throw new Error("API quota exceeded. Please try again later or check your billing plan.");
-    }
-
-    throw error;
-  }
-}
 
 export async function generateMicroSteps(taskText: string): Promise<string[]> {
   const ai = getAI();

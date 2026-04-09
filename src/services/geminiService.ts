@@ -37,25 +37,27 @@ export async function transcribeAudio(audioBase64: string, mimeType: string, idT
   return result.transcript || "";
 }
 
-export async function generateGoalFromTranscript(transcript: string, idToken: string, userContext?: UserContext): Promise<StructuredGoal> {
-  console.log('Calling backend to generate goal from transcript...', { transcript: transcript.substring(0, 50) + '...', userContext });
+export async function generateGoal(
+  input: { text: string } | { audioBase64: string; mimeType: string },
+  idToken: string,
+  userContext?: UserContext,
+): Promise<StructuredGoal> {
+  const body = "text" in input
+    ? { text: input.text, userContext }
+    : { audioBase64: input.audioBase64, mimeType: input.mimeType, userContext };
+
   const response = await fetch("/api/generate-goal", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${idToken}`
-    },
-    body: JSON.stringify({ transcript, userContext }),
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-    console.error('Goal generation error:', errorData);
-    throw new Error(errorData.error || "Failed to generate goal from transcript");
+    const err = await response.json().catch(() => ({ error: "Unknown error" }));
+    throw new Error(err.error || "Failed to generate goal");
   }
 
-  const result = await response.json().catch(() => ({}));
-  return result as StructuredGoal;
+  return response.json();
 }
 
 export async function generateMicroSteps(taskText: string, idToken: string): Promise<string[]> {
@@ -72,24 +74,3 @@ export async function generateMicroSteps(taskText: string, idToken: string): Pro
   return result.steps ?? [];
 }
 
-export async function structureGoalFromAudio(audioBase64: string, mimeType: string, idToken: string, userContext?: UserContext): Promise<StructuredGoal> {
-  console.log('Calling backend to process audio...', { mimeType, size: audioBase64.length, userContext });
-  const response = await fetch("/api/process-audio", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${idToken}`
-    },
-    body: JSON.stringify({ audioBase64, mimeType, userContext }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-    console.error('Backend error:', errorData);
-    throw new Error(errorData.error || "Failed to process audio with Panda");
-  }
-
-  const result = await response.json().catch(() => ({}));
-  console.log('Backend result received:', result);
-  return result as StructuredGoal;
-}
