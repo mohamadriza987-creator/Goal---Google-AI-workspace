@@ -283,7 +283,7 @@ export default function App() {
       await batch.commit();
       updateOptimisticGoal(tempId, { savingStatus: 'success' });
 
-      // 4. Group assign + precompute (fire-and-forget)
+      // 4. Group assign + precompute + new index layer (all fire-and-forget)
       if (embedding) {
         const tok = await user.getIdToken();
         fetch('/api/groups/assign', {
@@ -297,6 +297,14 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok2}` },
           body: JSON.stringify({ goalId: goalRef.id, embedding }),
+        }).catch(console.error);
+
+        // New structured index layer — runs in parallel, does not block UI
+        const tok3 = await user.getIdToken();
+        fetch('/api/goals/index-new', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok3}` },
+          body: JSON.stringify({ goalId: goalRef.id }),
         }).catch(console.error);
       }
     } catch (err) {
