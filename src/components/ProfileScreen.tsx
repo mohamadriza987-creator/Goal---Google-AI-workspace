@@ -6,7 +6,7 @@ import { motion } from 'motion/react';
 import { Shield, LogOut, Plus, RefreshCw, Search, Users } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
-import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot, where } from 'firebase/firestore';
+import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
 interface ProfileScreenProps {
   user: FirebaseUser | null;
@@ -33,31 +33,75 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   const [indexDataset, setIndexDataset] = React.useState<'group_index' | 'unassigned_active' | 'unassigned_inactive'>('group_index');
   const [indexRows, setIndexRows] = React.useState<any[]>([]);
   const [indexLoading, setIndexLoading] = React.useState(false);
+  const [indexStatus, setIndexStatus] = React.useState<any>(null);
+  const [indexStatusLoading, setIndexStatusLoading] = React.useState(false);
+  const [forceRebuildStatus, setForceRebuildStatus] = React.useState<'idle'|'running'|'done'|'error'>('idle');
+  const [forceRebuildMsg, setForceRebuildMsg] = React.useState('');
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
 
+  const loadIndexStatus = React.useCallback(async () => {
+    if (!user || !isAdminUser) return;
+    setIndexStatusLoading(true);
+    try {
+      const tok = await user.getIdToken();
+      const r = await fetch('/api/admin/index-status', { headers: { Authorization: `Bearer ${tok}` } });
+      if (r.ok) setIndexStatus(await r.json());
+    } catch (e) { console.error('index-status error', e); }
+    finally { setIndexStatusLoading(false); }
+  }, [user, isAdminUser]);
+
   React.useEffect(() => {
-    if (!showIndexDebug || !isAdminUser) return;
+    if (showIndexDebug && isAdminUser) loadIndexStatus();
+  }, [showIndexDebug, isAdminUser, loadIndexStatus]);
+
+  React.useEffect(() => {
+    if (!showIndexDebug || !isAdminUser || !user) return;
     setIndexLoading(true);
     setIndexRows([]);
     (async () => {
       try {
-        let snap;
-        if (indexDataset === 'group_index') {
-          snap = await getDocs(collection(db, 'group_index'));
-        } else {
-          const status = indexDataset === 'unassigned_active' ? 'active' : 'inactive';
-          snap = await getDocs(query(collection(db, 'goals_unassigned_index'), where('activityStatus', '==', status)));
+        const tok = await user.getIdToken();
+        const r = await fetch(`/api/admin/index-data?dataset=${indexDataset}`, {
+          headers: { Authorization: `Bearer ${tok}` },
+        });
+        if (r.ok) {
+          const data = await r.json();
+          setIndexRows(data.rows ?? []);
         }
-        setIndexRows(snap.docs.map(d => ({ _id: d.id, ...d.data() })));
       } catch (e) {
-        console.error('Index debug fetch error:', e);
+        console.error('index-data error', e);
         setIndexRows([]);
       } finally {
         setIndexLoading(false);
       }
     })();
-  }, [showIndexDebug, indexDataset, isAdminUser]);
+  }, [showIndexDebug, indexDataset, isAdminUser, user]);
+
+  const handleForceRebuild = async () => {
+    if (!user || forceRebuildStatus === 'running') return;
+    setForceRebuildStatus('running');
+    setForceRebuildMsg('');
+    try {
+      const tok = await user.getIdToken();
+      const r = await fetch('/api/admin/force-rebuild-index', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+      });
+      const data = await r.json();
+      if (r.ok) {
+        setForceRebuildStatus('done');
+        setForceRebuildMsg(`Done — ${data.groups ?? 0} groups, ${data.goals ?? 0} unassigned goals indexed`);
+        await loadIndexStatus();
+      } else {
+        setForceRebuildStatus('error');
+        setForceRebuildMsg(data.error || 'Failed');
+      }
+    } catch (e: any) {
+      setForceRebuildStatus('error');
+      setForceRebuildMsg(e.message);
+    }
+  };
 
   React.useEffect(() => {
     if (showModeration && isAdminUser) {
@@ -304,12 +348,52 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
               </div>
             </button>
             {showIndexDebug && (
-              <IndexInspector
-                dataset={indexDataset}
-                onDatasetChange={setIndexDataset}
-                rows={indexRows}
-                loading={indexLoading}
-              />
+              <div className="space-y-2">
+                {/* Debug summary */}
+                <div className="p-4 bg-zinc-900/80 border border-zinc-700 rounded-3xl space-y-2 font-mono text-xs">
+                  {indexStatusLoading ? (
+                    <p className="text-zinc-500">Loading status…</p>
+                  ) : indexStatus ? (
+                    <>
+                      <p className="text-zinc-400">project: <span className="text-white">{indexStatus.projectId}</span></p>
+                      <p className="text-zinc-400">db: <span className="text-white">{indexStatus.dbId}</span></p>
+                      <p className="text-zinc-400">backfill flag: <span className={indexStatus.flag ? 'text-green-400' : 'text-yellow-400'}>{indexStatus.flag ? `✓ completed ${indexStatus.flag.completedAt?.slice(0,10) ?? ''}` : '✗ not set'}</span></p>
+                      <p className="text-zinc-400">group_index: <span className="text-white">{indexStatus.counts.groupIndex} docs</span></p>
+                      <p className="text-zinc-400">unassigned active: <span className="text-white">{indexStatus.counts.unassignedActive} docs</span></p>
+                      <p className="text-zinc-400">unassigned inactive: <span className="text-white">{indexStatus.counts.unassignedInactive} docs</span></p>
+                    </>
+                  ) : (
+                    <p className="text-zinc-500">Status unavailable</p>
+                  )}
+                </div>
+
+                {/* Force rebuild */}
+                <button
+                  onClick={handleForceRebuild}
+                  disabled={forceRebuildStatus === 'running'}
+                  className="w-full p-4 bg-zinc-900/50 border border-zinc-700 rounded-3xl flex items-center gap-3 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={16} className={forceRebuildStatus === 'running' ? 'animate-spin' : ''} />
+                  <div className="flex-1 text-left">
+                    <p className="text-sm font-semibold">
+                      {forceRebuildStatus === 'running' ? 'Rebuilding…' : 'Force Rebuild Index'}
+                    </p>
+                    {forceRebuildMsg && (
+                      <p className="text-xs mt-0.5" style={{ color: forceRebuildStatus === 'error' ? '#e07070' : '#6bbf7a' }}>
+                        {forceRebuildMsg}
+                      </p>
+                    )}
+                  </div>
+                </button>
+
+                {/* Table inspector */}
+                <IndexInspector
+                  dataset={indexDataset}
+                  onDatasetChange={(d) => { setIndexDataset(d); }}
+                  rows={indexRows}
+                  loading={indexLoading}
+                />
+              </div>
             )}
           </div>
         )}

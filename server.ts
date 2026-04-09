@@ -1828,6 +1828,78 @@ async function startServer() {
     }
   });
 
+  // ── Admin: index status (counts + flag) ──────────────────────────────────
+  app.get("/api/admin/index-status", authMiddleware, async (req: any, res) => {
+    try {
+      if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+
+      const [flagDoc, groupSnap, activeSnap, inactiveSnap] = await Promise.all([
+        db.collection("admin_flags").doc(BACKFILL_FLAG).get(),
+        db.collection("group_index").get(),
+        db.collection("goals_unassigned_index").where("activityStatus", "==", "active").get(),
+        db.collection("goals_unassigned_index").where("activityStatus", "==", "inactive").get(),
+      ]);
+
+      res.json({
+        projectId: firebaseConfig.projectId,
+        dbId,
+        flag: flagDoc.exists ? flagDoc.data() : null,
+        counts: {
+          groupIndex:        groupSnap.size,
+          unassignedActive:  activeSnap.size,
+          unassignedInactive: inactiveSnap.size,
+        },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Admin: force rebuild index (ignores flag) ─────────────────────────────
+  app.post("/api/admin/force-rebuild-index", authMiddleware, async (req: any, res) => {
+    try {
+      if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+
+      await db.collection("admin_flags").doc(BACKFILL_FLAG).delete().catch(() => {});
+      const result = await backfillIndexIfNeeded();
+      res.json({ success: true, ...result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Admin: index data rows (server-side, bypasses rules) ─────────────────
+  app.get("/api/admin/index-data", authMiddleware, async (req: any, res) => {
+    try {
+      if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+
+      const dataset = req.query.dataset as string;
+      let snap: FirebaseFirestore.QuerySnapshot;
+
+      if (dataset === "group_index") {
+        snap = await db.collection("group_index").limit(100).get();
+      } else if (dataset === "unassigned_active") {
+        snap = await db.collection("goals_unassigned_index")
+          .where("activityStatus", "==", "active").limit(100).get();
+      } else if (dataset === "unassigned_inactive") {
+        snap = await db.collection("goals_unassigned_index")
+          .where("activityStatus", "==", "inactive").limit(100).get();
+      } else {
+        return res.status(400).json({ error: "Invalid dataset" });
+      }
+
+      const rows = snap.docs.map(d => {
+        const data: any = d.data();
+        delete data.vectorMetadata;
+        return { _id: d.id, ...data };
+      });
+
+      res.json({ rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.use("/api/*", (req, res) => {
     console.warn(`Unmatched API request: ${req.method} ${req.originalUrl}`);
     res.status(404).json({ error: "API endpoint not found" });
