@@ -108,6 +108,53 @@ type GroupDoc = {
   [key: string]: any;
 };
 
+// ── Goal Matching Index types ────────────────────────────────────────────────
+
+type GroupIndexEntry = {
+  groupId: string;
+  memberGoalIds: string[];
+  memberCount: number;
+  categories: string[];
+  languages: string[];
+  ageCategories: string[];
+  locations: string[];
+  nationalities: string[];
+  vectorMetadata: { representativeEmbedding: number[] };
+  updatedAt: string;
+};
+
+type UnassignedGoalIndexEntry = {
+  goalId: string;
+  userId: string;
+  vectorMetadata: { embedding: number[] };
+  ageCategory: string;
+  currentLocation: string;
+  nationality: string;
+  languages: string[];
+  categories: string[];
+  lastLoggedInAt: string;
+  activityStatus: "active" | "inactive";
+  updatedAt: string;
+};
+
+// ── Index helpers ────────────────────────────────────────────────────────────
+
+function computeAgeCategory(age?: number | null): string {
+  if (!age || age < 13) return "";
+  if (age <= 17) return "13-17";
+  if (age <= 30) return "18-30";
+  if (age <= 45) return "31-45";
+  return "45+";
+}
+
+const IDX_ACTIVE_DAYS = 30;
+function isActiveUser(lastLoggedInAt?: string): boolean {
+  if (!lastLoggedInAt) return false;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - IDX_ACTIVE_DAYS);
+  return new Date(lastLoggedInAt) >= cutoff;
+}
+
 function isPrivateGoal(goal: GoalDoc) {
   return goal.visibility === "private" || goal.privacy === "private";
 }
@@ -222,6 +269,10 @@ async function findOrCreateGroupForGoal(goalId: string) {
         transaction.set(groupRef, groupUpdate, { merge: true });
       });
 
+      // Index maintenance (fire-and-forget)
+      removeGoalFromUnassignedIndex(goal.id).catch(console.error);
+      upsertGroupIndex(bestGroup!.id).catch(console.error);
+
       return {
         action: "assigned",
         groupId: bestGroup.id,
@@ -296,6 +347,12 @@ async function findOrCreateGroupForGoal(goalId: string) {
       }
       await batch.commit();
 
+      // Index maintenance (fire-and-forget)
+      for (const g of clusterGoals) {
+        removeGoalFromUnassignedIndex(g.id).catch(console.error);
+      }
+      upsertGroupIndex(groupRef.id).catch(console.error);
+
       return { action: "create", groupId: groupRef.id, groupName };
     }
 
@@ -337,6 +394,390 @@ async function cleanupBrokenGroups() {
       await batch.commit();
     }
   }
+}
+
+// ── Goal Matching Index — write/update functions ─────────────────────────────
+
+async function upsertGroupIndex(groupId: string): Promise<void> {
+  const groupDoc = await db.collection("groups").doc(groupId).get();
+  if (!groupDoc.exists) return;
+  const group = { id: groupDoc.id, ...groupDoc.data() } as GroupDoc;
+  if (!group.representativeEmbedding) return;
+
+  const memberGoalIds = (group.members || []).map((m) => m.goalId);
+
+  const categories    = new Set<string>();
+  const languages     = new Set<string>();
+  const ageCategories = new Set<string>();
+  const locations     = new Set<string>();
+  const nationalities = new Set<string>();
+
+  if (group.matchingCriteria?.category) categories.add(group.matchingCriteria.category);
+  if (group.localityCenter && group.localityCenter !== "Global") locations.add(group.localityCenter);
+
+  if (memberGoalIds.length > 0) {
+    const goalDocs = await Promise.all(memberGoalIds.map((id) => db.collection("goals").doc(id).get()));
+    const userIds = new Set<string>();
+    for (const gd of goalDocs) {
+      if (!gd.exists) continue;
+      const g = gd.data() as GoalDoc;
+      if (g.category) categories.add(g.category);
+      if (g.matchingMetadata?.locality) locations.add(g.matchingMetadata.locality);
+      if (g.ownerId) userIds.add(g.ownerId);
+    }
+    const userDocs = await Promise.all([...userIds].map((uid) => db.collection("users").doc(uid).get()));
+    for (const ud of userDocs) {
+      if (!ud.exists) continue;
+      const u = ud.data() as any;
+      if (u.locality) locations.add(u.locality);
+      if (u.nationality) nationalities.add(u.nationality);
+      const ageCat = computeAgeCategory(u.age);
+      if (ageCat) ageCategories.add(ageCat);
+      const langs: string[] = u.languages || (u.preferredLanguage ? [u.preferredLanguage] : []);
+      langs.forEach((l: string) => languages.add(l));
+    }
+  }
+
+  const entry: GroupIndexEntry = {
+    groupId,
+    memberGoalIds,
+    memberCount: typeof group.memberCount === "number" ? group.memberCount : memberGoalIds.length,
+    categories:    [...categories],
+    languages:     [...languages],
+    ageCategories: [...ageCategories],
+    locations:     [...locations],
+    nationalities: [...nationalities],
+    vectorMetadata: { representativeEmbedding: group.representativeEmbedding },
+    updatedAt: nowIso(),
+  };
+
+  await db.collection("group_index").doc(groupId).set(entry);
+}
+
+async function removeGroupIndex(groupId: string): Promise<void> {
+  await db.collection("group_index").doc(groupId).delete().catch(() => {});
+}
+
+async function upsertGoalToUnassignedIndex(goalId: string): Promise<void> {
+  const goalDoc = await db.collection("goals").doc(goalId).get();
+  if (!goalDoc.exists) return;
+  const goal = { id: goalDoc.id, ...goalDoc.data() } as GoalDoc;
+
+  // State exclusivity: if the goal is already in a group, it must not be in the unassigned index
+  if (goal.groupId) {
+    await db.collection("goals_unassigned_index").doc(goalId).delete().catch(() => {});
+    return;
+  }
+  if (!goal.embedding) return;
+
+  const userId = goal.ownerId;
+  if (!userId) return;
+
+  const userDoc = await db.collection("users").doc(userId).get();
+  const u: any = userDoc.exists ? userDoc.data() : {};
+
+  const ageCategory    = computeAgeCategory(u.age);
+  const currentLocation: string = u.locality || goal.matchingMetadata?.locality || "";
+  const nationality: string    = u.nationality || "";
+  const languages: string[]    = u.languages || (u.preferredLanguage ? [u.preferredLanguage] : []);
+  const lastLoggedInAt: string = u.lastLoggedInAt || "";
+  const activityStatus         = isActiveUser(lastLoggedInAt) ? "active" : "inactive";
+
+  const entry: UnassignedGoalIndexEntry = {
+    goalId,
+    userId,
+    vectorMetadata: { embedding: goal.embedding },
+    ageCategory,
+    currentLocation,
+    nationality,
+    languages,
+    categories: goal.category ? [goal.category] : [],
+    lastLoggedInAt,
+    activityStatus,
+    updatedAt: nowIso(),
+  };
+
+  await db.collection("goals_unassigned_index").doc(goalId).set(entry);
+}
+
+async function removeGoalFromUnassignedIndex(goalId: string): Promise<void> {
+  await db.collection("goals_unassigned_index").doc(goalId).delete().catch(() => {});
+}
+
+// ── Cascading pool narrowing ──────────────────────────────────────────────────
+// At each filter step: if applying the filter would shrink the pool below IDX_POOL_MIN,
+// stop narrowing and fall through to vector cosine matching on the current pool.
+
+const IDX_POOL_MIN = 25;
+
+function narrowGroupPool(
+  pool: GroupIndexEntry[],
+  categories: string[], languages: string[], ageCategory: string,
+  location: string, nationality: string,
+): GroupIndexEntry[] {
+  if (categories.length > 0 && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((g) => g.categories.length === 0 || g.categories.some((c) => categories.includes(c)));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (languages.length > 0 && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((g) => g.languages.length === 0 || g.languages.some((l) => languages.includes(l)));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (ageCategory && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((g) => g.ageCategories.length === 0 || g.ageCategories.includes(ageCategory));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (location && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((g) => g.locations.length === 0 || g.locations.includes(location));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (nationality && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((g) => g.nationalities.length === 0 || g.nationalities.includes(nationality));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  return pool;
+}
+
+function narrowUnassignedPool(
+  pool: UnassignedGoalIndexEntry[],
+  categories: string[], languages: string[], ageCategory: string,
+  location: string, nationality: string,
+): UnassignedGoalIndexEntry[] {
+  if (categories.length > 0 && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((e) => e.categories.length === 0 || e.categories.some((c) => categories.includes(c)));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (languages.length > 0 && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((e) => e.languages.length === 0 || e.languages.some((l) => languages.includes(l)));
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (ageCategory && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((e) => !e.ageCategory || e.ageCategory === ageCategory);
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (location && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((e) => !e.currentLocation || e.currentLocation === location);
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  if (nationality && pool.length >= IDX_POOL_MIN) {
+    const f = pool.filter((e) => !e.nationality || e.nationality === nationality);
+    if (f.length >= IDX_POOL_MIN) pool = f;
+  }
+  return pool;
+}
+
+// ── Core indexed matching ─────────────────────────────────────────────────────
+
+const IDX_COSINE_EXISTING  = 0.78;
+const IDX_COSINE_NEW_GROUP = 0.90;
+
+type IndexedMatchResult =
+  | { action: "assigned-existing"; groupId: string }
+  | { action: "created-new-group"; groupId: string }
+  | { action: "placed-unassigned"; activityStatus: "active" | "inactive" };
+
+async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
+  const goalDoc = await db.collection("goals").doc(goalId).get();
+  if (!goalDoc.exists) throw new Error(`Goal ${goalId} not found`);
+  const goal = { id: goalDoc.id, ...goalDoc.data() } as GoalDoc;
+
+  // Already in a group — refresh index and return
+  if (goal.groupId) {
+    upsertGroupIndex(goal.groupId).catch(console.error);
+    await removeGoalFromUnassignedIndex(goalId);
+    return { action: "assigned-existing", groupId: goal.groupId };
+  }
+
+  // No embedding yet — place in unassigned index with correct activity status
+  if (!goal.embedding) {
+    await upsertGoalToUnassignedIndex(goalId);
+    const uid = goal.ownerId || "";
+    const uDoc = uid ? await db.collection("users").doc(uid).get() : null;
+    const u: any = uDoc?.exists ? uDoc.data() : {};
+    return { action: "placed-unassigned", activityStatus: isActiveUser(u.lastLoggedInAt) ? "active" : "inactive" };
+  }
+
+  // Resolve owner metadata
+  const userId = goal.ownerId || "";
+  const userDoc = userId ? await db.collection("users").doc(userId).get() : null;
+  const u: any = userDoc?.exists ? userDoc.data() : {};
+
+  const goalCategories: string[] = goal.category ? [goal.category] : [];
+  const goalLanguages: string[]  = u.languages || (u.preferredLanguage ? [u.preferredLanguage] : []);
+  const goalAgeCategory: string  = computeAgeCategory(u.age);
+  const goalLocation: string     = u.locality || goal.matchingMetadata?.locality || "";
+  const goalNationality: string  = u.nationality || "";
+  const goalIsPrivate            = isPrivateGoal(goal);
+
+  // ── Step 1: Groups Index (memberCount < 100 only) ─────────────────────────
+  const groupIndexSnap = await db.collection("group_index").get();
+  let gPool: GroupIndexEntry[] = groupIndexSnap.docs
+    .map((d) => d.data() as GroupIndexEntry)
+    .filter((g) => g.memberCount < 100);
+
+  gPool = narrowGroupPool(gPool, goalCategories, goalLanguages, goalAgeCategory, goalLocation, goalNationality);
+
+  let bestGroupScore = -1;
+  let bestGroupEntry: GroupIndexEntry | null = null;
+  for (const entry of gPool) {
+    if (!entry.vectorMetadata?.representativeEmbedding) continue;
+    const score = cosineSimilarity(goal.embedding, entry.vectorMetadata.representativeEmbedding);
+    if (score > bestGroupScore) { bestGroupScore = score; bestGroupEntry = entry; }
+  }
+
+  if (bestGroupEntry && bestGroupScore >= IDX_COSINE_EXISTING) {
+    const groupRef = db.collection("groups").doc(bestGroupEntry.groupId);
+    const goalRef  = db.collection("goals").doc(goalId);
+    const joinedAt = nowIso();
+
+    await db.runTransaction(async (tx) => {
+      const gDoc = await tx.get(groupRef);
+      if (!gDoc.exists) throw new Error("Group not found");
+      const gData = gDoc.data() as GroupDoc;
+      const members: any[]      = gData.members    || [];
+      const memberIds: string[] = gData.memberIds  || [];
+      const alreadyMember = members.some((m) => m.goalId === goalId);
+
+      tx.update(goalRef, {
+        groupId: bestGroupEntry!.groupId,
+        groupJoined: true,
+        joinedAt,
+        eligibleAt: joinedAt,
+      });
+
+      if (!alreadyMember) {
+        const upd: any = {
+          eligibleGoalIds: admin.firestore.FieldValue.arrayUnion(goalId),
+          members: admin.firestore.FieldValue.arrayUnion({ goalId, userId, joinedAt }),
+        };
+        if (!memberIds.includes(userId)) {
+          upd.memberIds   = admin.firestore.FieldValue.arrayUnion(userId);
+          upd.memberCount = admin.firestore.FieldValue.increment(1);
+        }
+        tx.update(groupRef, upd);
+      }
+    });
+
+    await removeGoalFromUnassignedIndex(goalId);
+    upsertGroupIndex(bestGroupEntry.groupId).catch(console.error);
+    return { action: "assigned-existing", groupId: bestGroupEntry.groupId };
+  }
+
+  // ── Step 2: Active unassigned goals (cosine >= 90%) ───────────────────────
+  const unassignedSnap = await db
+    .collection("goals_unassigned_index")
+    .where("activityStatus", "==", "active")
+    .get();
+
+  let uPool: UnassignedGoalIndexEntry[] = unassignedSnap.docs
+    .map((d) => d.data() as UnassignedGoalIndexEntry)
+    .filter((e) => e.goalId !== goalId);
+
+  uPool = narrowUnassignedPool(uPool, goalCategories, goalLanguages, goalAgeCategory, goalLocation, goalNationality);
+
+  const strongMatches = uPool
+    .filter((e) => Array.isArray(e.vectorMetadata?.embedding))
+    .map((e) => ({ entry: e, score: cosineSimilarity(goal.embedding!, e.vectorMetadata.embedding) }))
+    .filter((m) => m.score >= IDX_COSINE_NEW_GROUP)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  if (strongMatches.length >= 1) {
+    const clusterGoalIds = [goalId, ...strongMatches.map((m) => m.entry.goalId)];
+    const clusterDocs    = await Promise.all(clusterGoalIds.map((id) => db.collection("goals").doc(id).get()));
+    const clusterGoals   = clusterDocs.filter((d) => d.exists).map((d) => ({ id: d.id, ...d.data() }) as GoalDoc);
+
+    const groupName    = await generateGroupName(clusterGoals.map((g) => ({ title: g.title, description: g.description })));
+    const joinedAt     = nowIso();
+    const initialMembers   = clusterGoals.map((g) => ({ goalId: g.id, userId: g.ownerId, joinedAt }));
+    const initialMemberIds = uniqueStrings(clusterGoals.map((g) => g.ownerId).filter(Boolean) as string[]);
+
+    const newGroupRef = await db.collection("groups").add({
+      derivedGoalTheme: groupName,
+      representativeEmbedding: goal.embedding,
+      localityCenter: goalLocation || "Global",
+      maxMembers: 70,
+      members: initialMembers,
+      memberIds: initialMemberIds,
+      eligibleGoalIds: clusterGoalIds,
+      memberCount: initialMemberIds.length,
+      matchingCriteria: { category: goal.category, privacy: goalIsPrivate ? "private" : "public" },
+      createdAt: joinedAt,
+    });
+
+    const batch = db.batch();
+    for (const g of clusterGoals) {
+      batch.update(db.collection("goals").doc(g.id), {
+        groupId: newGroupRef.id, groupJoined: true, joinedAt, eligibleAt: joinedAt,
+      });
+    }
+    await batch.commit();
+
+    // Remove all cluster goals from unassigned index (batch delete)
+    const removeBatch = db.batch();
+    for (const m of strongMatches) {
+      removeBatch.delete(db.collection("goals_unassigned_index").doc(m.entry.goalId));
+    }
+    removeBatch.delete(db.collection("goals_unassigned_index").doc(goalId));
+    await removeBatch.commit();
+
+    upsertGroupIndex(newGroupRef.id).catch(console.error);
+    return { action: "created-new-group", groupId: newGroupRef.id };
+  }
+
+  // ── Step 3: No match — place in unassigned index ──────────────────────────
+  await upsertGoalToUnassignedIndex(goalId);
+  return {
+    action: "placed-unassigned",
+    activityStatus: isActiveUser(u.lastLoggedInAt) ? "active" : "inactive",
+  };
+}
+
+// ── One-time Index Backfill ───────────────────────────────────────────────────
+
+const BACKFILL_FLAG = "backfillIndexV1";
+
+async function backfillIndexIfNeeded(): Promise<{ ran: boolean; goals: number; groups: number }> {
+  const flagDoc = await db.collection("admin_flags").doc(BACKFILL_FLAG).get();
+  if (flagDoc.exists && flagDoc.data()?.completed === true) {
+    return { ran: false, goals: 0, groups: 0 };
+  }
+
+  console.log("[backfill] Starting index backfill...");
+  let goalCount = 0;
+  let groupCount = 0;
+
+  const groupsSnap = await db.collection("groups").get();
+  for (const gDoc of groupsSnap.docs) {
+    try {
+      await upsertGroupIndex(gDoc.id);
+      groupCount++;
+    } catch (e) {
+      console.error(`[backfill] Failed to index group ${gDoc.id}:`, e);
+    }
+  }
+
+  const goalsSnap = await db.collection("goals").get();
+  for (const gDoc of goalsSnap.docs) {
+    const g = gDoc.data() as GoalDoc;
+    if (!g.groupId && g.embedding) {
+      try {
+        await upsertGoalToUnassignedIndex(gDoc.id);
+        goalCount++;
+      } catch (e) {
+        console.error(`[backfill] Failed to index unassigned goal ${gDoc.id}:`, e);
+      }
+    }
+  }
+
+  await db.collection("admin_flags").doc(BACKFILL_FLAG).set({
+    completed: true,
+    completedAt: nowIso(),
+    stats: { goals: goalCount, groups: groupCount },
+  });
+
+  console.log(`[backfill] Done. Indexed ${groupCount} groups, ${goalCount} unassigned goals.`);
+  return { ran: true, goals: goalCount, groups: groupCount };
 }
 
 async function computeAndStoreSimilarGoals(
@@ -943,6 +1384,10 @@ async function startServer() {
         });
       });
 
+      // Index maintenance (fire-and-forget)
+      removeGoalFromUnassignedIndex(goalId).catch(console.error);
+      upsertGroupIndex(groupId).catch(console.error);
+
       res.json({ success: true, groupId });
     } catch (error: any) {
       console.error("Join group error:", error);
@@ -1341,6 +1786,48 @@ async function startServer() {
     }
   });
 
+  // ── Goal Matching Index endpoints ──────────────────────────────────────────
+
+  const IndexNewGoalSchema = z.object({ goalId: z.string().min(1) });
+
+  app.post("/api/goals/index-new", authMiddleware, async (req: any, res) => {
+    try {
+      const validation = IndexNewGoalSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
+      }
+      const { goalId } = validation.data;
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists || goalDoc.data()?.ownerId !== req.userId) {
+        return res.status(403).json({ error: "Forbidden: goal does not belong to you" });
+      }
+      const result = await runIndexedMatching(goalId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error("Index new goal error:", error);
+      res.status(500).json({ error: "Failed to index goal", details: error.message });
+    }
+  });
+
+  app.post("/api/admin/backfill-index", authMiddleware, async (req: any, res) => {
+    try {
+      if (!(await isAdminRequest(req))) {
+        return res.status(403).json({ error: "Forbidden: Admin access required" });
+      }
+      const result = await backfillIndexIfNeeded();
+      res.json({
+        success: true,
+        ...result,
+        message: result.ran
+          ? `Backfill complete: ${result.groups} groups, ${result.goals} unassigned goals indexed.`
+          : "Backfill already completed previously — nothing to do.",
+      });
+    } catch (error: any) {
+      console.error("Backfill index error:", error);
+      res.status(500).json({ error: "Failed to run backfill", details: error.message });
+    }
+  });
+
   app.use("/api/*", (req, res) => {
     console.warn(`Unmatched API request: ${req.method} ${req.originalUrl}`);
     res.status(404).json({ error: "API endpoint not found" });
@@ -1368,6 +1855,10 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    // One-time index backfill — runs only if admin_flags/backfillIndexV1 is not set
+    backfillIndexIfNeeded().catch((err) =>
+      console.error("[backfill] Auto-trigger failed:", err),
+    );
   });
 }
 

@@ -10,6 +10,11 @@ export interface User {
   lat?: number;
   lng?: number;
   preferredLanguage?: string;
+  // Extended matching metadata — enriches the goal index layer
+  nationality?: string;
+  ageCategory?: '13-17' | '18-30' | '31-45' | '45+';
+  languages?: string[];
+  lastLoggedInAt?: string;
   role?: 'admin' | 'user';
   hiddenUsers?: string[];
   blockedUsers?: string[];

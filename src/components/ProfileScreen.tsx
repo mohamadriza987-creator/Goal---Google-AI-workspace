@@ -27,6 +27,8 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   const [allGroups, setAllGroups] = React.useState<Group[]>([]);
   const [showModeration, setShowModeration] = React.useState(false);
   const [reports, setReports] = React.useState<any[]>([]);
+  const [backfillStatus, setBackfillStatus] = React.useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [backfillMsg, setBackfillMsg] = React.useState('');
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
 
@@ -60,6 +62,30 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
       await updateDoc(firestoreDoc(db, 'reports', reportId), { status, updatedAt: new Date().toISOString() });
     } catch (err) {
       console.error("Error resolving report:", err);
+    }
+  };
+
+  const handleBackfillIndex = async () => {
+    if (!user || backfillStatus === 'running' || backfillStatus === 'done') return;
+    setBackfillStatus('running');
+    setBackfillMsg('');
+    try {
+      const tok = await user.getIdToken();
+      const r = await fetch('/api/admin/backfill-index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
+      });
+      const data = await r.json();
+      if (r.ok) {
+        setBackfillStatus('done');
+        setBackfillMsg(data.message || 'Done');
+      } else {
+        setBackfillStatus('error');
+        setBackfillMsg(data.error || 'Failed');
+      }
+    } catch (err: any) {
+      setBackfillStatus('error');
+      setBackfillMsg(err.message || 'Network error');
     }
   };
 
@@ -237,7 +263,28 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
             )}
           </div>
         )}
-        <button 
+        {/* One-time index backfill — admin only, self-hides after success */}
+        {isAdminUser && backfillStatus !== 'done' && (
+          <button
+            onClick={handleBackfillIndex}
+            disabled={backfillStatus === 'running'}
+            className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-white hover:bg-zinc-800 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={20} className={backfillStatus === 'running' ? 'animate-spin' : ''} />
+            <div className="flex-1 text-left">
+              <p className="font-semibold text-sm">
+                {backfillStatus === 'running' ? 'Building Index…' : 'Rebuild Matching Index'}
+              </p>
+              <p className="text-xs text-zinc-500">
+                {backfillStatus === 'error'
+                  ? backfillMsg
+                  : 'One-time backfill of group_index + goals_unassigned_index'}
+              </p>
+            </div>
+          </button>
+        )}
+
+        <button
           onClick={() => auth.signOut()}
           className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-red-500 hover:bg-red-500/10 transition-colors"
         >
