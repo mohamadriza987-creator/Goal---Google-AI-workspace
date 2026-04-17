@@ -118,7 +118,7 @@ interface SortableNavConsoleProps {
 }
 
 export function SortableNavConsole({ currentScreen, navigate, navVisible }: SortableNavConsoleProps) {
-  const { isEditMode, enterEditMode, exitEditMode, resetLayout, layout, setNavOrder } =
+  const { isEditMode, enterEditMode, exitEditMode, resetLayout, layout, setNavOrder, canUndo, undoLastMove } =
     useHomeEditMode();
 
   /* Auto-exit edit mode when user leaves the home screen (including goal-detail) */
@@ -176,6 +176,30 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
             >
               Done
             </button>
+            <AnimatePresence>
+              {canUndo && (
+                <motion.button
+                  key="undo-btn"
+                  initial={{ opacity: 0, scale: 0.85, y: -4 }}
+                  animate={{ opacity: 1, scale: 1,    y: 0  }}
+                  exit={  { opacity: 0, scale: 0.85, y: -4  }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+                  onClick={undoLastMove}
+                  style={{
+                    padding: '6px 16px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    borderRadius: 999,
+                    background: 'rgba(201,168,76,0.12)',
+                    border: '1px solid rgba(201,168,76,0.35)',
+                    color: 'var(--c-gold)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ↩ Undo
+                </motion.button>
+              )}
+            </AnimatePresence>
             <button
               onClick={resetLayout}
               className="text-meta"

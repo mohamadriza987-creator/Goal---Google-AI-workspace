@@ -13,6 +13,8 @@ interface HomeEditModeCtx {
   setNavOrder:         (order: NavId[]) => void;
   setInputWidgetPos:   (pos: { x: number; y: number }) => void;
   setGoalCardLayout:   (goalId: string, cardLayout: CardLayout) => void;
+  canUndo:             boolean;
+  undoLastMove:        () => void;
 }
 
 const HomeEditModeContext = createContext<HomeEditModeCtx | null>(null);
@@ -24,12 +26,13 @@ export function HomeEditModeProvider({
   children: React.ReactNode;
   userId:   string | null;
 }) {
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [layout,     setLayout]     = useState<HomeLayout>(() => ({
+  const [isEditMode,    setIsEditMode]    = useState(false);
+  const [layout,        setLayout]        = useState<HomeLayout>(() => ({
     ...DEFAULT_LAYOUT,
     navOrder:  [...DEFAULT_LAYOUT.navOrder],
     goalCards: {},
   }));
+  const [undoStack, setUndoStack] = useState<Record<string, CardLayout>[]>([]);
 
   const userIdRef = useRef<string | null>(userId);
   useEffect(() => { userIdRef.current = userId; }, [userId]);
@@ -46,7 +49,10 @@ export function HomeEditModeProvider({
     if (userIdRef.current) saveLayout(userIdRef.current, l);
   }, []);
 
-  const enterEditMode = useCallback(() => setIsEditMode(true), []);
+  const enterEditMode = useCallback(() => {
+    setIsEditMode(true);
+    setUndoStack([]);
+  }, []);
 
   const exitEditMode = useCallback(() => {
     setIsEditMode(false);
@@ -77,9 +83,32 @@ export function HomeEditModeProvider({
 
   const setGoalCardLayout = useCallback((goalId: string, cardLayout: CardLayout) => {
     setLayout(prev => {
+      const existing = prev.goalCards[goalId];
+      const changed = !existing
+        || existing.x !== cardLayout.x
+        || existing.y !== cardLayout.y
+        || existing.width  !== cardLayout.width
+        || existing.height !== cardLayout.height;
+      if (changed) {
+        setUndoStack(stack => [...stack.slice(-4), prev.goalCards]);
+      }
       const next = { ...prev, goalCards: { ...prev.goalCards, [goalId]: cardLayout } };
       persist(next);
       return next;
+    });
+  }, [persist]);
+
+  const undoLastMove = useCallback(() => {
+    setUndoStack(stack => {
+      if (stack.length === 0) return stack;
+      const previousCards = stack[stack.length - 1];
+      const remaining = stack.slice(0, -1);
+      setLayout(prev => {
+        const restored = { ...prev, goalCards: previousCards };
+        persist(restored);
+        return restored;
+      });
+      return remaining;
     });
   }, [persist]);
 
@@ -88,6 +117,8 @@ export function HomeEditModeProvider({
       value={{
         isEditMode, enterEditMode, exitEditMode, resetLayout,
         layout, setNavOrder, setInputWidgetPos, setGoalCardLayout,
+        canUndo: undoStack.length > 0,
+        undoLastMove,
       }}
     >
       {children}
