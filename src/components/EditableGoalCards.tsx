@@ -111,7 +111,14 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
     return (
       <div
         className="mt-6"
-        style={{ position: 'relative', minHeight: canvasHeight, overflow: 'visible' }}
+        style={{
+          position: 'relative',
+          minHeight: canvasHeight,
+          overflow: 'visible',
+          backgroundImage: `radial-gradient(circle, rgba(201,168,76,0.28) 1px, transparent 1px)`,
+          backgroundSize: `${GRID_SNAP * 4}px ${GRID_SNAP * 4}px`,
+          backgroundPosition: '0 0',
+        }}
       >
         {/* Ghost drop-zone outline — only shown when collision resolution displaces the card */}
         {draggingId && ghostLayout && dragCandidate && (() => {
