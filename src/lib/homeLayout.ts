@@ -49,6 +49,58 @@ export function saveLayout(userId: string, layout: HomeLayout): void {
   } catch { /* quota exceeded — silently skip */ }
 }
 
+/**
+ * Given a card that was just moved/resized, check if it overlaps any other card.
+ * If so, find the nearest grid-snapped position that does NOT overlap and return it.
+ * If no overlap exists, returns `newLayout` unchanged.
+ */
+export function resolveCardOverlap(
+  movedId: string,
+  newLayout: CardLayout,
+  allLayouts: Record<string, CardLayout>,
+  maxW: number,
+): CardLayout {
+  function overlaps(a: CardLayout, b: CardLayout): boolean {
+    return (
+      a.x < b.x + b.width &&
+      a.x + a.width > b.x &&
+      a.y < b.y + b.height &&
+      a.y + a.height > b.y
+    );
+  }
+
+  const others = Object.values(
+    Object.fromEntries(Object.entries(allLayouts).filter(([id]) => id !== movedId)),
+  );
+
+  if (!others.some(o => overlaps(newLayout, o))) return newLayout;
+
+  let best: CardLayout | null = null;
+  let bestDist = Infinity;
+
+  const searchRadius = 24;
+
+  for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+    for (let dy = 0; dy <= searchRadius * 2; dy++) {
+      const candidate: CardLayout = {
+        ...newLayout,
+        x: Math.max(0, Math.min(newLayout.x + dx * GRID_SNAP, maxW - newLayout.width)),
+        y: Math.max(0, newLayout.y + (dy - searchRadius) * GRID_SNAP),
+      };
+
+      if (!others.some(o => overlaps(candidate, o))) {
+        const dist = dx * dx + (dy - searchRadius) * (dy - searchRadius);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = candidate;
+        }
+      }
+    }
+  }
+
+  return best ?? newLayout;
+}
+
 export function computeInitialCardLayouts(goalIds: string[]): Record<string, CardLayout> {
   const cardW   = 220;
   const cardH   = 150;

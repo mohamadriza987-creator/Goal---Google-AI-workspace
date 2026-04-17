@@ -1,9 +1,17 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { Rnd } from 'react-rnd';
 import { motion } from 'motion/react';
 import { useHomeEditMode } from '../contexts/HomeEditModeContext';
 import { useLongPress } from '../hooks/useLongPress';
-import { computeInitialCardLayouts, CARD_MIN_W, CARD_MIN_H, CARD_MAX_H, GRID_SNAP } from '../lib/homeLayout';
+import {
+  computeInitialCardLayouts,
+  resolveCardOverlap,
+  CARD_MIN_W,
+  CARD_MIN_H,
+  CARD_MAX_H,
+  GRID_SNAP,
+  CardLayout,
+} from '../lib/homeLayout';
 import { Goal } from '../types';
 
 const JIGGLE_ANIMATE    = { rotate: [0, -1.2, 1.2, -0.8, 0.8, 0] };
@@ -27,6 +35,11 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  /* Ghost state: track which card is dragging, its raw drag position, and resolved position */
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragCandidate, setDragCandidate] = useState<CardLayout | null>(null);
+  const [ghostLayout, setGhostLayout] = useState<CardLayout | null>(null);
 
   /* Build effective card layouts, filling missing entries with auto-computed positions.
      Also clamp saved x positions so cards dragged on a wide screen don't overflow on narrow. */
@@ -58,6 +71,41 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
     return Math.max(maxY + 48, goals.length * 180);
   }, [isEditMode, goals, effectiveLayouts]);
 
+  const handleDrag = useCallback(
+    (goalId: string, x: number, y: number) => {
+      const cl = effectiveLayouts[goalId];
+      if (!cl) return;
+      const candidate: CardLayout = { ...cl, x, y };
+      const resolved = resolveCardOverlap(goalId, candidate, effectiveLayouts, cardMaxW);
+      setDragCandidate(candidate);
+      setGhostLayout(resolved);
+    },
+    [effectiveLayouts, cardMaxW],
+  );
+
+  const handleDragStop = useCallback(
+    (goalId: string, x: number, y: number) => {
+      const cl = effectiveLayouts[goalId];
+      if (!cl) return;
+      const candidate: CardLayout = { ...cl, x, y };
+      const resolved = resolveCardOverlap(goalId, candidate, effectiveLayouts, cardMaxW);
+      setGoalCardLayout(goalId, resolved);
+      setDraggingId(null);
+      setDragCandidate(null);
+      setGhostLayout(null);
+    },
+    [effectiveLayouts, cardMaxW, setGoalCardLayout],
+  );
+
+  const handleResizeStop = useCallback(
+    (goalId: string, x: number, y: number, width: number, height: number) => {
+      const candidate: CardLayout = { x, y, width, height };
+      const resolved = resolveCardOverlap(goalId, candidate, effectiveLayouts, cardMaxW);
+      setGoalCardLayout(goalId, resolved);
+    },
+    [effectiveLayouts, cardMaxW, setGoalCardLayout],
+  );
+
   /* ── Edit mode: free canvas ─────────────────────────────────────────────── */
   if (isEditMode) {
     return (
@@ -65,6 +113,30 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
         className="mt-6"
         style={{ position: 'relative', minHeight: canvasHeight, overflow: 'visible' }}
       >
+        {/* Ghost drop-zone outline — only shown when collision resolution displaces the card */}
+        {draggingId && ghostLayout && dragCandidate && (() => {
+          const isDisplaced =
+            ghostLayout.x !== dragCandidate.x || ghostLayout.y !== dragCandidate.y;
+          if (!isDisplaced) return null;
+          return (
+            <div
+              style={{
+                position: 'absolute',
+                left: ghostLayout.x,
+                top: ghostLayout.y,
+                width: ghostLayout.width,
+                height: ghostLayout.height,
+                border: '2px dashed rgba(201,168,76,0.55)',
+                borderRadius: 12,
+                background: 'rgba(201,168,76,0.07)',
+                pointerEvents: 'none',
+                zIndex: 4,
+                transition: 'left 80ms, top 80ms',
+              }}
+            />
+          );
+        })()}
+
         {goals.map(goal => {
           const cl = effectiveLayouts[goal.id] ?? { x: 16, y: 16, width: 220, height: 150 };
 
@@ -80,18 +152,19 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
               bounds="parent"
               dragGrid={[GRID_SNAP, GRID_SNAP]}
               resizeGrid={[GRID_SNAP, GRID_SNAP]}
-              onDragStop={(_e, d) =>
-                setGoalCardLayout(goal.id, { ...cl, x: d.x, y: d.y })
-              }
+              onDragStart={() => setDraggingId(goal.id)}
+              onDrag={(_e, d) => handleDrag(goal.id, d.x, d.y)}
+              onDragStop={(_e, d) => handleDragStop(goal.id, d.x, d.y)}
               onResizeStop={(_e, _dir, ref, _delta, pos) =>
-                setGoalCardLayout(goal.id, {
-                  x:      pos.x,
-                  y:      pos.y,
-                  width:  parseInt(ref.style.width),
-                  height: parseInt(ref.style.height),
-                })
+                handleResizeStop(
+                  goal.id,
+                  pos.x,
+                  pos.y,
+                  parseInt(ref.style.width),
+                  parseInt(ref.style.height),
+                )
               }
-              style={{ zIndex: 5 }}
+              style={{ zIndex: draggingId === goal.id ? 10 : 5 }}
               /* Resize handle — small dark square with faint gold tint */
               resizeHandleStyles={{
                 bottomRight: {
