@@ -18,6 +18,8 @@ interface HomeScreenProps {
   dbUser: User | null;
   goals: Goal[];
   goalsLoading?: boolean;
+  hasMoreGoals?: boolean;
+  loadMoreGoals?: () => void;
   setCurrentScreen: (screen: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
   addOptimisticGoal: (goal: Goal) => void;
@@ -161,6 +163,8 @@ export function HomeScreen({
   dbUser,
   goals,
   goalsLoading = false,
+  hasMoreGoals = false,
+  loadMoreGoals,
   setCurrentScreen,
   handleFirestoreError,
   addOptimisticGoal,
@@ -500,6 +504,8 @@ export function HomeScreen({
               {goals.length > 0 && (
                 <EditableGoalCards
                   goals={goals}
+                  hasMore={hasMoreGoals}
+                  onLoadMore={loadMoreGoals}
                   onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
                   renderCard={(goal, { fillContainer, onOpen }) => (
                     <GoalCard

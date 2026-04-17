@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, orderBy, limit, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { Goal, GoalTask, User, CalendarNote } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -50,6 +50,8 @@ export default function App() {
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
   const [goalsLoading,   setGoalsLoading]   = useState(true);
+  const [goalLimit,      setGoalLimit]      = useState(5);
+  const [hasMoreGoals,   setHasMoreGoals]   = useState(false);
   const [allReminders,   setAllReminders]   = useState<{task: GoalTask; goal: Goal; reminderAt: string; noteText?: string}[]>([]);
   const [calendarNotes,  setCalendarNotes]  = useState<CalendarNote[]>([]);
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
@@ -79,10 +81,9 @@ export default function App() {
     }));
   };
 
-  // ── Auth + realtime subscriptions ───────────────────────────────────────
+  // ── Auth + user profile subscription ───────────────────────────────────
   useEffect(() => {
-    let userUnsubscribe:  (() => void) | null = null;
-    let goalsUnsubscribe: (() => void) | null = null;
+    let userUnsubscribe: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (u) => {
       setUser(u);
@@ -107,34 +108,46 @@ export default function App() {
         }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
 
         if (currentScreen.name === 'auth') setCurrentScreen({ name: 'home' });
-
-        // Goals (own goals only)
-        const q = query(collection(db, 'goals'), where('ownerId', '==', u.uid), orderBy('createdAt', 'desc'));
-        goalsUnsubscribe = onSnapshot(q, (snapshot) => {
-          const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
-          setGoals(g);
-          setGoalsLoading(false);
-          // Dedup by tempId only — title+timestamp matching wrongly removes
-          // both entries when two goals share a title within the window.
-          setOptimisticGoals(prev =>
-            prev.filter(og => !g.some(rg => rg.tempId && rg.tempId === og.id))
-          );
-        }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
-
       } else {
         setDbUser(null);
+        setGoals([]);
+        setGoalsLoading(true);
+        setGoalLimit(5);
+        setHasMoreGoals(false);
         setCurrentScreen({ name: 'auth' });
-        if (userUnsubscribe)  userUnsubscribe();
-        if (goalsUnsubscribe) goalsUnsubscribe();
+        if (userUnsubscribe) userUnsubscribe();
       }
     });
 
     return () => {
       unsubscribeAuth();
-      if (userUnsubscribe)  userUnsubscribe();
-      if (goalsUnsubscribe) goalsUnsubscribe();
+      if (userUnsubscribe) userUnsubscribe();
     };
   }, []);
+
+  // ── Goals subscription (paginated) ─────────────────────────────────────
+  useEffect(() => {
+    if (!user) return;
+    setGoalsLoading(true);
+    const q = query(
+      collection(db, 'goals'),
+      where('ownerId', '==', user.uid),
+      orderBy('createdAt', 'desc'),
+      limit(goalLimit),
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
+      setGoals(g);
+      setGoalsLoading(false);
+      // If we got exactly the limit there may be more; fewer means we've reached the end
+      setHasMoreGoals(g.length === goalLimit);
+      // Dedup by tempId only
+      setOptimisticGoals(prev =>
+        prev.filter(og => !g.some(rg => rg.tempId && rg.tempId === og.id))
+      );
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
+    return () => unsub();
+  }, [user, goalLimit]);
 
   // ── Reminders (calendar data) ──────────────────────────────────────────
   useEffect(() => {
@@ -333,6 +346,10 @@ export default function App() {
     }
   };
 
+  const loadMoreGoals = useCallback(() => {
+    if (hasMoreGoals) setGoalLimit(prev => prev + 5);
+  }, [hasMoreGoals]);
+
   const displayGoals = React.useMemo(() => [...optimisticGoals, ...goals], [optimisticGoals, goals]);
 
   const navigate = (s: ScreenState | Screen) =>
@@ -372,6 +389,8 @@ export default function App() {
               dbUser={dbUser}
               goals={displayGoals}
               goalsLoading={goalsLoading}
+              hasMoreGoals={hasMoreGoals}
+              loadMoreGoals={loadMoreGoals}
               setCurrentScreen={navigate}
               handleFirestoreError={handleFirestoreError}
               addOptimisticGoal={addOptimisticGoal}

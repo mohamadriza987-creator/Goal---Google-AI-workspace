@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { Rnd } from 'react-rnd';
 import { motion } from 'motion/react';
 import { useHomeEditMode } from '../contexts/HomeEditModeContext';
@@ -18,12 +18,14 @@ const JIGGLE_ANIMATE    = { rotate: [0, -1.2, 1.2, -0.8, 0.8, 0] };
 const JIGGLE_TRANSITION = { repeat: Infinity, duration: 0.45, ease: 'easeInOut' } as const;
 
 interface EditableGoalCardsProps {
-  goals:  Goal[];
-  onOpen: (goalId: string) => void;
-  renderCard: (goal: Goal, opts: { fillContainer?: boolean; onOpen: () => void }) => React.ReactNode;
+  goals:       Goal[];
+  onOpen:      (goalId: string) => void;
+  renderCard:  (goal: Goal, opts: { fillContainer?: boolean; onOpen: () => void }) => React.ReactNode;
+  hasMore?:    boolean;
+  onLoadMore?: () => void;
 }
 
-export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCardsProps) {
+export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, onLoadMore }: EditableGoalCardsProps) {
   const { isEditMode, enterEditMode, exitEditMode, layout, setGoalCardLayout } = useHomeEditMode();
   const longPressForCard = useLongPress(enterEditMode, { delay: 1200 });
 
@@ -35,6 +37,26 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  const carouselRef = useRef<HTMLDivElement>(null);
+  const loadingMoreRef = useRef(false);
+
+  useEffect(() => {
+    const el = carouselRef.current;
+    if (!el || !onLoadMore) return;
+    const handleScroll = () => {
+      if (loadingMoreRef.current || !hasMore) return;
+      // Trigger when user has scrolled past 75% of the scroll width
+      if (el.scrollLeft + el.clientWidth >= el.scrollWidth * 0.75) {
+        loadingMoreRef.current = true;
+        onLoadMore();
+        // Reset flag after a short delay to prevent rapid re-triggers
+        setTimeout(() => { loadingMoreRef.current = false; }, 1000);
+      }
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [hasMore, onLoadMore]);
 
   /* Ghost state: track which card is dragging, its raw drag position, and resolved position */
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -269,6 +291,7 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
         </span>
       </div>
       <div
+        ref={carouselRef}
         className="flex gap-3 overflow-x-auto snap-x snap-mandatory pl-4 pr-4 pb-1"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
       >
@@ -277,6 +300,23 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
             {renderCard(goal, { onOpen: () => { exitEditMode(); onOpen(goal.id); } })}
           </div>
         ))}
+        {hasMore && (
+          <div
+            className="snap-start flex-shrink-0 flex items-center justify-center"
+            style={{ width: 64, opacity: 0.4 }}
+          >
+            <div
+              className="animate-spin"
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: '50%',
+                border: '2px solid var(--c-gold)',
+                borderTopColor: 'transparent',
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
