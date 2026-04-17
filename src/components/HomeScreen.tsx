@@ -11,6 +11,7 @@ import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
 import { DraggableInputWidget } from './DraggableInputWidget';
 import { EditableGoalCards }    from './EditableGoalCards';
+import { GoalStackCarousel }    from './GoalStackCarousel';
 import { useHomeEditMode }      from '../contexts/HomeEditModeContext';
 
 interface HomeScreenProps {
@@ -389,10 +390,17 @@ export function HomeScreen({
         {currentView === 'home' && (
           <motion.div key="home"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            style={{ paddingBottom: 200 }}
+            style={{
+              height: isEditMode ? undefined : '100dvh',
+              minHeight: isEditMode ? '100dvh' : undefined,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: isEditMode ? 'auto' : 'hidden',
+              paddingBottom: isEditMode ? 200 : 0,
+            }}
           >
             {/* Header — never editable */}
-            <div className="flex items-start justify-between px-5 pt-14 pb-2">
+            <div className="flex items-start justify-between px-5 pt-14 pb-2" style={{ flexShrink: 0 }}>
               <div>
                 <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1.2 }}>
                   {greeting()}, {firstName}
@@ -419,8 +427,13 @@ export function HomeScreen({
               </button>
             </div>
 
-            {/* Editable area — position:relative gives react-rnd its bounds parent */}
-            <div style={{ position: 'relative', minHeight: isEditMode ? '60vh' : undefined }}>
+            {/* Content area — flex:1 fills remaining height; relative gives react-rnd its bounds */}
+            <div style={{
+              position: 'relative',
+              flex: isEditMode ? undefined : 1,
+              minHeight: isEditMode ? '60vh' : 0,
+              overflow: 'hidden',
+            }}>
 
               {/* Input widget — long-press 1.2s to enter edit mode */}
               <DraggableInputWidget>
@@ -486,8 +499,8 @@ export function HomeScreen({
                 )}
               </DraggableInputWidget>
 
-              {/* Loading skeleton */}
-              {goalsLoading && goals.length === 0 && (
+              {/* Loading skeleton (normal mode only) */}
+              {!isEditMode && goalsLoading && goals.length === 0 && (
                 <div className="mt-6">
                   <div className="flex items-center justify-between px-4 mb-3">
                     <div className="h-4 w-20 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
@@ -500,12 +513,22 @@ export function HomeScreen({
                 </div>
               )}
 
-              {/* Goal cards — carousel in normal mode, canvas in edit mode */}
-              {goals.length > 0 && (
+              {/* Normal mode — full-height stack carousel */}
+              {!isEditMode && goals.length > 0 && (
+                <div style={{ position: 'absolute', inset: 0 }}>
+                  <GoalStackCarousel
+                    goals={goals}
+                    hasMore={hasMoreGoals}
+                    onLoadMore={loadMoreGoals}
+                    onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
+                  />
+                </div>
+              )}
+
+              {/* Edit mode — free canvas */}
+              {isEditMode && goals.length > 0 && (
                 <EditableGoalCards
                   goals={goals}
-                  hasMore={hasMoreGoals}
-                  onLoadMore={loadMoreGoals}
                   onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
                   renderCard={(goal, { fillContainer, onOpen }) => (
                     <GoalCard
@@ -519,7 +542,7 @@ export function HomeScreen({
               )}
 
               {/* Empty state */}
-              {!goalsLoading && goals.length === 0 && (
+              {!isEditMode && !goalsLoading && goals.length === 0 && (
                 <div className="px-4 mt-10 text-center">
                   <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
                     Record your first goal using the bar below.
