@@ -44,7 +44,12 @@ export interface Goal {
   eligibleAt?: string;
   createdAt: string;
   updatedAt?: string;
-  savingStatus?: 'saving' | 'success' | 'error';
+  savingStatus?: 'saving' | 'success' | 'partial' | 'error';
+  saveErrorMessage?: string;
+  // Client-generated temp ID written into the saved doc so the realtime
+  // listener can deduplicate optimistic copies without title+timestamp
+  // heuristics that mis-fire on duplicate titles.
+  tempId?: string;
   draftData?: any;
   sourceText?: string;
   normalizedMatchingText?: string;

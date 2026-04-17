@@ -12,10 +12,14 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Admin = either a custom claim (preferred — issued by server after
+    // verifying the Firestore role) or the verified bootstrap email.
     function isAdmin() {
       return isAuthenticated() &&
-             request.auth.token.email_verified == true &&
-             request.auth.token.email == "mohamadriza987@gmail.com";
+             (request.auth.token.get('admin', false) == true ||
+              request.auth.token.get('role', '') == 'admin' ||
+              (request.auth.token.email_verified == true &&
+               request.auth.token.email == "mohamadriza987@gmail.com"));
     }
 
     function isGoalOwner(goalId) {

@@ -129,11 +129,10 @@ export default function App() {
         goalsUnsubscribe = onSnapshot(q, (snapshot) => {
           const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
           setGoals(g);
+          // Dedup by tempId only — title+timestamp matching wrongly removes
+          // both entries when two goals share a title within the window.
           setOptimisticGoals(prev =>
-            prev.filter(og => !g.some(rg =>
-              rg.title === og.title &&
-              Math.abs(new Date(rg.createdAt).getTime() - new Date(og.createdAt).getTime()) < 5000
-            ))
+            prev.filter(og => !g.some(rg => rg.tempId && rg.tempId === og.id))
           );
         }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
 
@@ -233,25 +232,35 @@ export default function App() {
     if (!user || !goal.draftData) return;
     const { structuredGoal, manualTasks } = goal.draftData;
     const tempId = goal.id;
-    updateOptimisticGoal(tempId, { savingStatus: 'saving' });
+    updateOptimisticGoal(tempId, { savingStatus: 'saving', saveErrorMessage: undefined });
 
     try {
-      // 1. Embedding
+      // Single token reused across this save cycle — Firebase caches internally
+      // but back-to-back awaits still serialise unnecessarily.
+      const idToken = await user.getIdToken();
+      const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` };
+
+      // 1. Embedding — surface failure rather than silently saving without one
       let embedding: number[] | undefined;
+      let embeddingFailed = false;
       try {
-        const tok = await user.getIdToken();
-        const r   = await fetch('/api/generate-embedding', {
+        const r = await fetch('/api/generate-embedding', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
+          headers: authHeaders,
           body: JSON.stringify({ text: structuredGoal.normalizedMatchingText }),
         });
-        if (r.ok) embedding = (await r.json()).embedding;
-      } catch (e) { console.error('Embedding failed:', e); }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        embedding = (await r.json()).embedding;
+      } catch (e) {
+        embeddingFailed = true;
+        console.error('Embedding failed:', e);
+      }
 
       // 2. Save goal doc — default visibility to 'public'
       const visibility = structuredGoal.privacy === 'private' ? 'private' : 'public';
       const goalRef = await addDoc(collection(db, 'goals'), {
         ownerId: user.uid,
+        tempId,
         title:   structuredGoal.title,
         description: structuredGoal.description,
         category: structuredGoal.categories[0],
@@ -281,7 +290,7 @@ export default function App() {
           source: 'ai',
         });
       });
-      manualTasks.forEach((text, i) => {
+      manualTasks.forEach((text: string, i: number) => {
         const tRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
         batch.set(tRef, {
           text, isDone: false, order: structuredGoal.tasks.length + i,
@@ -291,35 +300,47 @@ export default function App() {
         });
       });
       await batch.commit();
+
+      if (embeddingFailed) {
+        updateOptimisticGoal(tempId, {
+          savingStatus: 'partial',
+          saveErrorMessage: 'Saved, but no community room was matched. Open the goal to retry.',
+        });
+        return;
+      }
       updateOptimisticGoal(tempId, { savingStatus: 'success' });
 
-      // 4. Group assign + precompute + new index layer (all fire-and-forget)
+      // 4. Combined post-save: assign group + precompute matches + index — one
+      //    round trip, one auth token, server runs them in the right order.
       if (embedding) {
-        const tok = await user.getIdToken();
-        fetch('/api/groups/assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
-          body: JSON.stringify({ goalId: goalRef.id }),
-        }).catch(console.error);
-
-        const tok2 = await user.getIdToken();
-        fetch('/api/goals/precompute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok2}` },
-          body: JSON.stringify({ goalId: goalRef.id, embedding }),
-        }).catch(console.error);
-
-        // New structured index layer — runs in parallel, does not block UI
-        const tok3 = await user.getIdToken();
-        fetch('/api/goals/index-new', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok3}` },
-          body: JSON.stringify({ goalId: goalRef.id }),
-        }).catch(console.error);
+        try {
+          const res = await fetch('/api/goals/post-save', {
+            method: 'POST',
+            headers: authHeaders,
+            body: JSON.stringify({ goalId: goalRef.id, embedding }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (data && data.groupId === null) {
+            updateOptimisticGoal(tempId, {
+              savingStatus: 'partial',
+              saveErrorMessage: 'No matching community room yet. We\'ll keep looking as more goals join.',
+            });
+          }
+        } catch (e) {
+          console.error('Post-save (group assign / index) failed', e);
+          updateOptimisticGoal(tempId, {
+            savingStatus: 'partial',
+            saveErrorMessage: 'Goal saved, but joining a community room failed. Open the goal to retry.',
+          });
+        }
       }
     } catch (err) {
       console.error('Save error:', err);
-      updateOptimisticGoal(tempId, { savingStatus: 'error' });
+      updateOptimisticGoal(tempId, {
+        savingStatus: 'error',
+        saveErrorMessage: 'Could not save goal. Please try again.',
+      });
     }
   };
 
