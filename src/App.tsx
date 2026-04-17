@@ -49,6 +49,7 @@ export default function App() {
   const [dbUser,         setDbUser]         = useState<User | null>(null);
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
+  const [goalsLoading,   setGoalsLoading]   = useState(true);
   const [allReminders,   setAllReminders]   = useState<{task: GoalTask; goal: Goal; reminderAt: string; noteText?: string}[]>([]);
   const [calendarNotes,  setCalendarNotes]  = useState<CalendarNote[]>([]);
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
@@ -112,6 +113,7 @@ export default function App() {
         goalsUnsubscribe = onSnapshot(q, (snapshot) => {
           const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
           setGoals(g);
+          setGoalsLoading(false);
           // Dedup by tempId only — title+timestamp matching wrongly removes
           // both entries when two goals share a title within the window.
           setOptimisticGoals(prev =>
@@ -147,7 +149,7 @@ export default function App() {
       setAllReminders(merged);
     };
 
-    const tQ = query(collectionGroup(db, 'tasks'), where('reminderAt', '!=', null));
+    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid), where('reminderAt', '!=', null));
     const unsubT = onSnapshot(tQ, (snap) => {
       latestTask = [];
       snap.docs.forEach(d => {
@@ -159,7 +161,7 @@ export default function App() {
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
 
-    const nQ = query(collectionGroup(db, 'notes'), where('reminderAt', '!=', null));
+    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid), where('reminderAt', '!=', null));
     const unsubN = onSnapshot(nQ, (snap) => {
       latestNote = [];
       snap.docs.forEach(d => {
@@ -271,6 +273,8 @@ export default function App() {
           microSteps: task.microSteps,
           createdAt: new Date().toISOString(),
           source: 'ai',
+          goalId: goalRef.id,
+          ownerId: user.uid,
         });
       });
       manualTasks.forEach((text: string, i: number) => {
@@ -280,6 +284,8 @@ export default function App() {
           microSteps: [],
           createdAt: new Date().toISOString(),
           source: 'manual',
+          goalId: goalRef.id,
+          ownerId: user.uid,
         });
       });
       await batch.commit();
@@ -365,6 +371,7 @@ export default function App() {
               user={user}
               dbUser={dbUser}
               goals={displayGoals}
+              goalsLoading={goalsLoading}
               setCurrentScreen={navigate}
               handleFirestoreError={handleFirestoreError}
               addOptimisticGoal={addOptimisticGoal}

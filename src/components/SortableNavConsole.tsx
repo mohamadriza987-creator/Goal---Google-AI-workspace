@@ -121,10 +121,16 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
   const { isEditMode, enterEditMode, exitEditMode, resetLayout, layout, setNavOrder } =
     useHomeEditMode();
 
-  /* Auto-exit edit mode when user leaves the home screen */
+  /* Auto-exit edit mode when user leaves the home screen (including goal-detail) */
   useEffect(() => {
     if (isEditMode && currentScreen !== 'home') exitEditMode();
   }, [currentScreen, isEditMode, exitEditMode]);
+
+  /* Also exit edit mode immediately when navigating to goal-detail */
+  const handleNavigate = (screen: string) => {
+    if (isEditMode) exitEditMode();
+    navigate({ name: screen });
+  };
 
   const longPress = useLongPress(enterEditMode, { delay: 1200 });
 
@@ -213,7 +219,7 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
                   id={id}
                   activeScreen={currentScreen}
                   isEditMode={isEditMode}
-                  onNavigate={screen => navigate({ name: screen })}
+                  onNavigate={handleNavigate}
                 />
               ))}
             </SortableContext>

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Rnd } from 'react-rnd';
 import { motion } from 'motion/react';
 import { useHomeEditMode } from '../contexts/HomeEditModeContext';
@@ -16,18 +16,36 @@ interface EditableGoalCardsProps {
 }
 
 export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCardsProps) {
-  const { isEditMode, enterEditMode, layout, setGoalCardLayout } = useHomeEditMode();
+  const { isEditMode, enterEditMode, exitEditMode, layout, setGoalCardLayout } = useHomeEditMode();
   const longPressForCard = useLongPress(enterEditMode, { delay: 1200 });
 
-  const cardMaxW = typeof window !== 'undefined' ? window.innerWidth - 32 : 380;
+  const [cardMaxW, setCardMaxW] = useState(
+    typeof window !== 'undefined' ? window.innerWidth - 32 : 380,
+  );
+  useEffect(() => {
+    const onResize = () => setCardMaxW(window.innerWidth - 32);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
-  /* Build effective card layouts, filling missing entries with auto-computed positions */
+  /* Build effective card layouts, filling missing entries with auto-computed positions.
+     Also clamp saved x positions so cards dragged on a wide screen don't overflow on narrow. */
   const effectiveLayouts = useMemo(() => {
     if (!isEditMode) return layout.goalCards;
     const missing = goals.filter(g => !layout.goalCards[g.id]).map(g => g.id);
-    if (!missing.length) return layout.goalCards;
-    return { ...computeInitialCardLayouts(goals.map(g => g.id)), ...layout.goalCards };
-  }, [isEditMode, goals, layout.goalCards]);
+    const base = missing.length
+      ? { ...computeInitialCardLayouts(goals.map(g => g.id)), ...layout.goalCards }
+      : layout.goalCards;
+    // Clamp any stored card that overflows the current viewport
+    const clamped: typeof base = {};
+    for (const [id, cl] of Object.entries(base)) {
+      clamped[id] = {
+        ...cl,
+        x: Math.min(cl.x, Math.max(0, cardMaxW - CARD_MIN_W)),
+      };
+    }
+    return clamped;
+  }, [isEditMode, goals, layout.goalCards, cardMaxW]);
 
   /* Canvas height = bottom of lowest card + padding */
   const canvasHeight = useMemo(() => {
@@ -114,7 +132,7 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
       >
         {goals.map(goal => (
           <div key={goal.id} {...longPressForCard} className="snap-start" style={{ flexShrink: 0 }}>
-            {renderCard(goal, { onOpen: () => onOpen(goal.id) })}
+            {renderCard(goal, { onOpen: () => { exitEditMode(); onOpen(goal.id); } })}
           </div>
         ))}
       </div>

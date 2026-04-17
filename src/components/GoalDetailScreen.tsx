@@ -654,7 +654,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     try {
       await addDoc(collection(db, 'goals', goal.id, 'tasks'), {
         text: newTaskText.trim(), isDone: false, order: tasks.length,
-        source: 'manual', goalId: goal.id, createdAt: new Date().toISOString(),
+        source: 'manual', goalId: goal.id, ownerId: user.uid, createdAt: new Date().toISOString(),
       });
       setNewTaskText(''); setAddingTask(false);
     } catch(e) { console.error(e); } finally { setSaving(false); }

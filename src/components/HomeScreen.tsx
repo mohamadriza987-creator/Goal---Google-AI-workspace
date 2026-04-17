@@ -4,18 +4,20 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
-import { generateGoal, StructuredGoal, GoalTask } from '../services/geminiService';
+import { generateGoal, transcribeAudio, StructuredGoal, GoalTask } from '../services/geminiService';
 import { GOAL_CATEGORIES } from '../lib/goalCategories';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
 import { DraggableInputWidget } from './DraggableInputWidget';
 import { EditableGoalCards }    from './EditableGoalCards';
+import { useHomeEditMode }      from '../contexts/HomeEditModeContext';
 
 interface HomeScreenProps {
   user: any;
   dbUser: User | null;
   goals: Goal[];
+  goalsLoading?: boolean;
   setCurrentScreen: (screen: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
   addOptimisticGoal: (goal: Goal) => void;
@@ -63,14 +65,37 @@ function motivational() {
   return lines[new Date().getDay() % lines.length];
 }
 
+// ── GoalCard animation constants (hoisted to avoid re-triggering on re-render)
+const CARD_INITIAL = { opacity: 0, scale: 0.96 as number };
+const CARD_ANIMATE = { opacity: 1, scale: 1 as number };
+
+// ── Goal Card Skeleton ────────────────────────────────────────────────────────
+function GoalCardSkeleton() {
+  return (
+    <div
+      className="card flex flex-col gap-3"
+      style={{ borderRadius: 18, padding: '16px 16px 14px', minWidth: 240, maxWidth: 260, flexShrink: 0 }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1 space-y-2">
+          <div className="h-3.5 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)', width: '75%' }} />
+          <div className="h-2.5 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)', width: '55%' }} />
+        </div>
+        <div className="w-11 h-11 rounded-full animate-pulse flex-shrink-0" style={{ background: 'var(--c-surface-2)' }} />
+      </div>
+      <div className="h-8 rounded-lg animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
+    </div>
+  );
+}
+
 // ── Goal Card ─────────────────────────────────────────────────────────────────
 function GoalCard({ goal, onOpen, fillContainer = false }: { goal: Goal; onOpen: () => void; fillContainer?: boolean }) {
   const nextStep = (goal as any).nextStep || null;
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.96 }}
-      animate={{ opacity: 1, scale: 1 }}
+      initial={CARD_INITIAL}
+      animate={CARD_ANIMATE}
       onClick={onOpen}
       className="card flex flex-col gap-3 cursor-pointer"
       style={{
@@ -135,6 +160,7 @@ export function HomeScreen({
   user,
   dbUser,
   goals,
+  goalsLoading = false,
   setCurrentScreen,
   handleFirestoreError,
   addOptimisticGoal,
@@ -143,6 +169,7 @@ export function HomeScreen({
 // ═════════════════════════════════════════════════════════════════════════════
 
   const { t, setLanguage } = useTranslation();
+  const { isEditMode } = useHomeEditMode();
 
   // ── View state ───────────────────────────────────────────────────────────
   const [currentView, setCurrentView] = useState<'home' | 'recording' | 'review'>('home');
@@ -224,10 +251,23 @@ export function HomeScreen({
       reader.onloadend = () => res((reader.result as string).split(',')[1]);
       reader.readAsDataURL(blob);
     });
-    // For refinements combine the transcribed text from Gemini's prior response
     if (isRefinement && currentTranscript) {
-      // Send combined context as text (prior transcript + note that more audio was recorded)
-      await runGoalGeneration({ text: `${currentTranscript}\n\n[User recorded additional audio — refine the goal accordingly]` }, true);
+      // Transcribe the new audio then append to existing transcript before regenerating
+      setLoading(true);
+      setProcessingState('generating');
+      setProcessingError(null);
+      try {
+        const idToken = await user.getIdToken();
+        const newTranscript = await transcribeAudio(b64, blob.type, idToken);
+        const combined = newTranscript
+          ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
+          : currentTranscript;
+        await runGoalGeneration({ text: combined }, true);
+      } catch (err: any) {
+        setProcessingError(err.message || 'Error transcribing audio');
+        setLoading(false);
+        setProcessingState('idle');
+      }
     } else {
       await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false);
     }
@@ -376,7 +416,7 @@ export function HomeScreen({
             </div>
 
             {/* Editable area — position:relative gives react-rnd its bounds parent */}
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', minHeight: isEditMode ? '60vh' : undefined }}>
 
               {/* Input widget — long-press 1.2s to enter edit mode */}
               <DraggableInputWidget>
@@ -442,6 +482,20 @@ export function HomeScreen({
                 )}
               </DraggableInputWidget>
 
+              {/* Loading skeleton */}
+              {goalsLoading && goals.length === 0 && (
+                <div className="mt-6">
+                  <div className="flex items-center justify-between px-4 mb-3">
+                    <div className="h-4 w-20 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
+                    <div className="h-3 w-10 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
+                  </div>
+                  <div className="flex gap-3 overflow-hidden pl-4 pr-4">
+                    <GoalCardSkeleton />
+                    <GoalCardSkeleton />
+                  </div>
+                </div>
+              )}
+
               {/* Goal cards — carousel in normal mode, canvas in edit mode */}
               {goals.length > 0 && (
                 <EditableGoalCards
@@ -459,7 +513,7 @@ export function HomeScreen({
               )}
 
               {/* Empty state */}
-              {goals.length === 0 && (
+              {!goalsLoading && goals.length === 0 && (
                 <div className="px-4 mt-10 text-center">
                   <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
                     Record your first goal above to get started.
