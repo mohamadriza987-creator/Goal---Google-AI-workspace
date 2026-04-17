@@ -109,7 +109,68 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
   /* ── Edit mode: free canvas ─────────────────────────────────────────────── */
   if (isEditMode) {
     return (
-      <div
+      <>
+        {/* Floating edit-mode banner */}
+        <div
+          style={{
+            position: 'fixed',
+            top: 16,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            background: 'rgba(20,18,14,0.92)',
+            border: '1px solid rgba(201,168,76,0.45)',
+            borderRadius: 999,
+            padding: '8px 16px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.45)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+          } as React.CSSProperties}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: 'rgba(201,168,76,0.9)',
+              flexShrink: 0,
+              boxShadow: '0 0 6px rgba(201,168,76,0.6)',
+            }}
+          />
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: 'rgba(201,168,76,0.95)',
+              letterSpacing: 0.2,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Editing cards
+          </span>
+          <button
+            onClick={exitEditMode}
+            style={{
+              marginLeft: 4,
+              padding: '4px 14px',
+              borderRadius: 999,
+              border: 'none',
+              background: 'rgba(201,168,76,0.18)',
+              color: 'rgba(201,168,76,0.95)',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+              letterSpacing: 0.2,
+            }}
+          >
+            Done
+          </button>
+        </div>
+
+        <div
         className="mt-6"
         style={{
           position: 'relative',
@@ -194,6 +255,7 @@ export function EditableGoalCards({ goals, onOpen, renderCard }: EditableGoalCar
           );
         })}
       </div>
+      </>
     );
   }
 
