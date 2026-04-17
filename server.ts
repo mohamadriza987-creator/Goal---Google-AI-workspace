@@ -112,6 +112,7 @@ type GroupDoc = {
 type GroupIndexEntry = {
   groupId: string;
   memberGoalIds: string[];
+  memberUserIds: string[];
   memberCount: number;
   categories: string[];
   languages: string[];
@@ -244,6 +245,7 @@ async function findOrCreateGroupForGoal(goalId: string) {
 
     for (const group of allGroups) {
       if (!group.representativeEmbedding) continue;
+      if ((group.memberIds || []).includes(goal.ownerId)) continue;
 
       const goalIsPrivate = isPrivateGoal(goal);
       const groupIsPrivate = group.matchingCriteria?.privacy === "private";
@@ -325,6 +327,7 @@ async function findOrCreateGroupForGoal(goalId: string) {
       (g) =>
         !g.groupId &&
         g.id !== goal.id &&
+        g.ownerId !== goal.ownerId &&
         Array.isArray(g.embedding) &&
         isPrivateGoal(g) === goalIsPrivate,
     );
@@ -439,7 +442,9 @@ async function upsertGroupIndex(groupId: string): Promise<void> {
   const group = { id: groupDoc.id, ...groupDoc.data() } as GroupDoc;
   if (!group.representativeEmbedding) return;
 
-  const memberGoalIds = (group.members || []).map((m) => m.goalId);
+  const memberGoalIds  = (group.members || []).map((m) => m.goalId);
+  const memberUserIds  = group.memberIds
+    ?? uniqueStrings((group.members || []).map((m) => m.userId).filter(Boolean) as string[]);
 
   const categories    = new Set<string>();
   const languages     = new Set<string>();
@@ -476,6 +481,7 @@ async function upsertGroupIndex(groupId: string): Promise<void> {
   const entry: GroupIndexEntry = {
     groupId,
     memberGoalIds,
+    memberUserIds,
     memberCount: typeof group.memberCount === "number" ? group.memberCount : memberGoalIds.length,
     categories:    [...categories],
     languages:     [...languages],
@@ -662,7 +668,8 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
   const groupIndexSnap = await db.collection("group_index").get();
   let gPool: GroupIndexEntry[] = groupIndexSnap.docs
     .map((d) => d.data() as GroupIndexEntry)
-    .filter((g) => g.memberCount < 100);
+    .filter((g) => g.memberCount < 100)
+    .filter((g) => !(g.memberUserIds ?? []).includes(userId));
 
   gPool = narrowGroupPool(gPool, goalCategories, goalLanguages, goalAgeCategory, goalLocation, goalNationality);
 
@@ -720,7 +727,7 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
 
   let uPool: UnassignedGoalIndexEntry[] = unassignedSnap.docs
     .map((d) => d.data() as UnassignedGoalIndexEntry)
-    .filter((e) => e.goalId !== goalId);
+    .filter((e) => e.goalId !== goalId && e.userId !== userId);
 
   uPool = narrowUnassignedPool(uPool, goalCategories, goalLanguages, goalAgeCategory, goalLocation, goalNationality);
 
@@ -732,6 +739,14 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
     .slice(0, 5);
 
   if (strongMatches.length >= 1) {
+    const clusterUserIds = uniqueStrings(
+      [userId, ...strongMatches.map((m) => m.entry.userId)].filter(Boolean) as string[],
+    );
+    if (clusterUserIds.length < 2) {
+      await upsertGoalToUnassignedIndex(goalId, { stampNow: true });
+      return { action: "placed-unassigned", activityStatus: "active" };
+    }
+
     const clusterGoalIds = [goalId, ...strongMatches.map((m) => m.entry.goalId)];
     const clusterDocs    = await Promise.all(clusterGoalIds.map((id) => db.collection("goals").doc(id).get()));
     const clusterGoals   = clusterDocs.filter((d) => d.exists).map((d) => ({ id: d.id, ...d.data() }) as GoalDoc);
