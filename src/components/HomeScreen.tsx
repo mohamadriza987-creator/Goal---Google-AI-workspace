@@ -9,6 +9,8 @@ import { GOAL_CATEGORIES } from '../lib/goalCategories';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
+import { DraggableInputWidget } from './DraggableInputWidget';
+import { EditableGoalCards }    from './EditableGoalCards';
 
 interface HomeScreenProps {
   user: any;
@@ -61,13 +63,8 @@ function motivational() {
   return lines[new Date().getDay() % lines.length];
 }
 
-// ── Goal Card (carousel) ──────────────────────────────────────────────────────
-function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
-  const similarCount = goal.similarGoals?.length ?? 0;
-  const threadCount  = 0; // will be populated when Goal Room is built
-  const helpCount    = goal.similarGoals?.filter(g => g.similarityScore >= 0.9).length ?? 0;
-
-  // Find first task text if stored in draftData (before Firestore tasks load)
+// ── Goal Card ─────────────────────────────────────────────────────────────────
+function GoalCard({ goal, onOpen, fillContainer = false }: { goal: Goal; onOpen: () => void; fillContainer?: boolean }) {
   const nextStep = (goal as any).nextStep || null;
 
   return (
@@ -75,8 +72,14 @@ function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
       initial={{ opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
       onClick={onOpen}
-      className="card flex flex-col gap-3 snap-start flex-shrink-0 cursor-pointer"
-      style={{ borderRadius: 18, minWidth: 240, maxWidth: 260, padding: '16px 16px 14px' }}
+      className="card flex flex-col gap-3 cursor-pointer"
+      style={{
+        borderRadius: 18,
+        padding: '16px 16px 14px',
+        ...(fillContainer
+          ? { width: '100%', height: '100%', minWidth: 'unset', maxWidth: 'unset', boxSizing: 'border-box', overflow: 'hidden' }
+          : { minWidth: 240, maxWidth: 260, flexShrink: 0 }),
+      }}
     >
       {/* Top row — title + ring */}
       <div className="flex items-start gap-3">
@@ -344,7 +347,7 @@ export function HomeScreen({
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             style={{ paddingBottom: 120 }}
           >
-            {/* Header */}
+            {/* Header — never editable */}
             <div className="flex items-start justify-between px-5 pt-14 pb-2">
               <div>
                 <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1.2 }}>
@@ -372,102 +375,99 @@ export function HomeScreen({
               </button>
             </div>
 
-            {/* Add goal — compact bar */}
-            <div className="px-4 mt-4">
-              <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
-                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                {/* Mic button */}
-                <motion.button
-                  onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
-                  whileTap={{ scale: 0.92 }}
-                  disabled={loading}
-                  className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
-                  style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
-                >
-                  <Mic size={16} style={{ color: '#000' }} />
-                </motion.button>
+            {/* Editable area — position:relative gives react-rnd its bounds parent */}
+            <div style={{ position: 'relative' }}>
 
-                {!isTyping ? (
-                  <button
-                    onClick={() => setIsTyping(true)}
-                    className="flex-1 text-left text-sm"
-                    style={{ color: 'var(--c-text-3)' }}
+              {/* Input widget — long-press 1.2s to enter edit mode */}
+              <DraggableInputWidget>
+                <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
+                     style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                  {/* Mic button */}
+                  <motion.button
+                    onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
+                    whileTap={{ scale: 0.92 }}
+                    disabled={loading}
+                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
+                    style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
                   >
-                    New goal…
-                  </button>
-                ) : (
-                  <>
-                    <input
-                      autoFocus
-                      type="text"
-                      placeholder="Describe your goal…"
-                      value={typedGoal}
-                      onChange={(e) => setTypedGoal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleTypedGoalSubmit();
-                        if (e.key === 'Escape') { setIsTyping(false); setTypedGoal(''); }
-                      }}
-                      className="flex-1 bg-transparent border-none outline-none text-sm"
-                      style={{ color: 'var(--c-text)' }}
-                    />
+                    <Mic size={16} style={{ color: '#000' }} />
+                  </motion.button>
+
+                  {!isTyping ? (
                     <button
-                      onClick={handleTypedGoalSubmit}
-                      disabled={!typedGoal.trim() || loading}
-                      className="flex-shrink-0 disabled:opacity-40 transition-opacity"
-                      style={{ color: 'var(--c-gold)' }}
-                    >
-                      {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                    </button>
-                    <button
-                      onClick={() => { setIsTyping(false); setTypedGoal(''); }}
-                      className="flex-shrink-0"
+                      onClick={() => setIsTyping(true)}
+                      className="flex-1 text-left text-sm"
                       style={{ color: 'var(--c-text-3)' }}
                     >
-                      <X size={15} />
+                      New goal…
                     </button>
-                  </>
-                )}
-              </div>
-
-              {(processingError || recorderError) && (
-                <p className="text-meta mt-2 px-1" style={{ color: '#e07070', fontSize: 12 }}>
-                  {processingError || recorderError}
-                </p>
-              )}
-            </div>
-
-            {/* My Goals — horizontal carousel */}
-            {goals.length > 0 && (
-              <div className="mt-6">
-                <div className="flex items-center justify-between px-4 mb-3">
-                  <h2 style={{ fontSize: 16, fontWeight: 600, letterSpacing: -0.3 }}>My Goals</h2>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>
-                    {goals.length} {goals.length === 1 ? 'goal' : 'goals'}
-                  </span>
+                  ) : (
+                    <>
+                      <input
+                        autoFocus
+                        type="text"
+                        placeholder="Describe your goal…"
+                        value={typedGoal}
+                        onChange={(e) => setTypedGoal(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleTypedGoalSubmit();
+                          if (e.key === 'Escape') { setIsTyping(false); setTypedGoal(''); }
+                        }}
+                        className="flex-1 bg-transparent border-none outline-none text-sm"
+                        style={{ color: 'var(--c-text)' }}
+                      />
+                      <button
+                        onClick={handleTypedGoalSubmit}
+                        disabled={!typedGoal.trim() || loading}
+                        className="flex-shrink-0 disabled:opacity-40 transition-opacity"
+                        style={{ color: 'var(--c-gold)' }}
+                      >
+                        {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                      </button>
+                      <button
+                        onClick={() => { setIsTyping(false); setTypedGoal(''); }}
+                        className="flex-shrink-0"
+                        style={{ color: 'var(--c-text-3)' }}
+                      >
+                        <X size={15} />
+                      </button>
+                    </>
+                  )}
                 </div>
-                <div
-                  className="flex gap-3 overflow-x-auto snap-x snap-mandatory pl-4 pr-4 pb-1"
-                  style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
-                >
-                  {goals.map((goal) => (
+
+                {(processingError || recorderError) && (
+                  <p className="text-meta mt-2 px-1" style={{ color: '#e07070', fontSize: 12 }}>
+                    {processingError || recorderError}
+                  </p>
+                )}
+              </DraggableInputWidget>
+
+              {/* Goal cards — carousel in normal mode, canvas in edit mode */}
+              {goals.length > 0 && (
+                <EditableGoalCards
+                  goals={goals}
+                  onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
+                  renderCard={(goal, { fillContainer, onOpen }) => (
                     <GoalCard
                       key={goal.id}
                       goal={goal}
-                      onOpen={() => setCurrentScreen({ name: 'goal-detail', goalId: goal.id, initialTab: 'plan' })}
+                      onOpen={onOpen}
+                      fillContainer={fillContainer}
                     />
-                  ))}
-                </div>
-              </div>
-            )}
+                  )}
+                />
+              )}
 
-            {/* Empty state */}
-            {goals.length === 0 && (
-              <div className="px-4 mt-10 text-center">
-                <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
-                  Record your first goal above to get started.
-                </p>
-              </div>
-            )}
+              {/* Empty state */}
+              {goals.length === 0 && (
+                <div className="px-4 mt-10 text-center">
+                  <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
+                    Record your first goal above to get started.
+                  </p>
+                </div>
+              )}
+
+            </div>{/* /editable area */}
           </motion.div>
         )}
 

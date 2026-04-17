@@ -54,3 +54,20 @@ The app runs on port 5000 via `PORT=5000 npm run dev`.
 2. **Semantic Matching**: Gemini embeddings + cosine similarity to group similar goals
 3. **Community Groups**: Real-time chat within AI-curated goal groups
 4. **Multi-language Support**: Translation system via LanguageContext
+5. **Home Screen Edit Mode**: Long-press (1.2s) any editable element to enter edit mode:
+   - Bottom nav buttons swappable via dnd-kit (3 fixed slots)
+   - Voice/text input widget draggable via react-rnd (bounded, no resize)
+   - Goal cards draggable + resizable via react-rnd (individual per card)
+   - Subtle jiggle animation (framer-motion) on all editable items in edit mode
+   - Gold "Done" + "Reset layout" floating buttons to save/restore
+   - Layout persisted to localStorage keyed by `layout_<userId>`
+
+## New Files (Edit Mode)
+
+- `src/lib/homeLayout.ts` — Layout types, localStorage helpers, defaults
+- `src/hooks/useLongPress.ts` — 1.2s long-press hook (pointer-based, cancel on move >8px)
+- `src/contexts/HomeEditModeContext.tsx` — Edit mode state + layout persistence provider
+- `src/components/PandaIcon.tsx` — Extracted Panda icon (was inline in App.tsx)
+- `src/components/SortableNavConsole.tsx` — dnd-kit sortable bottom nav
+- `src/components/DraggableInputWidget.tsx` — react-rnd draggable input tile
+- `src/components/EditableGoalCards.tsx` — Carousel (normal) / canvas (edit) goal cards

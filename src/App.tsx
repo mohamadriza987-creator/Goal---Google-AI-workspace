@@ -4,8 +4,6 @@ import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'fireb
 import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { Goal, GoalTask, User, CalendarNote } from './types';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from './lib/utils';
-import { Calendar as CalendarIcon, Trophy } from 'lucide-react';
 
 // ── Screen types ──────────────────────────────────────────────────────────────
 
@@ -33,30 +31,15 @@ enum OperationType {
   WRITE  = 'write',
 }
 
-// ── Panda logo (centre home button) ──────────────────────────────────────────
+// ── Screen + feature imports ──────────────────────────────────────────────────
 
-const PandaIcon = ({ size = 24, active = false }: { size?: number; active?: boolean }) => (
-  <div className={cn('relative flex items-center justify-center transition-all duration-300', active ? 'scale-110' : 'hover:scale-105')}>
-    <svg width={size} height={size} viewBox="0 0 200 200"
-      className={cn('transition-all duration-300', active ? 'fill-black' : 'fill-zinc-400 group-hover:fill-white')}>
-      <circle cx="50"  cy="50"  r="25" />
-      <circle cx="150" cy="50"  r="25" />
-      <circle cx="100" cy="100" r="80" fill={active ? 'white' : 'none'} stroke={active ? 'black' : 'currentColor'} strokeWidth="8" />
-      <ellipse cx="70"  cy="90" rx="20" ry="25" />
-      <ellipse cx="130" cy="90" rx="20" ry="25" />
-      <circle  cx="100" cy="120" r="8" />
-    </svg>
-  </div>
-);
-
-// ── Screen imports ───────────────────────────────────────────────────────────
-
-import { HomeScreen }       from './components/HomeScreen';
-import { GoalDetailScreen } from './components/GoalDetailScreen';
-import { CalendarScreen }   from './components/CalendarScreen';
-import { ChallengeScreen }  from './components/ChallengeScreen';
-import { ProfileScreen }    from './components/ProfileScreen';
-import { NavButton }        from './components/NavButton';
+import { HomeScreen }            from './components/HomeScreen';
+import { GoalDetailScreen }      from './components/GoalDetailScreen';
+import { CalendarScreen }        from './components/CalendarScreen';
+import { ChallengeScreen }       from './components/ChallengeScreen';
+import { ProfileScreen }         from './components/ProfileScreen';
+import { SortableNavConsole }    from './components/SortableNavConsole';
+import { HomeEditModeProvider }  from './contexts/HomeEditModeContext';
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -353,6 +336,7 @@ export default function App() {
   const isAuth = currentScreen.name === 'auth';
 
   return (
+    <HomeEditModeProvider userId={user?.uid ?? null}>
     <div className="min-h-screen font-sans selection:bg-white selection:text-black"
          style={{ background: 'var(--c-bg)', color: 'var(--c-text)' }}>
 
@@ -434,63 +418,15 @@ export default function App() {
 
       </AnimatePresence>
 
-      {/* ── Bottom navigation (hidden on auth & profile) ───────────── */}
+      {/* ── Bottom navigation — sortable, edit-mode aware ──────────── */}
       {!isAuth && currentScreen.name !== 'profile' && (
-        <motion.div
-          className="fixed bottom-0 left-0 right-0 z-50"
-          initial={false}
-          animate={{ y: navVisible ? 0 : 80, opacity: navVisible ? 1 : 0 }}
-          transition={{ type: 'spring', stiffness: 320, damping: 32 }}
-        >
-          {/* Gradient fade above nav */}
-          <div className="h-6 pointer-events-none"
-               style={{ background: 'linear-gradient(to bottom, transparent, var(--c-bg))' }} />
-
-          <nav className="flex items-center justify-around px-2 pb-safe"
-               style={{
-                 background:    'rgba(10,10,10,0.92)',
-                 backdropFilter: 'blur(24px)',
-                 borderTop:     '1px solid var(--c-border)',
-                 paddingBottom: 'max(env(safe-area-inset-bottom), 12px)',
-                 paddingTop:    8,
-               }}>
-
-            {/* Home (Panda — centre/brand) */}
-            <button
-              onClick={() => navigate({ name: 'home' })}
-              className={cn(
-                'group relative flex flex-col items-center justify-center gap-0.5 px-5 py-1 rounded-full transition-all duration-300',
-                currentScreen.name === 'home' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
-              )}
-            >
-              <div className={cn('transition-transform duration-300', currentScreen.name === 'home' ? 'scale-110' : 'hover:scale-105')}>
-                <PandaIcon size={22} active={currentScreen.name === 'home'} />
-              </div>
-              <span className="text-[10px] font-semibold"
-                    style={{ color: currentScreen.name === 'home' ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
-                Home
-              </span>
-            </button>
-
-            {/* Calendar */}
-            <NavButton
-              active={currentScreen.name === 'calendar'}
-              icon={<CalendarIcon size={20} />}
-              label="Calendar"
-              onClick={() => navigate({ name: 'calendar' })}
-            />
-
-            {/* Challenge */}
-            <NavButton
-              active={currentScreen.name === 'challenge'}
-              icon={<Trophy size={20} />}
-              label="Challenge"
-              onClick={() => navigate({ name: 'challenge' })}
-            />
-
-          </nav>
-        </motion.div>
+        <SortableNavConsole
+          currentScreen={currentScreen.name}
+          navigate={navigate}
+          navVisible={navVisible}
+        />
       )}
     </div>
+    </HomeEditModeProvider>
   );
 }
