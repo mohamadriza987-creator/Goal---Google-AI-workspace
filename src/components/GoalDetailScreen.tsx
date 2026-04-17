@@ -1478,7 +1478,14 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setCurrentScreen }: GoalDetailScreenProps) {
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+  const [activeTab,        setActiveTab]        = useState<Tab>(initialTab);
+  const [isEditingGoal,    setIsEditingGoal]    = useState(false);
+  const [editTitle,        setEditTitle]        = useState('');
+  const [editDescription,  setEditDescription]  = useState('');
+  const [isSavingGoal,     setIsSavingGoal]     = useState(false);
+  const [showDeleteConfirm,setShowDeleteConfirm]= useState(false);
+  const [isDeleting,       setIsDeleting]       = useState(false);
+
   const goal = goals.find(g => g.id === goalId);
 
   if (!goal) {
@@ -1492,8 +1499,96 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
 
   const pct = goal.progressPercent ?? 0;
 
+  const handleStartEdit = () => {
+    setEditTitle(goal.title ?? '');
+    setEditDescription(goal.description ?? '');
+    setIsEditingGoal(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingGoal(false);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editTitle.trim()) return;
+    setIsSavingGoal(true);
+    try {
+      await updateDoc(doc(db, 'goals', goal.id), {
+        title:       editTitle.trim(),
+        description: editDescription.trim(),
+      });
+      setIsEditingGoal(false);
+    } catch (e) {
+      console.error('Failed to save goal edits', e);
+    } finally {
+      setIsSavingGoal(false);
+    }
+  };
+
+  const handleDeleteGoal = async () => {
+    setIsDeleting(true);
+    try {
+      await deleteDoc(doc(db, 'goals', goal.id));
+      setCurrentScreen({ name: 'home' });
+    } catch (e) {
+      console.error('Failed to delete goal', e);
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--c-bg)' }}>
+
+      {/* Delete confirmation overlay */}
+      <AnimatePresence>
+        {showDeleteConfirm && (
+          <>
+            <motion.div key="del-ov"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50"
+              style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)' }}
+              onClick={() => !isDeleting && setShowDeleteConfirm(false)}
+            />
+            <motion.div key="del-sh"
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 340, damping: 36 }}
+              className="fixed bottom-0 left-0 right-0 z-50 px-5 pb-10 pt-6"
+              style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
+            >
+              <div className="w-10 h-1 rounded-full mx-auto mb-6" style={{ background: 'var(--c-border-light)' }} />
+              <div className="flex flex-col items-center text-center gap-3 mb-8">
+                <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(220,53,69,.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Trash2 size={22} color="#e05260" />
+                </div>
+                <h3 style={{ fontSize: 18, fontWeight: 600 }}>Delete goal?</h3>
+                <p style={{ color: 'var(--c-text-2)', fontSize: 14, maxWidth: 280 }}>
+                  This will permanently delete <strong>"{goal.title}"</strong> and all its tasks. This cannot be undone.
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  disabled={isDeleting}
+                  className="flex-1 py-3 rounded-xl font-medium"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)', fontSize: 15 }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteGoal}
+                  disabled={isDeleting}
+                  className="flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2"
+                  style={{ background: 'rgba(220,53,69,.12)', border: '1px solid rgba(220,53,69,.3)', color: '#e05260', fontSize: 15 }}
+                >
+                  {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                  {isDeleting ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Top bar */}
       <div className="flex items-center justify-between px-5 pt-14 pb-3">
@@ -1503,19 +1598,91 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
           <ArrowLeft size={20} />
         </button>
         <div className="flex items-center gap-4" style={{ color: 'var(--c-text-3)' }}>
-          <button className="transition-opacity hover:opacity-70"><Edit2 size={17} /></button>
-          <button className="transition-opacity hover:opacity-70"><Lock  size={17} /></button>
+          <button
+            onClick={isEditingGoal ? handleCancelEdit : handleStartEdit}
+            className="transition-opacity hover:opacity-70"
+            style={{ color: isEditingGoal ? 'var(--c-gold)' : 'var(--c-text-3)' }}
+          >
+            <Edit2 size={17} />
+          </button>
+          <button className="transition-opacity hover:opacity-70"><Lock size={17} /></button>
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="transition-opacity hover:opacity-70"
+            style={{ color: '#e05260' }}
+          >
+            <Trash2 size={17} />
+          </button>
         </div>
       </div>
 
       {/* Goal header */}
       <div className="px-5 pb-5 text-center">
-        <h1 style={{ fontSize: 21, fontWeight: 600, letterSpacing: -0.3, lineHeight: 1.25 }} className="mb-1.5">
-          {goal.title}
-        </h1>
-        <p className="text-meta mb-6 mx-auto max-w-xs" style={{ color: 'var(--c-text-2)' }}>
-          {goal.description}
-        </p>
+        {isEditingGoal ? (
+          <div className="flex flex-col gap-3 mb-6">
+            <input
+              value={editTitle}
+              onChange={e => setEditTitle(e.target.value)}
+              placeholder="Goal title"
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: 12,
+                border: '1px solid var(--c-gold)',
+                background: 'var(--c-surface)',
+                color: 'var(--c-text)',
+                fontSize: 18,
+                fontWeight: 600,
+                textAlign: 'center',
+                outline: 'none',
+              }}
+            />
+            <textarea
+              value={editDescription}
+              onChange={e => setEditDescription(e.target.value)}
+              placeholder="Description (optional)"
+              rows={3}
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: 12,
+                border: '1px solid var(--c-border)',
+                background: 'var(--c-surface)',
+                color: 'var(--c-text)',
+                fontSize: 14,
+                resize: 'none',
+                outline: 'none',
+              }}
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={handleCancelEdit}
+                disabled={isSavingGoal}
+                style={{ flex: 1, padding: '10px', borderRadius: 12, background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)', fontSize: 14, fontWeight: 500 }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={isSavingGoal || !editTitle.trim()}
+                className="flex items-center justify-center gap-2"
+                style={{ flex: 1, padding: '10px', borderRadius: 12, background: 'var(--c-gold)', border: 'none', color: '#000', fontSize: 14, fontWeight: 600, opacity: (!editTitle.trim() || isSavingGoal) ? 0.5 : 1 }}
+              >
+                {isSavingGoal ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+                {isSavingGoal ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <h1 style={{ fontSize: 21, fontWeight: 600, letterSpacing: -0.3, lineHeight: 1.25 }} className="mb-1.5">
+              {goal.title}
+            </h1>
+            <p className="text-meta mb-6 mx-auto max-w-xs" style={{ color: 'var(--c-text-2)' }}>
+              {goal.description}
+            </p>
+          </>
+        )}
         <div className="flex flex-col items-center">
           <ProgressRing pct={pct} />
           <p className="text-meta mt-2" style={{ color: 'var(--c-text-3)' }}>
