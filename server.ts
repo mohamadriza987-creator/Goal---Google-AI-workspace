@@ -12,6 +12,7 @@ import {
   generateEmbedding,
   generateGroupName,
   generateMicroSteps,
+  setGeminiModelOrder,
 } from "./server/gemini.ts";
 import { z } from "zod";
 import fs from "fs";
@@ -1240,6 +1241,17 @@ async function startServer() {
     }),
   );
 
+  // Load persisted Gemini model order on startup
+  db.collection("admin_settings").doc("gemini").get().then((snap) => {
+    if (snap.exists) {
+      const order: string[] = snap.data()?.modelOrder ?? [];
+      if (order.length > 0) {
+        setGeminiModelOrder(order);
+        console.log("[startup] Gemini model order loaded:", order);
+      }
+    }
+  }).catch((e) => console.warn("[startup] Could not load Gemini model order:", e));
+
   app.get("/api/health", async (_req, res) => {
     try {
       await db.collection("test").doc("health").get();
@@ -2233,6 +2245,34 @@ async function startServer() {
       });
 
       res.json({ rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Admin: Gemini model order ─────────────────────────────────────────────
+  app.get("/api/admin/gemini-model-order", authMiddleware, async (req, res) => {
+    if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const snap = await db.collection("admin_settings").doc("gemini").get();
+      const modelOrder: string[] = snap.exists ? (snap.data()?.modelOrder ?? []) : [];
+      res.json({ modelOrder });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/admin/gemini-model-order", authMiddleware, async (req, res) => {
+    if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const { modelOrder } = req.body;
+      if (!Array.isArray(modelOrder) || modelOrder.length > 5) {
+        return res.status(400).json({ error: "modelOrder must be an array of up to 5 strings" });
+      }
+      const cleaned: string[] = modelOrder.map((m: any) => (typeof m === "string" ? m.trim() : ""));
+      await db.collection("admin_settings").doc("gemini").set({ modelOrder: cleaned, updatedAt: new Date().toISOString() }, { merge: true });
+      setGeminiModelOrder(cleaned);
+      res.json({ ok: true, modelOrder: cleaned });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

@@ -156,10 +156,20 @@ function cleanJson(text: string): string {
 }
 
 // ── Unified goal generation ───────────────────────────────────────────────────
-// Accepts either typed text or raw audio. Primary: Flash-Lite. Fallback: Flash.
+// Accepts either typed text or raw audio.
+// Model order is controlled by admin via setGeminiModelOrder(); falls back to
+// the hardcoded defaults when no order has been configured.
 
-const GOAL_PRIMARY  = "gemini-2.5-flash-lite";
-const GOAL_FALLBACK = "gemini-2.5-flash";
+const DEFAULT_GOAL_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
+let _goalModelOrder: string[] = [];
+
+export function setGeminiModelOrder(order: string[]): void {
+  _goalModelOrder = order.filter((m) => typeof m === "string" && m.trim() !== "");
+}
+
+function activeGoalModels(): string[] {
+  return _goalModelOrder.length > 0 ? _goalModelOrder : DEFAULT_GOAL_MODELS;
+}
 
 export const GOAL_CATEGORIES = [
   "Career & Jobs",
@@ -324,27 +334,26 @@ export async function generateGoal(
   };
 
   let parsed: StructuredGoal | null = null;
+  let lastErrMsg = "";
 
-  // Try primary (Flash-Lite)
-  try {
-    console.log(`[generateGoal] primary: ${GOAL_PRIMARY}`);
-    const res = await call(GOAL_PRIMARY);
-    parsed = parseAndValidate(res.text, "primary");
-  } catch (err: any) {
-    console.warn(`[generateGoal] primary threw: ${err.message}`);
+  for (const model of activeGoalModels()) {
+    try {
+      console.log(`[generateGoal] trying: ${model}`);
+      const res = await call(model);
+      parsed = parseAndValidate(res.text, model);
+      if (parsed) break;
+    } catch (err: any) {
+      lastErrMsg = err.message ?? String(err);
+      console.warn(`[generateGoal] model ${model} failed: ${lastErrMsg}`);
+    }
   }
 
-  // Fallback (Flash) if primary failed, returned invalid JSON, or failed validation
   if (!parsed) {
-    console.log(`[generateGoal] fallback: ${GOAL_FALLBACK}`);
-    let res: any;
-    try {
-      res = await call(GOAL_FALLBACK);
-    } catch (err: any) {
-      throw new Error(`AI unavailable: ${err.message}`);
-    }
-    parsed = parseAndValidate(res?.text, "fallback");
-    if (!parsed) throw new Error("AI returned an invalid response format. Please try again.");
+    throw new Error(
+      lastErrMsg
+        ? `AI unavailable: ${lastErrMsg}`
+        : "AI returned an invalid response format. Please try again.",
+    );
   }
 
   // For typed input always preserve the original text as transcript

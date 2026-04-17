@@ -38,8 +38,47 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
   const [indexStatusLoading, setIndexStatusLoading] = React.useState(false);
   const [forceRebuildStatus, setForceRebuildStatus] = React.useState<'idle'|'running'|'done'|'error'>('idle');
   const [forceRebuildMsg, setForceRebuildMsg] = React.useState('');
+  const [modelOrder, setModelOrder] = React.useState<string[]>(['', '', '', '', '']);
+  const [modelOrderSaving, setModelOrderSaving] = React.useState(false);
+  const [modelOrderMsg, setModelOrderMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
+
+  React.useEffect(() => {
+    if (!isAdminUser || !user) return;
+    user.getIdToken().then((tok) =>
+      fetch('/api/admin/gemini-model-order', { headers: { Authorization: `Bearer ${tok}` } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.modelOrder) {
+            const padded = [...data.modelOrder, '', '', '', '', ''].slice(0, 5);
+            setModelOrder(padded);
+          }
+        })
+        .catch(() => {})
+    );
+  }, [isAdminUser, user]);
+
+  const saveModelOrder = async () => {
+    if (!user) return;
+    setModelOrderSaving(true);
+    setModelOrderMsg(null);
+    try {
+      const tok = await user.getIdToken();
+      const r = await fetch('/api/admin/gemini-model-order', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelOrder }),
+      });
+      const data = await r.json();
+      if (r.ok) setModelOrderMsg({ ok: true, text: 'Saved' });
+      else setModelOrderMsg({ ok: false, text: data.error ?? 'Failed' });
+    } catch (e: any) {
+      setModelOrderMsg({ ok: false, text: e.message ?? 'Error' });
+    } finally {
+      setModelOrderSaving(false);
+    }
+  };
 
   const loadIndexStatus = React.useCallback(async () => {
     if (!user || !isAdminUser) return;
@@ -427,6 +466,50 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
               </p>
             </div>
           </button>
+        )}
+
+        {/* Gemini Model Order — owner only */}
+        {isAdminUser && (
+          <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
+            <p className="font-semibold text-sm">Gemini Model Order</p>
+            <p className="text-xs text-zinc-500">Controls the fallback order for goal generation. Blank slots are skipped.</p>
+            <div className="grid grid-cols-5 gap-2">
+              {modelOrder.map((val, i) => (
+                <select
+                  key={i}
+                  value={val}
+                  onChange={(e) => {
+                    const next = [...modelOrder];
+                    next[i] = e.target.value;
+                    setModelOrder(next);
+                  }}
+                  className="bg-zinc-800 text-white text-xs rounded-xl px-2 py-2 border border-zinc-700 outline-none w-full"
+                >
+                  <option value="">— none —</option>
+                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                  <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                  <option value="gemini-3.1-pro">gemini-3.1-pro</option>
+                  <option value="gemini-3.1-lite">gemini-3.1-lite</option>
+                  <option value="gemini-3.1">gemini-3.1</option>
+                  <option value="gemini-live">gemini-live</option>
+                </select>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={saveModelOrder}
+                disabled={modelOrderSaving}
+                className="px-4 py-2 rounded-xl bg-white text-black text-sm font-semibold disabled:opacity-50 hover:bg-zinc-200 transition-colors"
+              >
+                {modelOrderSaving ? 'Saving…' : 'Save'}
+              </button>
+              {modelOrderMsg && (
+                <span className={`text-xs ${modelOrderMsg.ok ? 'text-green-400' : 'text-red-400'}`}>
+                  {modelOrderMsg.text}
+                </span>
+              )}
+            </div>
+          </div>
         )}
 
         <button
