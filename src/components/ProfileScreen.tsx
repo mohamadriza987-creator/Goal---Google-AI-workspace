@@ -41,6 +41,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
   const [modelOrder, setModelOrder] = React.useState<string[]>(['', '', '', '', '']);
   const [modelOrderSaving, setModelOrderSaving] = React.useState(false);
   const [modelOrderMsg, setModelOrderMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
+  const [modelStats, setModelStats] = React.useState<Record<string, number>>({});
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
 
@@ -57,6 +58,21 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
         })
         .catch(() => {})
     );
+  }, [isAdminUser, user]);
+
+  React.useEffect(() => {
+    if (!isAdminUser || !user) return;
+    const fetchStats = () => {
+      user.getIdToken().then((tok) =>
+        fetch('/api/admin/gemini-model-stats', { headers: { Authorization: `Bearer ${tok}` } })
+          .then((r) => r.ok ? r.json() : null)
+          .then((data) => { if (data?.stats) setModelStats(data.stats); })
+          .catch(() => {})
+      );
+    };
+    fetchStats();
+    const id = setInterval(fetchStats, 15 * 60 * 1000);
+    return () => clearInterval(id);
   }, [isAdminUser, user]);
 
   const saveModelOrder = async () => {
@@ -508,6 +524,15 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
                   {modelOrderMsg.text}
                 </span>
               )}
+            </div>
+            <div className="border-t border-zinc-800 pt-3 space-y-1">
+              <p className="text-xs text-zinc-500 mb-2">Calls — last 15 min</p>
+              {['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.1-pro', 'gemini-3.1-lite', 'gemini-3.1', 'gemini-live'].map((m) => (
+                <div key={m} className="flex items-center justify-between text-xs">
+                  <span className="text-zinc-400 font-mono">{m}</span>
+                  <span className="text-zinc-300 font-semibold tabular-nums">{modelStats[m] ?? 0}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}

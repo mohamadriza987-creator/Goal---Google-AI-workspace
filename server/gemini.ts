@@ -34,6 +34,7 @@ export interface StructuredGoal {
   timeHorizon: string;
   privacy: 'private' | 'public';
   normalizedMatchingText: string;
+  languageRedirect?: boolean;
 }
 
 export interface UserContext {
@@ -155,6 +156,30 @@ function cleanJson(text: string): string {
   return cleaned.trim();
 }
 
+// ── In-memory model call stats ────────────────────────────────────────────────
+const _callLog: Array<{ model: string; ts: number }> = [];
+
+function recordModelCall(model: string): void {
+  const now = Date.now();
+  _callLog.push({ model, ts: now });
+  // Prune entries older than 1 hour to cap memory
+  const cutoff = now - 3_600_000;
+  let i = 0;
+  while (i < _callLog.length && _callLog[i].ts < cutoff) i++;
+  if (i > 0) _callLog.splice(0, i);
+}
+
+export function getModelCallStats(windowMs: number): Record<string, number> {
+  const cutoff = Date.now() - windowMs;
+  const counts: Record<string, number> = {};
+  for (const entry of _callLog) {
+    if (entry.ts >= cutoff) {
+      counts[entry.model] = (counts[entry.model] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
 // ── Unified goal generation ───────────────────────────────────────────────────
 // Accepts either typed text or raw audio.
 // Model order is controlled by admin via setGeminiModelOrder(); falls back to
@@ -227,14 +252,34 @@ const GOAL_SCHEMA = {
   required: ["transcript", "title", "description", "categories", "languages", "tasks", "tags", "timeHorizon", "privacy", "normalizedMatchingText"],
 };
 
+// Schema variant used when a Gemini 2.5 model checks for non-English input.
+// Identical to GOAL_SCHEMA but adds a required `languageRedirect` boolean field.
+const GOAL_SCHEMA_LANG_DETECT = {
+  type: Type.OBJECT,
+  properties: {
+    transcript:             { type: Type.STRING },
+    title:                  { type: Type.STRING },
+    description:            { type: Type.STRING },
+    categories:             { type: Type.ARRAY, items: { type: Type.STRING, enum: GOAL_CATEGORIES as unknown as string[] }, minItems: 1 },
+    languages:              { type: Type.ARRAY, items: { type: Type.STRING }, minItems: 1 },
+    tasks:                  { type: Type.ARRAY, items: GOAL_TASK_SCHEMA, minItems: 1 },
+    tags:                   { type: Type.ARRAY, items: { type: Type.STRING } },
+    timeHorizon:            { type: Type.STRING },
+    privacy:                { type: Type.STRING, enum: ['private', 'public'] },
+    normalizedMatchingText: { type: Type.STRING },
+    languageRedirect:       { type: Type.BOOLEAN },
+  },
+  required: ["transcript", "title", "description", "categories", "languages", "tasks", "tags", "timeHorizon", "privacy", "normalizedMatchingText", "languageRedirect"],
+};
+
 const CATEGORIES_PROMPT = GOAL_CATEGORIES.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
 
-function buildGoalSystemInstruction(userContext?: UserContext): string {
+function buildGoalSystemInstruction(userContext?: UserContext, detectLanguage = false): string {
   const parts: string[] = [];
   if (userContext?.age)         parts.push(`age: ${userContext.age}`);
   if (userContext?.nationality)  parts.push(`nationality: ${userContext.nationality}`);
   const ctx = parts.length ? ` User: ${parts.join(", ")}.` : "";
-  return `Goal generation.${ctx} Return ONE valid JSON object. No markdown, no code fences, no text outside JSON.
+  const base = `Goal generation.${ctx} Return ONE valid JSON object. No markdown, no code fences, no text outside JSON.
 
 Fields:
 - transcript: verbatim input or audio transcription
@@ -248,6 +293,8 @@ ${CATEGORIES_PROMPT}
 - timeHorizon: realistic estimate
 - privacy: "public" unless user says private
 - normalizedMatchingText: "Goal: [intent], [categories], [sub-focus], [time horizon]"`;
+  if (!detectLanguage) return base;
+  return base + `\n- languageRedirect: set to true if the user's input text is in any language other than English; set to false if the input is in English.`;
 }
 
 /** Validate the parsed Gemini output against all required rules.
@@ -299,16 +346,16 @@ export async function generateGoal(
         ]
       : [{ text: `Structure this goal: "${input.text}"` }];
 
-  const call = (model: string) =>
+  const call = (model: string, schema: object, sysInstruction: string) =>
     withRetry(
       () =>
         ai.models.generateContent({
           model,
           contents: { parts: contentParts },
           config: {
-            systemInstruction: buildGoalSystemInstruction(userContext),
+            systemInstruction: sysInstruction,
             responseMimeType: "application/json",
-            responseSchema: GOAL_SCHEMA,
+            responseSchema: schema,
           },
         }),
       2,
@@ -335,13 +382,38 @@ export async function generateGoal(
 
   let parsed: StructuredGoal | null = null;
   let lastErrMsg = "";
+  let jumpTo31 = false; // set true when a 2.5 model signals non-English input
 
-  for (const model of activeGoalModels()) {
+  const models = activeGoalModels();
+  const has31InOrder = models.some((m) => m.includes("3.1"));
+
+  for (const model of models) {
+    // After a language-redirect signal, skip non-3.1 models
+    if (jumpTo31 && !model.includes("3.1")) {
+      console.log(`[generateGoal] lang-redirect: skipping ${model}`);
+      continue;
+    }
+
+    const is25 = model.includes("2.5");
+    const useLangDetect = is25 && !jumpTo31 && has31InOrder;
+    const schema = useLangDetect ? GOAL_SCHEMA_LANG_DETECT : GOAL_SCHEMA;
+    const sysInstruction = buildGoalSystemInstruction(userContext, useLangDetect);
+
     try {
-      console.log(`[generateGoal] trying: ${model}`);
-      const res = await call(model);
-      parsed = parseAndValidate(res.text, model);
-      if (parsed) break;
+      recordModelCall(model);
+      console.log(`[generateGoal] trying: ${model}${useLangDetect ? " (lang-detect)" : ""}`);
+      const res = await call(model, schema, sysInstruction);
+      const candidate = parseAndValidate(res.text, model);
+      if (candidate) {
+        if (useLangDetect && candidate.languageRedirect === true) {
+          console.log(`[generateGoal] non-English detected by ${model} — redirecting to 3.1`);
+          jumpTo31 = true;
+          continue;
+        }
+        parsed = candidate;
+        delete parsed.languageRedirect;
+        break;
+      }
     } catch (err: any) {
       lastErrMsg = err.message ?? String(err);
       console.warn(`[generateGoal] model ${model} failed: ${lastErrMsg}`);

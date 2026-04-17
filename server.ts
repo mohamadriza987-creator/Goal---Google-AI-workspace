@@ -13,6 +13,7 @@ import {
   generateGroupName,
   generateMicroSteps,
   setGeminiModelOrder,
+  getModelCallStats,
 } from "./server/gemini.ts";
 import { z } from "zod";
 import fs from "fs";
@@ -2248,6 +2249,13 @@ async function startServer() {
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Admin: Gemini model call stats ───────────────────────────────────────
+  app.get("/api/admin/gemini-model-stats", authMiddleware, async (req, res) => {
+    if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+    const windowMs = 15 * 60 * 1000;
+    res.json({ stats: getModelCallStats(windowMs), windowMs });
   });
 
   // ── Admin: Gemini model order ─────────────────────────────────────────────
