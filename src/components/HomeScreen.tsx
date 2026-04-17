@@ -389,7 +389,7 @@ export function HomeScreen({
         {currentView === 'home' && (
           <motion.div key="home"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            style={{ paddingBottom: 120 }}
+            style={{ paddingBottom: 200 }}
           >
             {/* Header — never editable */}
             <div className="flex items-start justify-between px-5 pt-14 pb-2">
@@ -426,17 +426,6 @@ export function HomeScreen({
               <DraggableInputWidget>
                 <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
                      style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                  {/* Mic button */}
-                  <motion.button
-                    onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
-                    whileTap={{ scale: 0.92 }}
-                    disabled={loading}
-                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
-                    style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
-                  >
-                    <Mic size={16} style={{ color: '#000' }} />
-                  </motion.button>
-
                   {!isTyping ? (
                     <button
                       onClick={() => setIsTyping(true)}
@@ -477,6 +466,17 @@ export function HomeScreen({
                       </button>
                     </>
                   )}
+
+                  {/* Mic button — right side */}
+                  <motion.button
+                    onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
+                    whileTap={{ scale: 0.92 }}
+                    disabled={loading}
+                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
+                    style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
+                  >
+                    <Mic size={16} style={{ color: '#000' }} />
+                  </motion.button>
                 </div>
 
                 {(processingError || recorderError) && (
@@ -522,7 +522,7 @@ export function HomeScreen({
               {!goalsLoading && goals.length === 0 && (
                 <div className="px-4 mt-10 text-center">
                   <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
-                    Record your first goal above to get started.
+                    Record your first goal using the bar below.
                   </p>
                 </div>
               )}

@@ -56,9 +56,23 @@ export function DraggableInputWidget({ children }: Props) {
     );
   }
 
-  /* Normal mode: natural flow, long-press activates edit mode */
+  /* Normal mode: fixed bar above the nav */
   return (
-    <div className="px-4 mt-4" {...longPress}>
+    <div
+      style={{
+        position: 'fixed',
+        bottom: 68,
+        left: 0,
+        right: 0,
+        zIndex: 45,
+        padding: '10px 16px',
+        background: 'rgba(10,10,10,0.92)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderTop: '1px solid var(--c-border)',
+      }}
+      {...longPress}
+    >
       {children}
     </div>
   );
