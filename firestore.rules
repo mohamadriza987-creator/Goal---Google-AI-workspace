@@ -57,6 +57,11 @@ service cloud.firestore {
                          'preferredLanguage', 'hiddenUsers', 'blockedUsers',
                          'trustSignals', 'createdAt', 'updatedAt'
                        ]);
+
+      match /calendarNotes/{noteId} {
+        allow read:  if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId);
+      }
     }
 
     // ── Goals ────────────────────────────────────────────────────────
