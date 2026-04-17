@@ -34,7 +34,6 @@ export interface StructuredGoal {
   timeHorizon: string;
   privacy: 'private' | 'public';
   normalizedMatchingText: string;
-  languageRedirect?: boolean;
 }
 
 export interface UserContext {
@@ -104,12 +103,12 @@ export async function transcribeAudio(audioBase64: string, mimeType: string): Pr
             },
           },
           {
-            text: "Transcribe the provided audio accurately. Return ONLY the transcription text in the original language. Do not add any commentary or formatting."
+            text: "Transcribe the provided audio exactly as spoken. Output ONLY the transcription in the original spoken language — do NOT translate to English. No commentary, no formatting."
           }
         ]
       },
       config: {
-        systemInstruction: "You are a fast and accurate transcription engine. Your only job is to convert audio to text in the original language spoken.",
+        systemInstruction: "You are a transcription engine. Convert audio to text in the exact language spoken. Never translate. Return only the spoken words.",
       }
     }), 2, 1000); // Reduce retries and delay for transcription to avoid proxy timeouts
   };
@@ -252,49 +251,38 @@ const GOAL_SCHEMA = {
   required: ["transcript", "title", "description", "categories", "languages", "tasks", "tags", "timeHorizon", "privacy", "normalizedMatchingText"],
 };
 
-// Schema variant used when a Gemini 2.5 model checks for non-English input.
-// Identical to GOAL_SCHEMA but adds a required `languageRedirect` boolean field.
-const GOAL_SCHEMA_LANG_DETECT = {
-  type: Type.OBJECT,
-  properties: {
-    transcript:             { type: Type.STRING },
-    title:                  { type: Type.STRING },
-    description:            { type: Type.STRING },
-    categories:             { type: Type.ARRAY, items: { type: Type.STRING, enum: GOAL_CATEGORIES as unknown as string[] }, minItems: 1 },
-    languages:              { type: Type.ARRAY, items: { type: Type.STRING }, minItems: 1 },
-    tasks:                  { type: Type.ARRAY, items: GOAL_TASK_SCHEMA, minItems: 1 },
-    tags:                   { type: Type.ARRAY, items: { type: Type.STRING } },
-    timeHorizon:            { type: Type.STRING },
-    privacy:                { type: Type.STRING, enum: ['private', 'public'] },
-    normalizedMatchingText: { type: Type.STRING },
-    languageRedirect:       { type: Type.BOOLEAN },
-  },
-  required: ["transcript", "title", "description", "categories", "languages", "tasks", "tags", "timeHorizon", "privacy", "normalizedMatchingText", "languageRedirect"],
-};
-
 const CATEGORIES_PROMPT = GOAL_CATEGORIES.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
 
-function buildGoalSystemInstruction(userContext?: UserContext, detectLanguage = false): string {
+/**
+ * Returns true if the text contains characters from non-Latin scripts
+ * (Malayalam, Arabic, Devanagari, CJK, Thai, Korean, Cyrillic, etc.).
+ * Used to pre-detect non-English input without an extra API call.
+ */
+function containsNonLatinScript(text: string): boolean {
+  return /[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u0D00-\u0D7F\u0E00-\u0E7F\u0F00-\u0FFF\u1000-\u109F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(text);
+}
+
+function buildGoalSystemInstruction(userContext?: UserContext): string {
   const parts: string[] = [];
   if (userContext?.age)         parts.push(`age: ${userContext.age}`);
   if (userContext?.nationality)  parts.push(`nationality: ${userContext.nationality}`);
   const ctx = parts.length ? ` User: ${parts.join(", ")}.` : "";
-  const base = `Goal generation.${ctx} Return ONE valid JSON object. No markdown, no code fences, no text outside JSON.
+  return `Goal generation.${ctx} Return ONE valid JSON object. No markdown, no code fences, no text outside JSON.
+
+LANGUAGE RULE: Detect the language of the user's input. Write transcript, title, description, tasks, microSteps, and tags in that SAME language. Do NOT translate to English. If the input is in Malayalam, all fields must be in Malayalam. If in Arabic, all fields in Arabic. Only normalizedMatchingText may use English keywords alongside the original language.
 
 Fields:
-- transcript: verbatim input or audio transcription
-- title: clear specific goal title ≤60 chars
-- description: short practical outcome ≤200 chars
-- categories: all applicable from this fixed list (exact strings, ≥1, include every relevant one):
+- transcript: verbatim input text, or exact audio transcription in the original spoken language
+- title: clear specific goal title ≤60 chars (in input language)
+- description: short practical outcome ≤200 chars (in input language)
+- categories: all applicable from this fixed list (exact English strings, ≥1):
 ${CATEGORIES_PROMPT}
 - languages: all relevant languages (≥1; language-learning goals include native + target)
-- tasks: 5–8 ordered actionable steps, most impactful first, no vague filler. Each task: { text: actionable step, microSteps: 3–5 short concrete sub-actions 5–8 words each }
-- tags: 3–5 lowercase keywords
-- timeHorizon: realistic estimate
+- tasks: 5–8 ordered actionable steps in input language. Each task: { text, microSteps: 3–5 sub-actions }
+- tags: 3–5 lowercase keywords (in input language)
+- timeHorizon: realistic estimate (in input language)
 - privacy: "public" unless user says private
 - normalizedMatchingText: "Goal: [intent], [categories], [sub-focus], [time horizon]"`;
-  if (!detectLanguage) return base;
-  return base + `\n- languageRedirect: set to true if the user's input text is in any language other than English; set to false if the input is in English.`;
 }
 
 /** Validate the parsed Gemini output against all required rules.
@@ -338,15 +326,17 @@ export async function generateGoal(
 
   const ai = getAI();
 
-  const contentParts: object[] =
-    "audioBase64" in input
-      ? [
-          { inlineData: { mimeType: input.mimeType, data: input.audioBase64 } },
-          { text: "Transcribe and structure this goal from the audio." },
-        ]
-      : [{ text: `Structure this goal: "${input.text}"` }];
+  const isAudio = "audioBase64" in input;
+  const contentParts: object[] = isAudio
+    ? [
+        { inlineData: { mimeType: (input as any).mimeType, data: (input as any).audioBase64 } },
+        { text: "Transcribe the audio exactly in its original spoken language, then structure the goal. Keep all output in the original language." },
+      ]
+    : [{ text: `Structure this goal: "${(input as any).text}"` }];
 
-  const call = (model: string, schema: object, sysInstruction: string) =>
+  const sysInstruction = buildGoalSystemInstruction(userContext);
+
+  const call = (model: string) =>
     withRetry(
       () =>
         ai.models.generateContent({
@@ -355,23 +345,18 @@ export async function generateGoal(
           config: {
             systemInstruction: sysInstruction,
             responseMimeType: "application/json",
-            responseSchema: schema,
+            responseSchema: GOAL_SCHEMA,
           },
         }),
       2,
       800,
     );
 
-  /** Parse raw text → object and run validation. Returns the object if valid, null otherwise. */
   const parseAndValidate = (raw: string | null | undefined, label: string): StructuredGoal | null => {
     if (!raw) { console.warn(`[generateGoal] ${label} returned empty response`); return null; }
     let obj: any;
-    try {
-      obj = JSON.parse(cleanJson(raw));
-    } catch {
-      console.warn(`[generateGoal] ${label} returned invalid JSON`);
-      return null;
-    }
+    try { obj = JSON.parse(cleanJson(raw)); }
+    catch { console.warn(`[generateGoal] ${label} returned invalid JSON`); return null; }
     const errors = validateGoalOutput(obj);
     if (errors.length > 0) {
       console.warn(`[generateGoal] ${label} failed validation: ${errors.join("; ")}`);
@@ -380,52 +365,67 @@ export async function generateGoal(
     return obj as StructuredGoal;
   };
 
-  let parsed: StructuredGoal | null = null;
-  let lastErrMsg = "";
-  let jumpTo31 = false; // set true when a 2.5 model signals non-English input
-
   const models = activeGoalModels();
   const has31InOrder = models.some((m) => m.includes("3.1"));
 
+  // Pre-detect non-English for text input using Unicode script ranges
+  const rawText = isAudio ? "" : ((input as any).text as string);
+  let skipTo31 = has31InOrder && rawText.length > 0 && containsNonLatinScript(rawText);
+  let audioLangChecked = false;
+
+  let parsed: StructuredGoal | null = null;
+  let lastErrMsg = "";
+
+  // Primary pass: respects skipTo31 flag (skips 2.5 models when non-English detected)
   for (const model of models) {
-    // After a language-redirect signal, skip non-3.1 models
-    if (jumpTo31 && !model.includes("3.1")) {
-      console.log(`[generateGoal] lang-redirect: skipping ${model}`);
+    if (skipTo31 && !model.includes("3.1")) {
+      console.log(`[generateGoal] non-English: skipping ${model}`);
       continue;
     }
-
-    const is25 = model.includes("2.5");
-    const useLangDetect = is25 && !jumpTo31 && has31InOrder;
-    const schema = useLangDetect ? GOAL_SCHEMA_LANG_DETECT : GOAL_SCHEMA;
-    const sysInstruction = buildGoalSystemInstruction(userContext, useLangDetect);
-
     try {
       recordModelCall(model);
-      console.log(`[generateGoal] trying: ${model}${useLangDetect ? " (lang-detect)" : ""}`);
-      const res = await call(model, schema, sysInstruction);
+      console.log(`[generateGoal] trying: ${model}`);
+      const res = await call(model);
       const candidate = parseAndValidate(res.text, model);
-      if (candidate) {
-        if (useLangDetect && candidate.languageRedirect === true) {
-          console.log(`[generateGoal] non-English detected by ${model} — redirecting to 3.1`);
-          jumpTo31 = true;
+      if (!candidate) continue;
+
+      // For audio: check transcript language after first model runs; redirect to 3.1 if non-English
+      if (isAudio && !audioLangChecked && !skipTo31 && has31InOrder) {
+        audioLangChecked = true;
+        if (containsNonLatinScript(candidate.transcript)) {
+          console.log(`[generateGoal] non-English audio detected — redirecting to 3.1`);
+          skipTo31 = true;
           continue;
         }
-        parsed = candidate;
-        delete parsed.languageRedirect;
-        break;
       }
+
+      parsed = candidate;
+      break;
     } catch (err: any) {
       lastErrMsg = err.message ?? String(err);
       console.warn(`[generateGoal] model ${model} failed: ${lastErrMsg}`);
     }
   }
 
+  // Safety pass: if all 3.1 models failed after redirect, retry with available 2.5 models
+  if (!parsed && skipTo31) {
+    console.log(`[generateGoal] all 3.1 models failed — falling back to 2.5`);
+    for (const model of models) {
+      if (model.includes("3.1")) continue;
+      try {
+        recordModelCall(model);
+        const res = await call(model);
+        const candidate = parseAndValidate(res.text, model);
+        if (candidate) { parsed = candidate; break; }
+      } catch (err: any) {
+        lastErrMsg = err.message ?? String(err);
+        console.warn(`[generateGoal] safety fallback ${model} failed: ${lastErrMsg}`);
+      }
+    }
+  }
+
   if (!parsed) {
-    throw new Error(
-      lastErrMsg
-        ? `AI unavailable: ${lastErrMsg}`
-        : "AI returned an invalid response format. Please try again.",
-    );
+    throw new Error(lastErrMsg ? `AI unavailable: ${lastErrMsg}` : "AI returned an invalid response format. Please try again.");
   }
 
   // For typed input always preserve the original text as transcript
