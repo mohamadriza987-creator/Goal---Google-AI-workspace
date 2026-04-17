@@ -14,7 +14,7 @@ export interface HomeLayout {
 }
 
 export const DEFAULT_LAYOUT: HomeLayout = {
-  navOrder: ['home', 'calendar', 'challenge'],
+  navOrder: ['challenge', 'home', 'calendar'],
   inputWidget: { x: 16, y: 16 },
   goalCards: {},
 };
