@@ -428,7 +428,7 @@ export default function App() {
         {/* PROFILE */}
         {currentScreen.name === 'profile' && (
           <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <ProfileScreen user={user} dbUser={dbUser} />
+            <ProfileScreen user={user} dbUser={dbUser} onNavigateHome={() => navigate({ name: 'home' })} />
           </motion.div>
         )}
 

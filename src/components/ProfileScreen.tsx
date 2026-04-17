@@ -3,7 +3,7 @@ import { User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
-import { Shield, LogOut, Plus, RefreshCw, Search, Users } from 'lucide-react';
+import { Shield, LogOut, Plus, RefreshCw, Search, Users, ArrowLeft } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
 import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -11,11 +11,12 @@ import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, ord
 interface ProfileScreenProps {
   user: FirebaseUser | null;
   dbUser: User | null;
+  onNavigateHome: () => void;
 }
 
 import { useTranslation } from '../contexts/LanguageContext';
 
-export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
+export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenProps) {
   const { t, language, setLanguage } = useTranslation();
   const [isSyncing,      setIsSyncing]      = React.useState(false);
   const [syncProgress,   setSyncProgress]   = React.useState(0);
@@ -192,6 +193,14 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
       animate={{ opacity: 1 }}
       className="max-w-2xl mx-auto p-6 pt-12 pb-32"
     >
+      <button
+        onClick={onNavigateHome}
+        className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors mb-6"
+      >
+        <ArrowLeft size={20} />
+        <span className="text-sm font-medium">Home</span>
+      </button>
+
       <div className="flex flex-col items-center text-center mb-12">
         <div className="w-24 h-24 rounded-full bg-zinc-800 mb-4" />
         <h2 className="text-2xl font-bold break-words w-full">{user?.displayName}</h2>
