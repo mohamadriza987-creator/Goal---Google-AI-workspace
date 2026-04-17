@@ -41,7 +41,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
   const [modelOrder, setModelOrder] = React.useState<string[]>(['', '', '', '', '']);
   const [modelOrderSaving, setModelOrderSaving] = React.useState(false);
   const [modelOrderMsg, setModelOrderMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
-  const [modelStats, setModelStats] = React.useState<Record<string, number>>({});
+  const [modelStats, setModelStats] = React.useState<Record<string, { calls: number; quotaErrors: number }>>({});
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
 
@@ -488,27 +488,29 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
         {isAdminUser && (
           <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
             <p className="font-semibold text-sm">Gemini Model Order</p>
-            <p className="text-xs text-zinc-500">Controls the fallback order for goal generation. Blank slots are skipped.</p>
-            <div className="grid grid-cols-5 gap-2">
+            <p className="text-xs text-zinc-500">Fallback order for goal generation. Blank slots are skipped.</p>
+            <div className="space-y-2">
               {modelOrder.map((val, i) => (
-                <select
-                  key={i}
-                  value={val}
-                  onChange={(e) => {
-                    const next = [...modelOrder];
-                    next[i] = e.target.value;
-                    setModelOrder(next);
-                  }}
-                  className="bg-zinc-800 text-white text-xs rounded-xl px-2 py-2 border border-zinc-700 outline-none w-full"
-                >
-                  <option value="">— none —</option>
-                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                  <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
-                  <option value="gemini-3.1-pro">gemini-3.1-pro</option>
-                  <option value="gemini-3.1-lite">gemini-3.1-lite</option>
-                  <option value="gemini-3.1">gemini-3.1</option>
-                  <option value="gemini-live">gemini-live</option>
-                </select>
+                <div key={i} className="flex items-center gap-3">
+                  <span className="text-xs text-zinc-500 w-5 shrink-0">{i + 1}.</span>
+                  <select
+                    value={val}
+                    onChange={(e) => {
+                      const next = [...modelOrder];
+                      next[i] = e.target.value;
+                      setModelOrder(next);
+                    }}
+                    className="flex-1 bg-zinc-800 text-white text-sm rounded-xl px-3 py-2.5 border border-zinc-700 outline-none"
+                  >
+                    <option value="">— none —</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                    <option value="gemini-3.1-pro">gemini-3.1-pro</option>
+                    <option value="gemini-3.1-lite">gemini-3.1-lite</option>
+                    <option value="gemini-3.1">gemini-3.1</option>
+                    <option value="gemini-live">gemini-live</option>
+                  </select>
+                </div>
               ))}
             </div>
             <div className="flex items-center gap-3">
@@ -526,13 +528,25 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
               )}
             </div>
             <div className="border-t border-zinc-800 pt-3 space-y-1">
-              <p className="text-xs text-zinc-500 mb-2">Calls — last 15 min</p>
+              <div className="flex items-center justify-between text-xs text-zinc-500 mb-2">
+                <span>Model</span>
+                <span className="flex gap-4">
+                  <span>Calls</span>
+                  <span className="text-amber-500">Quota</span>
+                </span>
+              </div>
               {['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.1-pro', 'gemini-3.1-lite', 'gemini-3.1', 'gemini-live'].map((m) => (
                 <div key={m} className="flex items-center justify-between text-xs">
                   <span className="text-zinc-400 font-mono">{m}</span>
-                  <span className="text-zinc-300 font-semibold tabular-nums">{modelStats[m] ?? 0}</span>
+                  <span className="flex gap-4 tabular-nums">
+                    <span className="text-zinc-300 font-semibold w-6 text-right">{modelStats[m]?.calls ?? 0}</span>
+                    <span className={`font-semibold w-6 text-right ${(modelStats[m]?.quotaErrors ?? 0) > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>
+                      {modelStats[m]?.quotaErrors ?? 0}
+                    </span>
+                  </span>
                 </div>
               ))}
+              <p className="text-xs text-zinc-600 pt-1">Resets every 15 min</p>
             </div>
           </div>
         )}

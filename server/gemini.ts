@@ -155,28 +155,41 @@ function cleanJson(text: string): string {
   return cleaned.trim();
 }
 
-// ── In-memory model call stats ────────────────────────────────────────────────
+// ── In-memory model call + quota stats ────────────────────────────────────────
 const _callLog: Array<{ model: string; ts: number }> = [];
+const _quotaLog: Array<{ model: string; ts: number }> = [];
+
+function pruneLog(log: Array<{ model: string; ts: number }>, cutoff: number): void {
+  let i = 0;
+  while (i < log.length && log[i].ts < cutoff) i++;
+  if (i > 0) log.splice(0, i);
+}
 
 function recordModelCall(model: string): void {
   const now = Date.now();
   _callLog.push({ model, ts: now });
-  // Prune entries older than 1 hour to cap memory
-  const cutoff = now - 3_600_000;
-  let i = 0;
-  while (i < _callLog.length && _callLog[i].ts < cutoff) i++;
-  if (i > 0) _callLog.splice(0, i);
+  pruneLog(_callLog, now - 3_600_000);
 }
 
-export function getModelCallStats(windowMs: number): Record<string, number> {
+function recordQuotaError(model: string): void {
+  const now = Date.now();
+  _quotaLog.push({ model, ts: now });
+  pruneLog(_quotaLog, now - 3_600_000);
+}
+
+function isQuotaError(msg: string): boolean {
+  return msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota");
+}
+
+export interface ModelStat { calls: number; quotaErrors: number; }
+
+export function getModelCallStats(windowMs: number): Record<string, ModelStat> {
   const cutoff = Date.now() - windowMs;
-  const counts: Record<string, number> = {};
-  for (const entry of _callLog) {
-    if (entry.ts >= cutoff) {
-      counts[entry.model] = (counts[entry.model] ?? 0) + 1;
-    }
-  }
-  return counts;
+  const out: Record<string, ModelStat> = {};
+  const ensure = (m: string) => { if (!out[m]) out[m] = { calls: 0, quotaErrors: 0 }; };
+  for (const e of _callLog)  { if (e.ts >= cutoff) { ensure(e.model); out[e.model].calls++; } }
+  for (const e of _quotaLog) { if (e.ts >= cutoff) { ensure(e.model); out[e.model].quotaErrors++; } }
+  return out;
 }
 
 // ── Unified goal generation ───────────────────────────────────────────────────
@@ -404,6 +417,7 @@ export async function generateGoal(
     } catch (err: any) {
       lastErrMsg = err.message ?? String(err);
       console.warn(`[generateGoal] model ${model} failed: ${lastErrMsg}`);
+      if (isQuotaError(lastErrMsg)) recordQuotaError(model);
     }
   }
 
@@ -420,6 +434,7 @@ export async function generateGoal(
       } catch (err: any) {
         lastErrMsg = err.message ?? String(err);
         console.warn(`[generateGoal] safety fallback ${model} failed: ${lastErrMsg}`);
+        if (isQuotaError(lastErrMsg)) recordQuotaError(model);
       }
     }
   }
