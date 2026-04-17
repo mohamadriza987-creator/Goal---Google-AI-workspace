@@ -278,7 +278,9 @@ export function HomeScreen({
   const saveGoal = async () => {
     if (!user || !structuredGoal || isSaving) return;
     setIsSaving(true);
-    const tempId    = `temp-${Date.now()}`;
+    // B1: Date.now() collides when two goals are created in the same
+    // millisecond. crypto.randomUUID() is collision-free for dedup purposes.
+    const tempId    = `temp-${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
     const optimistic: Goal = {
       id: tempId, ownerId: user.uid,

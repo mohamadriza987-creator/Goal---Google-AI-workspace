@@ -205,6 +205,12 @@ function cosineSimilarity(vecA: number[], vecB: number[]) {
   return dotProduct / magnitude;
 }
 
+// Upper bounds for fallback full-collection scans. Indexed matching
+// (goals_unassigned_index, group_index) is the primary path; these caps
+// keep the fallback path from O(N) degradation as the corpus grows.
+const GROUP_SCAN_CAP = 500;
+const GOAL_SCAN_CAP = 1000;
+
 async function findOrCreateGroupForGoal(goalId: string) {
   try {
     console.log(`Attempting to find or create group for goal ${goalId}...`);
@@ -221,7 +227,11 @@ async function findOrCreateGroupForGoal(goalId: string) {
       return null;
     }
 
-    const groupsSnap = await db.collection("groups").get();
+    // Bounded scan: previously a full-collection read on every goal save.
+    // Indexed matching (runIndexedMatching) is the primary path; this scan
+    // is a fallback and a top-N cosine sort still picks the best match
+    // within the cap.
+    const groupsSnap = await db.collection("groups").limit(GROUP_SCAN_CAP).get();
     const allGroups = groupsSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GroupDoc,
     );
@@ -304,7 +314,8 @@ async function findOrCreateGroupForGoal(goalId: string) {
       };
     }
 
-    const goalsSnap = await db.collection("goals").get();
+    // Bounded scan: see GROUP_SCAN_CAP note above.
+    const goalsSnap = await db.collection("goals").limit(GOAL_SCAN_CAP).get();
     const allGoals = goalsSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
@@ -864,7 +875,9 @@ async function computeAndStoreSimilarGoals(
   try {
     console.log(`Computing similar goals for ${goalId}...`);
 
-    const goalsSnap = await db.collection("goals").get();
+    // Bounded scan — called on every goal save. Without a cap this scan
+    // degrades linearly with total goals across the entire app.
+    const goalsSnap = await db.collection("goals").limit(GOAL_SCAN_CAP).get();
     const allGoals = goalsSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
@@ -995,46 +1008,76 @@ async function hardResetGroups() {
   }
 }
 
-const rateLimitMap = new Map<string, { count: number; lastReset: number }>();
+// ── Rate limiting (Firestore-backed) ─────────────────────────────────────────
+// Previously stored in-memory Maps, which reset on every server restart and
+// made the limit meaningless against an attacker who could trigger a redeploy
+// (or just wait out sticky routing). Backed by Firestore docs now so state
+// survives process restarts and scales horizontally across instances.
+//
+// Throughput note: these are called from already-expensive endpoints
+// (Gemini / Firestore writes), so the extra ~10ms of a transactional read is
+// not the bottleneck.
 const RATE_LIMIT_WINDOW = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 10;
 
-function checkRateLimit(userId: string) {
+async function checkRateLimit(userId: string): Promise<boolean> {
+  const ref = db.collection("rate_limits").doc(`user_${userId}`);
   const now = Date.now();
-  const limit = rateLimitMap.get(userId);
-
-  if (!limit || now - limit.lastReset > RATE_LIMIT_WINDOW) {
-    rateLimitMap.set(userId, { count: 1, lastReset: now });
+  try {
+    return await db.runTransaction(async (tx: any) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() : null;
+      if (!data || now - (data.lastReset as number) > RATE_LIMIT_WINDOW) {
+        tx.set(ref, { count: 1, lastReset: now });
+        return true;
+      }
+      if ((data.count as number) >= MAX_REQUESTS_PER_WINDOW) return false;
+      tx.update(ref, { count: (data.count as number) + 1 });
+      return true;
+    });
+  } catch (err) {
+    // Fail-open on transient Firestore errors — rate limit is best-effort,
+    // refusing legit requests on a Firestore blip is worse than letting
+    // through a handful extra.
+    console.error("checkRateLimit failed; fail-open:", err);
     return true;
   }
-
-  if (limit.count >= MAX_REQUESTS_PER_WINDOW) {
-    return false;
-  }
-
-  limit.count++;
-  return true;
 }
 
 // ── Moderation-specific rate limiting ────────────────────────────────────────
 // Caps the number of moderation signals (hide/block/report) a single reporter
 // may file against a single target within an hour. Stops one user from
 // spamming hide/block actions to bury another user.
-const moderationTargetMap = new Map<string, { count: number; firstAt: number }>();
 const MODERATION_TARGET_WINDOW = 60 * 60 * 1000; // 1 hour
 const MODERATION_TARGET_MAX = 3;
 
-function checkModerationTargetLimit(reporterId: string, targetUserId: string): boolean {
-  const key = `${reporterId}|${targetUserId}`;
+async function checkModerationTargetLimit(
+  reporterId: string,
+  targetUserId: string,
+): Promise<boolean> {
+  // Abuse-prevention fails CLOSED: if we can't verify the counter, we refuse
+  // the signal. Unlike the generic rate limit, a false positive here just
+  // asks the user to try again — whereas a false negative enables the exact
+  // spam pattern this check exists to block.
+  const safeKey = `${reporterId}_${targetUserId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  const ref = db.collection("moderation_target_limits").doc(safeKey);
   const now = Date.now();
-  const entry = moderationTargetMap.get(key);
-  if (!entry || now - entry.firstAt > MODERATION_TARGET_WINDOW) {
-    moderationTargetMap.set(key, { count: 1, firstAt: now });
-    return true;
+  try {
+    return await db.runTransaction(async (tx: any) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() : null;
+      if (!data || now - (data.firstAt as number) > MODERATION_TARGET_WINDOW) {
+        tx.set(ref, { count: 1, firstAt: now, reporterId, targetUserId });
+        return true;
+      }
+      if ((data.count as number) >= MODERATION_TARGET_MAX) return false;
+      tx.update(ref, { count: (data.count as number) + 1 });
+      return true;
+    });
+  } catch (err) {
+    console.error("checkModerationTargetLimit failed; fail-closed:", err);
+    return false;
   }
-  if (entry.count >= MODERATION_TARGET_MAX) return false;
-  entry.count++;
-  return true;
 }
 
 // ── Audio MIME / content validation ──────────────────────────────────────────
@@ -1203,7 +1246,7 @@ async function startServer() {
   app.post("/api/transcribe", authMiddleware, async (req: any, res) => {
     try {
       console.log(`[API] /api/transcribe - Received request. Content-Length: ${req.headers['content-length']} bytes`);
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         console.warn(`[API] /api/transcribe - Rate limit exceeded for user ${req.userId}`);
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
@@ -1237,7 +1280,7 @@ async function startServer() {
 
   app.post("/api/generate-goal", authMiddleware, async (req: any, res) => {
     try {
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
@@ -1268,7 +1311,7 @@ async function startServer() {
 
   app.post("/api/normalize-goal", authMiddleware, async (req: any, res) => {
     try {
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
@@ -1305,7 +1348,7 @@ async function startServer() {
 
   app.post("/api/generate-embedding", authMiddleware, async (req: any, res) => {
     try {
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
@@ -1350,6 +1393,32 @@ async function startServer() {
     } catch (error: any) {
       console.error("Precompute similarity error:", error);
       res.status(500).json({ error: "Failed to precompute similarity" });
+    }
+  });
+
+  // One-time bootstrap so the configured ADMIN_EMAIL (env) can claim the
+  // 'admin' custom claim on their own UID. Firestore rules can't read env
+  // vars, so without this the email would have to be burned into the rules
+  // — which is what we're trying to avoid. After calling this once, the
+  // operator must sign out and back in for the fresh ID token to include
+  // the claim, after which rules-level admin access works on the claim alone.
+  app.post("/api/admin/bootstrap", authMiddleware, async (req: any, res) => {
+    try {
+      const u = req.user;
+      const configured = (process.env.ADMIN_EMAIL || ADMIN_EMAIL).toLowerCase();
+      if (!u?.email_verified || (u.email || "").toLowerCase() !== configured) {
+        return res.status(403).json({ error: "Forbidden: not the configured admin email" });
+      }
+      await admin.auth().setCustomUserClaims(u.uid, { admin: true, role: "admin" });
+      await db.collection("users").doc(u.uid).set({ role: "admin" }, { merge: true });
+      res.json({
+        success: true,
+        message:
+          "Admin claim set. Sign out and back in for the new ID token to take effect.",
+      });
+    } catch (error: any) {
+      console.error("Admin bootstrap error:", error);
+      res.status(500).json({ error: "Failed to set admin claim" });
     }
   });
 
@@ -1902,7 +1971,7 @@ async function startServer() {
   app.post("/api/moderation/signal", authMiddleware, async (req: any, res) => {
     try {
       // Per-user request rate limit (shared bucket).
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
@@ -1920,7 +1989,7 @@ async function startServer() {
 
       // Per-target cap stops one reporter spamming hide/block/report actions
       // against the same user to bury them via repeat signals.
-      if (!checkModerationTargetLimit(userId, targetUserId)) {
+      if (!(await checkModerationTargetLimit(userId, targetUserId))) {
         return res.status(429).json({
           error: "You've already reported this user multiple times recently. Please wait before signalling again.",
         });
