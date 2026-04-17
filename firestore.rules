@@ -12,10 +12,15 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Admin = custom claim only. Rules can't read env vars, so we refuse to
+    // bake an email into the security perimeter. The server still accepts a
+    // bootstrap email (via ADMIN_EMAIL env) to let an operator call
+    // /api/admin/bootstrap, which sets the 'admin' custom claim — after that
+    // the claim alone authorises admin direct-reads through these rules.
     function isAdmin() {
       return isAuthenticated() &&
-             request.auth.token.email_verified == true &&
-             request.auth.token.email == "mohamadriza987@gmail.com";
+             (request.auth.token.get('admin', false) == true ||
+              request.auth.token.get('role', '') == 'admin');
     }
 
     function isGoalOwner(goalId) {
@@ -104,10 +109,15 @@ service cloud.firestore {
     // All writes go through server endpoints (Admin SDK bypasses these rules).
 
     match /groups/{groupId} {
+      // Client direct reads are members-only. Previously the rule also
+      // admitted anyone authenticated if eligibleGoalIds was non-empty —
+      // which in practice meant any group with any eligible goal was
+      // world-readable. Eligibility-based previews now route through
+      // /api/groups/:groupId, which enforces "member OR owns an eligible
+      // goal" server-side without widening the rule.
       allow read: if isAdmin() ||
                     (isAuthenticated() &&
-                       (request.auth.uid in resource.data.get('memberIds', []) ||
-                        resource.data.get('eligibleGoalIds', []).size() > 0));
+                       request.auth.uid in resource.data.get('memberIds', []));
       allow write: if false;
     }
 
@@ -180,7 +190,21 @@ service cloud.firestore {
 
     match /moderation_events/{eventId} {
       allow read:   if isAdmin();
-      allow create: if isAuthenticated();
+      // Previously any authenticated user could write arbitrary fields here.
+      // Lock to a known shape; reporterId must match the caller so moderators
+      // can trust it as the real author.
+      allow create: if isAuthenticated() &&
+                       request.resource.data.keys().hasOnly([
+                         'reporterId', 'targetUserId', 'action',
+                         'context', 'createdAt', 'status'
+                       ]) &&
+                       request.resource.data.reporterId == request.auth.uid &&
+                       request.resource.data.targetUserId is string &&
+                       request.resource.data.targetUserId.size() > 0 &&
+                       request.resource.data.targetUserId != request.auth.uid &&
+                       request.resource.data.action in ['hide', 'block', 'report'];
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
   }
 }

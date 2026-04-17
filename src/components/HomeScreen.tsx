@@ -108,6 +108,21 @@ function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
         </div>
       )}
 
+      {/* U1/A1: surface partial / failed save state to the user instead of
+          leaving them with a silently-broken card. */}
+      {(goal.savingStatus === 'partial' || goal.savingStatus === 'error') && goal.saveErrorMessage && (
+        <div
+          className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg"
+          style={{
+            background: goal.savingStatus === 'error' ? 'rgba(220,80,80,.08)' : 'rgba(201,168,76,.08)',
+            border: `1px solid ${goal.savingStatus === 'error' ? 'rgba(220,80,80,.25)' : 'rgba(201,168,76,.25)'}`,
+            color: goal.savingStatus === 'error' ? '#e88' : 'var(--c-gold)',
+          }}
+        >
+          <span className="text-meta" style={{ fontSize: 10.5, lineHeight: 1.3 }}>{goal.saveErrorMessage}</span>
+        </div>
+      )}
+
     </motion.div>
   );
 }
@@ -263,12 +278,16 @@ export function HomeScreen({
   const saveGoal = async () => {
     if (!user || !structuredGoal || isSaving) return;
     setIsSaving(true);
-    const tempId    = `temp-${Date.now()}`;
+    // B1: Date.now() collides when two goals are created in the same
+    // millisecond. crypto.randomUUID() is collision-free for dedup purposes.
+    const tempId    = `temp-${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
     const optimistic: Goal = {
       id: tempId, ownerId: user.uid,
       title: structuredGoal.title, description: structuredGoal.description,
-      category: structuredGoal.categories[0], visibility: structuredGoal.privacy,
+      category: structuredGoal.categories[0],
+      // CLAUDE.md: Default visibility = public, only public/private allowed.
+      visibility: structuredGoal.privacy === 'private' ? 'private' : 'public',
       progressPercent: 0, likesCount: 0, status: 'active', createdAt,
       savingStatus: 'saving', sourceText: structuredGoal.transcript,
       normalizedMatchingText: structuredGoal.normalizedMatchingText,

@@ -198,6 +198,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
   const [helpSaving,     setHelpSaving]     = useState(false);
   const [helpDone,       setHelpDone]       = useState(false);
   const [generatingSteps, setGeneratingSteps] = useState(false);
+  const [microStepsError, setMicroStepsError] = useState<string | null>(null);
   const [editingReminder, setEditingReminder] = useState(false);
   const [reminderValue,   setReminderValue]   = useState('');
   const [reminderSaving,  setReminderSaving]  = useState(false);
@@ -208,6 +209,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     setAddingNote(false); setNoteText('');
     setShowHelp(false); setHelpType(''); setHelpBlocking(''); setHelpDone(false);
     setGeneratingSteps(false);
+    setMicroStepsError(null);
     setEditingReminder(false);
     setReminderValue(task.reminderAt ? toDatetimeLocal(task.reminderAt) : '');
 
@@ -217,6 +219,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
         const user = auth.currentUser;
         if (!user) return;
         setGeneratingSteps(true);
+        setMicroStepsError(null);
         try {
           const idToken = await user.getIdToken();
           const steps = await generateMicroSteps(task.text, idToken);
@@ -224,7 +227,10 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
             await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { microSteps: steps });
           }
         } catch (e) {
+          // B2: previously the error was console-logged and the spinner just
+          // disappeared, leaving the user with no idea why nothing showed up.
           console.error('micro-steps generation failed', e);
+          setMicroStepsError("Couldn't generate sub-steps right now. Tap retry.");
         } finally {
           setGeneratingSteps(false);
         }
@@ -232,6 +238,26 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
       run();
     }
   }, [task?.id]);
+
+  const retryMicroSteps = async () => {
+    if (!task) return;
+    const user = auth.currentUser;
+    if (!user) return;
+    setGeneratingSteps(true);
+    setMicroStepsError(null);
+    try {
+      const idToken = await user.getIdToken();
+      const steps = await generateMicroSteps(task.text, idToken);
+      if (steps.length > 0) {
+        await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { microSteps: steps });
+      }
+    } catch (e) {
+      console.error('micro-steps retry failed', e);
+      setMicroStepsError("Still couldn't generate sub-steps. Try again later.");
+    } finally {
+      setGeneratingSteps(false);
+    }
+  };
 
   const saveEdit = async () => {
     if (!task || !editText.trim() || saving) return;
@@ -260,9 +286,10 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     const name = auth.currentUser?.displayName || 'Member';
     if (!uid) return;
     setHelpSaving(true);
+    let threadRef: any = null;
     try {
       const now = new Date().toISOString();
-      const threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
+      threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
         goalId:         goal.id, badge: 'help', title: task.text,
         linkedTaskId:   task.id, linkedTaskText: task.text,
         authorId: uid, authorName: name,
@@ -270,14 +297,29 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
         replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
       });
       if (helpBlocking.trim()) {
-        await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
-          threadId: threadRef.id, goalId: goal.id, authorId: uid, authorName: name,
-          text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
-          reactions: {}, createdAt: now,
-        });
+        try {
+          await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
+            threadId: threadRef.id, goalId: goal.id, authorId: uid, authorName: name,
+            text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
+            reactions: {}, createdAt: now,
+          });
+        } catch (replyErr) {
+          // B3: don't leave an orphan empty thread that has no body. The
+          // thread + first reply must commit together or not at all.
+          console.error('Reply write failed; rolling back thread.', replyErr);
+          try {
+            await deleteDoc(doc(db, 'groups', goal.groupId, 'threads', threadRef.id));
+          } catch (rollbackErr) {
+            console.error('Thread rollback failed:', rollbackErr);
+          }
+          throw replyErr;
+        }
       }
       setHelpDone(true); setHelpType(''); setHelpBlocking('');
-    } catch(e) { console.error(e); } finally { setHelpSaving(false); }
+    } catch(e) {
+      console.error('submitHelp failed:', e);
+      alert("Couldn't post your help request. Please try again.");
+    } finally { setHelpSaving(false); }
   };
 
   const saveReminder = async () => {
@@ -351,6 +393,15 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
                     <p className="text-body flex-1 leading-snug">{step}</p>
                   </div>
                 ))}
+              </div>
+            ) : microStepsError ? (
+              <div className="flex items-center justify-between gap-2 py-1">
+                <span className="text-meta" style={{ color: '#e88' }}>{microStepsError}</span>
+                <button onClick={retryMicroSteps}
+                  className="text-meta px-3 py-1 rounded-lg"
+                  style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)' }}>
+                  Retry
+                </button>
               </div>
             ) : null}
           </div>
@@ -537,11 +588,18 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
   const [saving,        setSaving]        = useState(false);
   const [detailTask,    setDetailTask]    = useState<GoalTask | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  // D1: ref must be assigned synchronously inside requestDelete/undoDelete so
+  // that the realtime tasks snapshot fired between setState and the next
+  // effect commit still sees the correct pending-delete state. The useEffect
+  // sync was a *replication* of state, not a source of truth.
   const pendingDeleteRef = useRef<PendingDelete | null>(null);
+  // tasksRef gives the delete timer access to the *latest* tasks rather than
+  // the closure copy at the time setTimeout was scheduled.
+  const tasksRef = useRef<GoalTask[]>([]);
 
   const isTemp = goal.id.startsWith('temp-');
 
-  useEffect(() => { pendingDeleteRef.current = pendingDelete; }, [pendingDelete]);
+  useEffect(() => { tasksRef.current = tasks; }, [tasks]);
 
   // Commit any in-flight delete on unmount
   useEffect(() => {
@@ -611,22 +669,28 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     setDetailTask(null);
     const timerId = setTimeout(async () => {
       await deleteDoc(doc(db, 'goals', goal.id, 'tasks', task.id)).catch(console.error);
-      // Recalculate progress after hard delete
-      const remaining = tasks.filter(t => t.id !== task.id);
-      if (remaining.length > 0) {
-        const pct = Math.round(remaining.filter(t => t.isDone).length / remaining.length * 100);
-        updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
-      } else {
-        updateDoc(doc(db, 'goals', goal.id), { progressPercent: 0 }).catch(console.error);
-      }
+      // Read latest tasks via ref — closure-captured `tasks` would be stale
+      // if other tasks were toggled during the 5s undo window.
+      const remaining = tasksRef.current.filter(t => t.id !== task.id);
+      const pct = remaining.length > 0
+        ? Math.round(remaining.filter(t => t.isDone).length / remaining.length * 100)
+        : 0;
+      updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
+      pendingDeleteRef.current = null;
       setPendingDelete(null);
     }, 5000);
-    setPendingDelete({ task, timerId });
+    const pd = { task, timerId };
+    // Synchronous ref assignment: the next snapshot listener tick must already
+    // see this pending delete, otherwise progress is recalculated as if the
+    // task were still active.
+    pendingDeleteRef.current = pd;
+    setPendingDelete(pd);
   };
 
   const undoDelete = () => {
     if (!pendingDelete) return;
     clearTimeout(pendingDelete.timerId);
+    pendingDeleteRef.current = null;
     setPendingDelete(null);
   };
 

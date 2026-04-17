@@ -3,8 +3,6 @@ import { Goal } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import { Users, ChevronRight, Loader2, Eye, UserPlus, EyeOff, Star } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 
 interface SimilarMatch {
   goalId:         string;
@@ -19,6 +17,15 @@ interface PeopleTabProps {
   goal: Goal;
   user: FirebaseUser | null;
   setCurrentScreen: (s: any) => void;
+}
+
+// A2: typed contract for the server group response so callers can't drift
+// from the API shape without TS catching it.
+interface GroupResponse {
+  id: string;
+  derivedGoalTheme?: string;
+  memberCount?: number;
+  matchingCriteria?: { category?: string; timeHorizon?: string; privacy?: string };
 }
 
 function activityLabel(score: number) {
@@ -48,19 +55,27 @@ function SimilarityBar({ score }: { score: number }) {
 // ── Room suggestion card ──────────────────────────────────────────────────────
 function RoomCard({ goal, user, setCurrentScreen }: PeopleTabProps) {
   const [joining, setJoining] = useState(false);
-  const [groupData, setGroupData] = useState<any>(null);
+  const [groupData, setGroupData] = useState<GroupResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const { groupId, groupJoined } = goal as any;
 
+  // S3: route group reads through the server so authorization is enforced
+  // server-side rather than depending solely on Firestore rules.
   useEffect(() => {
-    if (!groupId) return;
+    if (!groupId || !user) return;
+    let cancelled = false;
     setLoading(true);
-    getDoc(doc(db, 'groups', groupId))
-      .then(snap => { if (snap.exists()) setGroupData({ id: snap.id, ...snap.data() }); })
+    user.getIdToken()
+      .then(tok => fetch(`/api/groups/${encodeURIComponent(groupId)}`, {
+        headers: { 'Authorization': `Bearer ${tok}` },
+      }))
+      .then(res => res.ok ? res.json() : null)
+      .then((data: GroupResponse | null) => { if (!cancelled && data) setGroupData(data); })
       .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [groupId]);
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [groupId, user]);
 
   if (!groupId) return null;
 
@@ -155,17 +170,27 @@ export function PeopleTab({ goal, user, setCurrentScreen }: PeopleTabProps) {
     .sort((a, b) => b.similarityScore - a.similarityScore);
 
   const hideUser = (userId: string) => {
+    // D3: optimistic hide, but roll back if the signal write fails so the
+    // local state matches the server's view of who is actually hidden.
     setHidden(prev => new Set([...prev, userId]));
-    // Optionally persist via moderation/signal API
-    if (user) {
-      user.getIdToken().then(tok => {
-        fetch('/api/moderation/signal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
-          body: JSON.stringify({ targetUserId: userId, action: 'hide', context: 'people_tab' }),
-        }).catch(console.error);
+    if (!user) return;
+    user.getIdToken()
+      .then(tok => fetch('/api/moderation/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
+        body: JSON.stringify({ targetUserId: userId, action: 'hide', context: 'people_tab' }),
+      }))
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      })
+      .catch(err => {
+        console.error('hide signal failed, rolling back:', err);
+        setHidden(prev => {
+          const next = new Set(prev);
+          next.delete(userId);
+          return next;
+        });
       });
-    }
   };
 
   return (

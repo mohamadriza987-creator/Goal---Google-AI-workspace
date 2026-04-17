@@ -103,12 +103,12 @@ export async function transcribeAudio(audioBase64: string, mimeType: string): Pr
             },
           },
           {
-            text: "Transcribe the provided audio accurately. Return ONLY the transcription text in the original language. Do not add any commentary or formatting."
+            text: "Transcribe the provided audio exactly as spoken. Output ONLY the transcription in the original spoken language — do NOT translate to English. No commentary, no formatting."
           }
         ]
       },
       config: {
-        systemInstruction: "You are a fast and accurate transcription engine. Your only job is to convert audio to text in the original language spoken.",
+        systemInstruction: "You are a transcription engine. Convert audio to text in the exact language spoken. Never translate. Return only the spoken words.",
       }
     }), 2, 1000); // Reduce retries and delay for transcription to avoid proxy timeouts
   };
@@ -155,11 +155,58 @@ function cleanJson(text: string): string {
   return cleaned.trim();
 }
 
-// ── Unified goal generation ───────────────────────────────────────────────────
-// Accepts either typed text or raw audio. Primary: Flash-Lite. Fallback: Flash.
+// ── In-memory model call + quota stats ────────────────────────────────────────
+const _callLog: Array<{ model: string; ts: number }> = [];
+const _quotaLog: Array<{ model: string; ts: number }> = [];
 
-const GOAL_PRIMARY  = "gemini-2.5-flash-lite";
-const GOAL_FALLBACK = "gemini-2.5-flash";
+function pruneLog(log: Array<{ model: string; ts: number }>, cutoff: number): void {
+  let i = 0;
+  while (i < log.length && log[i].ts < cutoff) i++;
+  if (i > 0) log.splice(0, i);
+}
+
+function recordModelCall(model: string): void {
+  const now = Date.now();
+  _callLog.push({ model, ts: now });
+  pruneLog(_callLog, now - 3_600_000);
+}
+
+function recordQuotaError(model: string): void {
+  const now = Date.now();
+  _quotaLog.push({ model, ts: now });
+  pruneLog(_quotaLog, now - 3_600_000);
+}
+
+function isQuotaError(msg: string): boolean {
+  return msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota");
+}
+
+export interface ModelStat { calls: number; quotaErrors: number; }
+
+export function getModelCallStats(windowMs: number): Record<string, ModelStat> {
+  const cutoff = Date.now() - windowMs;
+  const out: Record<string, ModelStat> = {};
+  const ensure = (m: string) => { if (!out[m]) out[m] = { calls: 0, quotaErrors: 0 }; };
+  for (const e of _callLog)  { if (e.ts >= cutoff) { ensure(e.model); out[e.model].calls++; } }
+  for (const e of _quotaLog) { if (e.ts >= cutoff) { ensure(e.model); out[e.model].quotaErrors++; } }
+  return out;
+}
+
+// ── Unified goal generation ───────────────────────────────────────────────────
+// Accepts either typed text or raw audio.
+// Model order is controlled by admin via setGeminiModelOrder(); falls back to
+// the hardcoded defaults when no order has been configured.
+
+const DEFAULT_GOAL_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
+let _goalModelOrder: string[] = [];
+
+export function setGeminiModelOrder(order: string[]): void {
+  _goalModelOrder = order.filter((m) => typeof m === "string" && m.trim() !== "");
+}
+
+function activeGoalModels(): string[] {
+  return _goalModelOrder.length > 0 ? _goalModelOrder : DEFAULT_GOAL_MODELS;
+}
 
 export const GOAL_CATEGORIES = [
   "Career & Jobs",
@@ -219,6 +266,15 @@ const GOAL_SCHEMA = {
 
 const CATEGORIES_PROMPT = GOAL_CATEGORIES.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
 
+/**
+ * Returns true if the text contains characters from non-Latin scripts
+ * (Malayalam, Arabic, Devanagari, CJK, Thai, Korean, Cyrillic, etc.).
+ * Used to pre-detect non-English input without an extra API call.
+ */
+function containsNonLatinScript(text: string): boolean {
+  return /[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u0D00-\u0D7F\u0E00-\u0E7F\u0F00-\u0FFF\u1000-\u109F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(text);
+}
+
 function buildGoalSystemInstruction(userContext?: UserContext): string {
   const parts: string[] = [];
   if (userContext?.age)         parts.push(`age: ${userContext.age}`);
@@ -226,16 +282,18 @@ function buildGoalSystemInstruction(userContext?: UserContext): string {
   const ctx = parts.length ? ` User: ${parts.join(", ")}.` : "";
   return `Goal generation.${ctx} Return ONE valid JSON object. No markdown, no code fences, no text outside JSON.
 
+LANGUAGE RULE: Detect the language of the user's input. Write transcript, title, description, tasks, microSteps, and tags in that SAME language. Do NOT translate to English. If the input is in Malayalam, all fields must be in Malayalam. If in Arabic, all fields in Arabic. Only normalizedMatchingText may use English keywords alongside the original language.
+
 Fields:
-- transcript: verbatim input or audio transcription
-- title: clear specific goal title ≤60 chars
-- description: short practical outcome ≤200 chars
-- categories: all applicable from this fixed list (exact strings, ≥1, include every relevant one):
+- transcript: verbatim input text, or exact audio transcription in the original spoken language
+- title: clear specific goal title ≤60 chars (in input language)
+- description: short practical outcome ≤200 chars (in input language)
+- categories: all applicable from this fixed list (exact English strings, ≥1):
 ${CATEGORIES_PROMPT}
 - languages: all relevant languages (≥1; language-learning goals include native + target)
-- tasks: 5–8 ordered actionable steps, most impactful first, no vague filler. Each task: { text: actionable step, microSteps: 3–5 short concrete sub-actions 5–8 words each }
-- tags: 3–5 lowercase keywords
-- timeHorizon: realistic estimate
+- tasks: 5–8 ordered actionable steps in input language. Each task: { text, microSteps: 3–5 sub-actions }
+- tags: 3–5 lowercase keywords (in input language)
+- timeHorizon: realistic estimate (in input language)
 - privacy: "public" unless user says private
 - normalizedMatchingText: "Goal: [intent], [categories], [sub-focus], [time horizon]"`;
 }
@@ -281,13 +339,15 @@ export async function generateGoal(
 
   const ai = getAI();
 
-  const contentParts: object[] =
-    "audioBase64" in input
-      ? [
-          { inlineData: { mimeType: input.mimeType, data: input.audioBase64 } },
-          { text: "Transcribe and structure this goal from the audio." },
-        ]
-      : [{ text: `Structure this goal: "${input.text}"` }];
+  const isAudio = "audioBase64" in input;
+  const contentParts: object[] = isAudio
+    ? [
+        { inlineData: { mimeType: (input as any).mimeType, data: (input as any).audioBase64 } },
+        { text: "Transcribe the audio exactly in its original spoken language, then structure the goal. Keep all output in the original language." },
+      ]
+    : [{ text: `Structure this goal: "${(input as any).text}"` }];
+
+  const sysInstruction = buildGoalSystemInstruction(userContext);
 
   const call = (model: string) =>
     withRetry(
@@ -296,7 +356,7 @@ export async function generateGoal(
           model,
           contents: { parts: contentParts },
           config: {
-            systemInstruction: buildGoalSystemInstruction(userContext),
+            systemInstruction: sysInstruction,
             responseMimeType: "application/json",
             responseSchema: GOAL_SCHEMA,
           },
@@ -305,16 +365,11 @@ export async function generateGoal(
       800,
     );
 
-  /** Parse raw text → object and run validation. Returns the object if valid, null otherwise. */
   const parseAndValidate = (raw: string | null | undefined, label: string): StructuredGoal | null => {
     if (!raw) { console.warn(`[generateGoal] ${label} returned empty response`); return null; }
     let obj: any;
-    try {
-      obj = JSON.parse(cleanJson(raw));
-    } catch {
-      console.warn(`[generateGoal] ${label} returned invalid JSON`);
-      return null;
-    }
+    try { obj = JSON.parse(cleanJson(raw)); }
+    catch { console.warn(`[generateGoal] ${label} returned invalid JSON`); return null; }
     const errors = validateGoalOutput(obj);
     if (errors.length > 0) {
       console.warn(`[generateGoal] ${label} failed validation: ${errors.join("; ")}`);
@@ -323,28 +378,69 @@ export async function generateGoal(
     return obj as StructuredGoal;
   };
 
-  let parsed: StructuredGoal | null = null;
+  const models = activeGoalModels();
+  const has31InOrder = models.some((m) => m.includes("3.1"));
 
-  // Try primary (Flash-Lite)
-  try {
-    console.log(`[generateGoal] primary: ${GOAL_PRIMARY}`);
-    const res = await call(GOAL_PRIMARY);
-    parsed = parseAndValidate(res.text, "primary");
-  } catch (err: any) {
-    console.warn(`[generateGoal] primary threw: ${err.message}`);
+  // Pre-detect non-English for text input using Unicode script ranges
+  const rawText = isAudio ? "" : ((input as any).text as string);
+  let skipTo31 = has31InOrder && rawText.length > 0 && containsNonLatinScript(rawText);
+  let audioLangChecked = false;
+
+  let parsed: StructuredGoal | null = null;
+  let lastErrMsg = "";
+
+  // Primary pass: respects skipTo31 flag (skips 2.5 models when non-English detected)
+  for (const model of models) {
+    if (skipTo31 && !model.includes("3.1")) {
+      console.log(`[generateGoal] non-English: skipping ${model}`);
+      continue;
+    }
+    try {
+      recordModelCall(model);
+      console.log(`[generateGoal] trying: ${model}`);
+      const res = await call(model);
+      const candidate = parseAndValidate(res.text, model);
+      if (!candidate) continue;
+
+      // For audio: check transcript language after first model runs; redirect to 3.1 if non-English
+      if (isAudio && !audioLangChecked && !skipTo31 && has31InOrder) {
+        audioLangChecked = true;
+        if (containsNonLatinScript(candidate.transcript)) {
+          console.log(`[generateGoal] non-English audio detected — redirecting to 3.1`);
+          skipTo31 = true;
+          continue;
+        }
+      }
+
+      parsed = candidate;
+      break;
+    } catch (err: any) {
+      lastErrMsg = err.message ?? String(err);
+      console.warn(`[generateGoal] model ${model} failed: ${lastErrMsg}`);
+      if (isQuotaError(lastErrMsg)) recordQuotaError(model);
+    }
   }
 
-  // Fallback (Flash) if primary failed, returned invalid JSON, or failed validation
-  if (!parsed) {
-    console.log(`[generateGoal] fallback: ${GOAL_FALLBACK}`);
-    let res: any;
-    try {
-      res = await call(GOAL_FALLBACK);
-    } catch (err: any) {
-      throw new Error(`AI unavailable: ${err.message}`);
+  // Safety pass: if all 3.1 models failed after redirect, retry with available 2.5 models
+  if (!parsed && skipTo31) {
+    console.log(`[generateGoal] all 3.1 models failed — falling back to 2.5`);
+    for (const model of models) {
+      if (model.includes("3.1")) continue;
+      try {
+        recordModelCall(model);
+        const res = await call(model);
+        const candidate = parseAndValidate(res.text, model);
+        if (candidate) { parsed = candidate; break; }
+      } catch (err: any) {
+        lastErrMsg = err.message ?? String(err);
+        console.warn(`[generateGoal] safety fallback ${model} failed: ${lastErrMsg}`);
+        if (isQuotaError(lastErrMsg)) recordQuotaError(model);
+      }
     }
-    parsed = parseAndValidate(res?.text, "fallback");
-    if (!parsed) throw new Error("AI returned an invalid response format. Please try again.");
+  }
+
+  if (!parsed) {
+    throw new Error(lastErrMsg ? `AI unavailable: ${lastErrMsg}` : "AI returned an invalid response format. Please try again.");
   }
 
   // For typed input always preserve the original text as transcript
