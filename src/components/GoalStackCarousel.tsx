@@ -6,8 +6,8 @@ import { db } from '../firebase';
 import { collection, query, orderBy, onSnapshot, limit } from 'firebase/firestore';
 import { Bell, Users, ChevronRight, FileText, Loader2 } from 'lucide-react';
 
-const PEEK   = 72;  // px of next card peeking from bottom
-const SPRING = { type: 'spring' as const, stiffness: 360, damping: 38 };
+const PEEK_RIGHT = 52;  // px of the next card visible on the right
+const SPRING     = { type: 'spring' as const, stiffness: 360, damping: 38 };
 
 // ── Per-card content ──────────────────────────────────────────────────────────
 
@@ -58,97 +58,95 @@ function GoalStackCard({
         flexDirection: 'column',
         overflow: 'hidden',
         boxShadow: isActive
-          ? '0 20px 60px rgba(0,0,0,0.5)'
-          : '0 8px 28px rgba(0,0,0,0.3)',
-        cursor: 'pointer',
+          ? '0 8px 40px rgba(0,0,0,0.45)'
+          : '0 2px 12px rgba(0,0,0,0.25)',
+        cursor: isActive ? 'grab' : 'pointer',
         userSelect: 'none',
       }}
     >
-      {/* ── Stats bar ───────────────────────────────────────────────── */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 14,
-        padding: '14px 18px 12px',
-        borderBottom: '1px solid var(--c-border)',
-        flexShrink: 0,
-      }}>
-        {/* Notifications */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Bell
-            size={15}
-            style={{ color: activity > 0 ? 'var(--c-gold)' : 'var(--c-text-3)' }}
-            fill={activity > 0 ? 'var(--c-gold)' : 'none'}
-          />
-          <span style={{ fontSize: 13, fontWeight: 600, color: activity > 0 ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
-            {activity}
-          </span>
-        </div>
-
-        {/* Members */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Users size={15} style={{ color: 'var(--c-text-3)' }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--c-text-2)' }}>
-            {members}
-          </span>
-        </div>
-
-        {/* Progress bar + percent */}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{
-            width: 56,
-            height: 5,
-            borderRadius: 999,
-            background: 'var(--c-border)',
-            overflow: 'hidden',
-          }}>
-            <div style={{
-              height: '100%',
-              width: `${pct}%`,
-              background: 'var(--c-gold)',
-              borderRadius: 999,
-              transition: 'width 0.6s ease',
-            }} />
-          </div>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--c-gold)', minWidth: 30 }}>
-            {pct}%
-          </span>
-        </div>
+      {/* Progress bar — top accent */}
+      <div style={{ height: 3, background: 'var(--c-border)', flexShrink: 0 }}>
+        <div style={{
+          height: '100%',
+          width: `${pct}%`,
+          background: 'var(--c-gold)',
+          borderRadius: 999,
+          transition: 'width 0.6s ease',
+        }} />
       </div>
 
-      {/* ── Scrollable body ─────────────────────────────────────────── */}
-      <div
-        onPointerDown={e => e.stopPropagation()}
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '20px 18px 24px',
-          scrollbarWidth: 'none',
-        } as React.CSSProperties}
-      >
-        {/* Title */}
-        <h2 style={{
-          fontSize: 22,
-          fontWeight: 700,
-          letterSpacing: -0.5,
-          lineHeight: 1.25,
-          marginBottom: 10,
-          color: 'var(--c-text)',
-        }}>
-          {goal.title}
-        </h2>
+      {/* Card body */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {/* Title + progress */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <h2 style={{
+            fontSize: 19,
+            fontWeight: 700,
+            letterSpacing: -0.4,
+            lineHeight: 1.25,
+            color: 'var(--c-text)',
+            flex: 1,
+          }}>
+            {goal.title}
+          </h2>
+          {/* Circular progress badge */}
+          <div style={{
+            flexShrink: 0,
+            width: 46,
+            height: 46,
+            borderRadius: '50%',
+            background: 'rgba(201,168,76,0.1)',
+            border: `2px solid ${pct > 0 ? 'var(--c-gold)' : 'var(--c-border)'}`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--c-gold)' }}>{pct}%</span>
+          </div>
+        </div>
 
         {/* Description */}
         {goal.description && (
           <p style={{
-            fontSize: 14,
+            fontSize: 13,
+            lineHeight: 1.55,
             color: 'var(--c-text-2)',
-            lineHeight: 1.65,
-            marginBottom: 22,
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
           }}>
             {goal.description}
           </p>
         )}
+
+        {/* Stats row */}
+        <div style={{ display: 'flex', gap: 14 }}>
+          {members > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Users size={13} style={{ color: 'var(--c-text-3)' }} />
+              <span style={{ fontSize: 12, color: 'var(--c-text-3)' }}>{members}</span>
+            </div>
+          )}
+          {activity > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Bell size={13} style={{ color: 'var(--c-text-3)' }} />
+              <span style={{ fontSize: 12, color: 'var(--c-text-3)' }}>{activity}</span>
+            </div>
+          )}
+          <div style={{ marginLeft: 'auto' }}>
+            <span style={{
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              color: goal.status === 'active' ? 'var(--c-gold)' : 'var(--c-text-3)',
+            }}>
+              {goal.status}
+            </span>
+          </div>
+        </div>
 
         {/* Loading spinner */}
         {!ready && isActive && (
@@ -208,28 +206,11 @@ function GoalStackCard({
           </div>
         )}
       </div>
-
-      {/* ── Drag handle strip ────────────────────────────────────────── */}
-      <div style={{
-        flexShrink: 0,
-        display: 'flex',
-        justifyContent: 'center',
-        paddingTop: 8,
-        paddingBottom: 10,
-        borderTop: '1px solid var(--c-border)',
-      }}>
-        <div style={{
-          width: 36,
-          height: 4,
-          borderRadius: 999,
-          background: 'var(--c-border-light)',
-        }} />
-      </div>
     </div>
   );
 }
 
-// ── Stack carousel ────────────────────────────────────────────────────────────
+// ── Horizontal stack carousel ─────────────────────────────────────────────────
 
 interface Props {
   goals:       Goal[];
@@ -240,13 +221,13 @@ interface Props {
 
 export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [containerH, setContainerH] = useState(0);
+  const [containerW, setContainerW] = useState(0);
   const [activeIdx,  setActiveIdx]  = useState(0);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(e => setContainerH(e[0].contentRect.height));
+    const ro = new ResizeObserver(e => setContainerW(e[0].contentRect.width));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -256,34 +237,23 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
     if (hasMore && onLoadMore && activeIdx >= goals.length - 2) onLoadMore();
   }, [activeIdx, goals.length, hasMore, onLoadMore]);
 
-  const cardH = containerH > 0 ? containerH - PEEK : 0;
+  // card width leaves PEEK_RIGHT px for the next card to show
+  const cardW = containerW > 0 ? containerW - PEEK_RIGHT : 0;
 
-  const getY = (i: number) => {
-    if (containerH === 0) return 0;
+  const getX = useCallback((i: number) => {
+    if (containerW === 0) return 0;
     const off = i - activeIdx;
-    if (off < 0)  return -containerH;
-    if (off === 0) return 0;
-    if (off === 1) return containerH - PEEK;
-    return containerH - PEEK * 0.55;
-  };
-
-  const getScale = (i: number) => {
-    const off = i - activeIdx;
-    if (off <= 0)  return 1;
-    if (off === 1) return 0.962;
-    return 0.928;
-  };
-
-  const getZ = (i: number) => {
-    const off = i - activeIdx;
-    return off < 0 ? 0 : goals.length - off + 1;
-  };
+    if (off < 0)  return -(cardW + 20);   // off-screen left (extra 20 so it's fully hidden)
+    if (off === 0) return 0;              // active: flush left edge
+    if (off === 1) return cardW;          // next: starts at cardW, shows PEEK_RIGHT px on right
+    return cardW + PEEK_RIGHT + 8;        // further right: fully hidden
+  }, [containerW, activeIdx, cardW]);
 
   const handleDragEnd = useCallback((i: number, info: PanInfo) => {
     const { offset, velocity } = info;
-    if ((offset.y < -55 || velocity.y < -320) && i < goals.length - 1) {
+    if ((offset.x < -50 || velocity.x < -300) && i < goals.length - 1) {
       setActiveIdx(i + 1);
-    } else if ((offset.y > 55 || velocity.y > 320) && i > 0) {
+    } else if ((offset.x > 50 || velocity.x > 300) && i > 0) {
       setActiveIdx(i - 1);
     }
   }, [goals.length]);
@@ -291,10 +261,11 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
   return (
     <div
       ref={containerRef}
-      style={{ position: 'relative', height: '100%', overflow: 'hidden' }}
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}
     >
       {goals.map((goal, i) => {
         const off      = i - activeIdx;
+        // Only render visible cards (active, next peek, and 1 off each side)
         if (off < -1 || off > 2) return null;
         const isActive = off === 0;
         const isNext   = off === 1;
@@ -305,17 +276,19 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
             style={{
               position: 'absolute',
               top: 0,
-              right: 0,
-              width: '88%',
-              height: cardH || '100%',
-              zIndex: getZ(i),
+              left: 0,
+              width: cardW || '100%',
+              height: '100%',
+              zIndex: isActive ? 2 : 1,
               willChange: 'transform',
+              // Non-active off-screen cards must not intercept touches
+              pointerEvents: isActive ? 'auto' : 'none',
             }}
-            animate={{ y: getY(i), scale: getScale(i) }}
+            animate={{ x: getX(i) }}
             transition={SPRING}
-            drag={isActive ? 'y' : false}
-            dragConstraints={{ top: -containerH * 0.9, bottom: 70 }}
-            dragElastic={{ top: 0.78, bottom: 0.22 }}
+            drag={isActive ? 'x' : false}
+            dragConstraints={{ left: -(cardW * 0.6), right: cardW * 0.3 }}
+            dragElastic={{ left: 0.12, right: 0.18 }}
             dragMomentum={false}
             onDragEnd={(_, info) => isActive && handleDragEnd(i, info)}
           >
@@ -329,26 +302,26 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
         );
       })}
 
-      {/* Dot indicators */}
+      {/* Dot indicators — centered at the bottom */}
       {goals.length > 1 && (
         <div style={{
           position: 'absolute',
-          bottom: PEEK / 2 - 6,
-          left: '12%',
-          right: 0,
+          bottom: 10,
+          left: 0,
+          right: PEEK_RIGHT,
           display: 'flex',
           justifyContent: 'center',
           gap: 5,
-          zIndex: 999,
+          zIndex: 10,
           pointerEvents: 'none',
         }}>
-          {goals.slice(0, 7).map((_, i) => (
+          {goals.slice(0, 9).map((_, i) => (
             <div key={i} style={{
-              width:      i === activeIdx ? 18 : 5,
-              height:     5,
+              width:        i === activeIdx ? 18 : 5,
+              height:       5,
               borderRadius: 999,
-              background: i === activeIdx ? 'var(--c-gold)' : 'rgba(255,255,255,0.22)',
-              transition: 'all 0.3s cubic-bezier(0.34,1.56,0.64,1)',
+              background:   i === activeIdx ? 'var(--c-gold)' : 'rgba(255,255,255,0.22)',
+              transition:   'all 0.3s cubic-bezier(0.34,1.56,0.64,1)',
             }} />
           ))}
         </div>
