@@ -57,6 +57,8 @@ export default function App() {
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
   const [navVisible,     setNavVisible]     = useState(true);
   const lastScrollY = useRef(0);
+  // Stable ref so the reminders effect doesn't re-subscribe on every goals update
+  const goalsRef = useRef<Goal[]>(goals);
 
   // ── Nav hide-on-scroll ──────────────────────────────────────────────────
   useEffect(() => {
@@ -137,6 +139,7 @@ export default function App() {
     );
     const unsub = onSnapshot(q, (snapshot) => {
       const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
+      goalsRef.current = g;
       setGoals(g);
       setGoalsLoading(false);
       // If we got exactly the limit there may be more; fewer means we've reached the end
@@ -169,7 +172,7 @@ export default function App() {
         const data = d.data() as GoalTask;
         if (!data.reminderAt) return;
         const goalId = d.ref.parent.parent?.id;
-        const goal   = goals.find(g => g.id === goalId);
+        const goal   = goalsRef.current.find(g => g.id === goalId);
         if (goal) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
       });
       recompute();
@@ -183,14 +186,14 @@ export default function App() {
         if (!data.reminderAt) return;
         const taskR = d.ref.parent.parent;
         const goalR = taskR?.parent.parent;
-        const goal  = goals.find(g => g.id === goalR?.id);
+        const goal  = goalsRef.current.find(g => g.id === goalR?.id);
         if (goal) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/notes'));
 
     return () => { unsubT(); unsubN(); };
-  }, [user, goals]);
+  }, [user]);
 
   // ── Calendar notes ─────────────────────────────────────────────────────
   useEffect(() => {

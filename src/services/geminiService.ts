@@ -22,7 +22,7 @@ export interface UserContext {
   locality?: string;
 }
 
-export async function transcribeAudio(audioBase64: string, mimeType: string, idToken: string): Promise<string> {
+export async function transcribeAudio(audioBase64: string, mimeType: string, idToken: string, signal?: AbortSignal): Promise<string> {
   console.log('Calling backend to transcribe audio...', { mimeType, size: audioBase64.length });
   const response = await fetch("/api/transcribe", {
     method: "POST",
@@ -31,6 +31,7 @@ export async function transcribeAudio(audioBase64: string, mimeType: string, idT
       "Authorization": `Bearer ${idToken}`
     },
     body: JSON.stringify({ audioBase64, mimeType }),
+    signal,
   });
 
   if (!response.ok) {
@@ -47,6 +48,7 @@ export async function generateGoal(
   input: { text: string } | { audioBase64: string; mimeType: string },
   idToken: string,
   userContext?: UserContext,
+  signal?: AbortSignal,
 ): Promise<StructuredGoal> {
   const body = "text" in input
     ? { text: input.text, userContext }
@@ -56,6 +58,7 @@ export async function generateGoal(
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok) {

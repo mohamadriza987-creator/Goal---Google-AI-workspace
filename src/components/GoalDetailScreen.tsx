@@ -1036,11 +1036,19 @@ function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
 
   useEffect(() => {
     if (!groupId) { setLoading(false); return; }
-    return onSnapshot(
+    let debounce: ReturnType<typeof setTimeout>;
+    const unsub = onSnapshot(
       query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
-      (snap) => { setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread)); setLoading(false); },
-      (err)  => { console.error(err); setLoading(false); }
+      (snap) => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread));
+          setLoading(false);
+        }, 100);
+      },
+      (err)  => { clearTimeout(debounce); console.error(err); setLoading(false); }
     );
+    return () => { clearTimeout(debounce); unsub(); };
   }, [groupId]);
 
   const createThread = async () => {

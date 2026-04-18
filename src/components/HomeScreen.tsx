@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Goal, User } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
@@ -199,6 +199,7 @@ export function HomeScreen({
   const REFINEMENT_LIMIT = 5;
 
   const { isRecording, startRecording, stopRecording, error: recorderError } = useAudioRecorder();
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   // Auto-resize textareas on review screen
   useEffect(() => {
@@ -219,6 +220,9 @@ export function HomeScreen({
     input: { text: string } | { audioBase64: string; mimeType: string },
     isRefinement = false,
   ) => {
+    fetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    fetchAbortRef.current = ac;
     setLoading(true);
     setProcessingState('generating');
     setProcessingError(null);
@@ -228,7 +232,7 @@ export function HomeScreen({
         age: dbUser?.age,
         nationality: dbUser?.nationality,
         locality: dbUser?.locality,
-      });
+      }, ac.signal);
       const primaryLang = structured.languages?.[0];
       if (primaryLang) {
         const code = mapLanguageNameToCode(primaryLang);
@@ -243,7 +247,7 @@ export function HomeScreen({
         setAdditionalDetails('');
       }
     } catch (err: any) {
-      setProcessingError(err.message || 'Error');
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Error');
     } finally {
       setLoading(false);
       setProcessingState('idle');
@@ -251,6 +255,9 @@ export function HomeScreen({
   };
 
   const processAudio = async (blob: Blob, isRefinement = false) => {
+    fetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    fetchAbortRef.current = ac;
     const reader = new FileReader();
     const b64 = await new Promise<string>((res) => {
       reader.onloadend = () => res((reader.result as string).split(',')[1]);
@@ -263,13 +270,13 @@ export function HomeScreen({
       setProcessingError(null);
       try {
         const idToken = await user.getIdToken();
-        const newTranscript = await transcribeAudio(b64, blob.type, idToken);
+        const newTranscript = await transcribeAudio(b64, blob.type, idToken, ac.signal);
         const combined = newTranscript
           ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
           : currentTranscript;
         await runGoalGeneration({ text: combined }, true);
       } catch (err: any) {
-        setProcessingError(err.message || 'Error transcribing audio');
+        if (err.name !== 'AbortError') setProcessingError(err.message || 'Error transcribing audio');
         setLoading(false);
         setProcessingState('idle');
       }
