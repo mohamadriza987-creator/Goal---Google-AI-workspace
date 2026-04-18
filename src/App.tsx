@@ -162,27 +162,29 @@ export default function App() {
       setAllReminders(merged);
     };
 
-    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid), where('reminderAt', '!=', null));
+    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid));
     const unsubT = onSnapshot(tQ, (snap) => {
       latestTask = [];
       snap.docs.forEach(d => {
         const data = d.data() as GoalTask;
+        if (!data.reminderAt) return;
         const goalId = d.ref.parent.parent?.id;
         const goal   = goals.find(g => g.id === goalId);
-        if (goal && data.reminderAt) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
+        if (goal) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
 
-    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid), where('reminderAt', '!=', null));
+    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid));
     const unsubN = onSnapshot(nQ, (snap) => {
       latestNote = [];
       snap.docs.forEach(d => {
         const data  = d.data();
+        if (!data.reminderAt) return;
         const taskR = d.ref.parent.parent;
         const goalR = taskR?.parent.parent;
         const goal  = goals.find(g => g.id === goalR?.id);
-        if (goal && data.reminderAt) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
+        if (goal) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/notes'));
