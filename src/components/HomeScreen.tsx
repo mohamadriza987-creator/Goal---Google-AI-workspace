@@ -400,7 +400,8 @@ export function HomeScreen({
             }}
           >
             {/* Header — never editable */}
-            <div className="flex items-start justify-between px-5 pt-14 pb-2" style={{ flexShrink: 0 }}>
+            <div className="flex items-start justify-between px-5 pt-14 pb-2"
+                 style={{ flexShrink: 0, position: 'relative', zIndex: 20 }}>
               <div>
                 <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1.2 }}>
                   {greeting()}, {firstName}
@@ -513,9 +514,15 @@ export function HomeScreen({
                 </div>
               )}
 
-              {/* Normal mode — full-height stack carousel */}
+              {/* Normal mode — horizontal swipe carousel */}
               {!isEditMode && goals.length > 0 && (
-                <div style={{ position: 'absolute', inset: 0 }}>
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 16,        /* 16px from left edge */
+                  right: 0,
+                  bottom: 132,     /* leave room above the fixed input bar + nav */
+                }}>
                   <GoalStackCarousel
                     goals={goals}
                     hasMore={hasMoreGoals}
