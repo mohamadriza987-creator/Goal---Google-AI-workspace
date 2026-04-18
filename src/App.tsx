@@ -165,7 +165,7 @@ export default function App() {
       setAllReminders(merged);
     };
 
-    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid));
+    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid), limit(500));
     const unsubT = onSnapshot(tQ, (snap) => {
       latestTask = [];
       snap.docs.forEach(d => {
@@ -178,7 +178,7 @@ export default function App() {
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
 
-    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid));
+    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid), limit(500));
     const unsubN = onSnapshot(nQ, (snap) => {
       latestNote = [];
       snap.docs.forEach(d => {

@@ -180,12 +180,10 @@ export function HomeScreen({
   const [currentView, setCurrentView] = useState<'home' | 'recording' | 'review'>('home');
 
   // ── Voice / transcript state ─────────────────────────────────────────────
-  const [loading,          setLoading]          = useState(false);
-  const [processingState,  setProcessingState]  = useState<'idle' | 'generating'>('idle');
+  const [phase,            setPhase]            = useState<'idle' | 'generating' | 'saving'>('idle');
   const [processingError,  setProcessingError]  = useState<string | null>(null);
   const [currentTranscript,setCurrentTranscript]= useState<string | null>(null);
   const [structuredGoal,   setStructuredGoal]   = useState<StructuredGoal | null>(null);
-  const [isSaving,         setIsSaving]         = useState(false);
   const [isTyping,         setIsTyping]         = useState(false);
   const [typedGoal,        setTypedGoal]        = useState('');
   const [refinementCount,  setRefinementCount]  = useState(0);
@@ -219,16 +217,16 @@ export function HomeScreen({
   const runGoalGeneration = async (
     input: { text: string } | { audioBase64: string; mimeType: string },
     isRefinement = false,
+    idToken?: string,
   ) => {
     fetchAbortRef.current?.abort();
     const ac = new AbortController();
     fetchAbortRef.current = ac;
-    setLoading(true);
-    setProcessingState('generating');
+    setPhase('generating');
     setProcessingError(null);
     try {
-      const idToken = await user.getIdToken();
-      const structured = await generateGoal(input, idToken, {
+      const token = idToken ?? await user.getIdToken();
+      const structured = await generateGoal(input, token, {
         age: dbUser?.age,
         nationality: dbUser?.nationality,
         locality: dbUser?.locality,
@@ -249,8 +247,7 @@ export function HomeScreen({
     } catch (err: any) {
       if (err.name !== 'AbortError') setProcessingError(err.message || 'Error');
     } finally {
-      setLoading(false);
-      setProcessingState('idle');
+      setPhase('idle');
     }
   };
 
@@ -265,8 +262,7 @@ export function HomeScreen({
     });
     if (isRefinement && currentTranscript) {
       // Transcribe the new audio then append to existing transcript before regenerating
-      setLoading(true);
-      setProcessingState('generating');
+      setPhase('generating');
       setProcessingError(null);
       try {
         const idToken = await user.getIdToken();
@@ -274,19 +270,19 @@ export function HomeScreen({
         const combined = newTranscript
           ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
           : currentTranscript;
-        await runGoalGeneration({ text: combined }, true);
+        await runGoalGeneration({ text: combined }, true, idToken);
       } catch (err: any) {
         if (err.name !== 'AbortError') setProcessingError(err.message || 'Error transcribing audio');
-        setLoading(false);
-        setProcessingState('idle');
+        setPhase('idle');
       }
     } else {
-      await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false);
+      const idToken = await user.getIdToken();
+      await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false, idToken);
     }
   };
 
-  const processTranscript = async (transcript: string, _idToken?: string, isRefinement = false) => {
-    await runGoalGeneration({ text: transcript }, isRefinement);
+  const processTranscript = async (transcript: string, idToken?: string, isRefinement = false) => {
+    await runGoalGeneration({ text: transcript }, isRefinement, idToken);
   };
 
   const handlePandaClick = async () => {
@@ -331,8 +327,8 @@ export function HomeScreen({
 
   // ── Save goal ────────────────────────────────────────────────────────────
   const saveGoal = async () => {
-    if (!user || !structuredGoal || isSaving) return;
-    setIsSaving(true);
+    if (!user || !structuredGoal || phase !== 'idle') return;
+    setPhase('saving');
     // B1: Date.now() collides when two goals are created in the same
     // millisecond. crypto.randomUUID() is collision-free for dedup purposes.
     const tempId    = `temp-${crypto.randomUUID()}`;
@@ -360,7 +356,7 @@ export function HomeScreen({
     } catch (err) {
       console.error('Save error:', err);
     } finally {
-      setIsSaving(false);
+      setPhase('idle');
     }
   };
 
@@ -472,11 +468,11 @@ export function HomeScreen({
                       />
                       <button
                         onClick={handleTypedGoalSubmit}
-                        disabled={!typedGoal.trim() || loading}
+                        disabled={!typedGoal.trim() || phase !== 'idle'}
                         className="flex-shrink-0 disabled:opacity-40 transition-opacity"
                         style={{ color: 'var(--c-gold)' }}
                       >
-                        {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                        {phase !== 'idle' ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
                       </button>
                       <button
                         onClick={() => { setIsTyping(false); setTypedGoal(''); }}
@@ -492,7 +488,7 @@ export function HomeScreen({
                   <motion.button
                     onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
                     whileTap={{ scale: 0.92 }}
-                    disabled={loading}
+                    disabled={phase !== 'idle'}
                     className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
                     style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
                   >
@@ -580,7 +576,7 @@ export function HomeScreen({
             <Panda isListening={isRecording} onClick={handlePandaClick} className="w-56 h-56" />
 
             <div className="mt-8 text-center w-full max-w-sm">
-              {loading ? (
+              {phase !== 'idle' ? (
                 <div className="flex flex-col items-center gap-4">
                   <div className="flex items-center gap-3 px-5 py-3 rounded-2xl"
                        style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
@@ -590,7 +586,7 @@ export function HomeScreen({
                     </span>
                   </div>
                   <button
-                    onClick={() => { setLoading(false); setProcessingState('idle'); setCurrentView('home'); }}
+                    onClick={() => { setPhase('idle'); setCurrentView('home'); }}
                     className="text-meta" style={{ color: 'var(--c-text-3)' }}>
                     Cancel
                   </button>
@@ -677,7 +673,7 @@ export function HomeScreen({
                     {t('transcript')}
                   </span>
                   <button onClick={() => isEditingTranscript ? handleRegenerate() : setIsEditingTranscript(true)}
-                    disabled={loading}
+                    disabled={phase !== 'idle'}
                     className="text-meta transition-opacity hover:opacity-70"
                     style={{ color: isEditingTranscript ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
                     {isEditingTranscript ? 'Regenerate ↺' : <Edit2 size={13} />}
@@ -711,10 +707,10 @@ export function HomeScreen({
                           style={{ background:'var(--c-surface-2)', border:'1px solid var(--c-border)', color:'var(--c-text)', minHeight:60 }}
                         />
                         {additionalDetails.trim() && (
-                          <button onClick={handleAddDetailsSubmit} disabled={loading}
+                          <button onClick={handleAddDetailsSubmit} disabled={phase !== 'idle'}
                             className="absolute bottom-2.5 right-2.5 p-2 rounded-xl disabled:opacity-40"
                             style={{ background:'var(--c-gold)', color:'#000' }}>
-                            {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                            {phase !== 'idle' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                           </button>
                         )}
                       </div>
@@ -892,10 +888,10 @@ export function HomeScreen({
               </div>
 
               {/* Save button */}
-              <button onClick={saveGoal} disabled={isSaving}
+              <button onClick={saveGoal} disabled={phase === 'saving'}
                 className="btn-gold w-full flex items-center justify-center gap-2 mt-4">
-                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
-                {isSaving ? t('saving') : t('saveGoal')}
+                {phase === 'saving' ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
+                {phase === 'saving' ? t('saving') : t('saveGoal')}
               </button>
             </div>
           </motion.div>
