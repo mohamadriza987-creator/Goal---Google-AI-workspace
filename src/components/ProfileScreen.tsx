@@ -3,7 +3,7 @@ import { User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
-import { Shield, LogOut, Plus, RefreshCw, Search, Users, ArrowLeft } from 'lucide-react';
+import { Shield, LogOut, Plus, RefreshCw, Search, Users, ArrowLeft, UserX, Loader2, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
 import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -551,6 +551,9 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
           </div>
         )}
 
+        {/* Blocked Users */}
+        <BlockedUsersSection user={user} />
+
         <button
           onClick={() => auth.signOut()}
           className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-red-500 hover:bg-red-500/10 transition-colors"
@@ -560,6 +563,109 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
         </button>
       </div>
     </motion.div>
+  );
+}
+
+interface BlockedProfile {
+  userId: string;
+  displayName: string;
+  avatarUrl: string;
+}
+
+function BlockedUsersSection({ user }: { user: FirebaseUser | null }) {
+  const [blocked,    setBlocked]    = React.useState<BlockedProfile[]>([]);
+  const [loading,    setLoading]    = React.useState(true);
+  const [unblocking, setUnblocking] = React.useState<string | null>(null);
+  const [open,       setOpen]       = React.useState(false);
+
+  React.useEffect(() => {
+    if (!user || !open) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const token = await user.getIdToken();
+        const res   = await fetch('/api/blocked-users', { headers: { Authorization: `Bearer ${token}` } });
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setBlocked(data.blockedUsers ?? []);
+        }
+      } catch (e) {
+        console.error('Blocked users load error', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, open]);
+
+  const handleUnblock = async (userId: string) => {
+    if (!user) return;
+    setUnblocking(userId);
+    try {
+      const token = await user.getIdToken();
+      await fetch(`/api/blocked-users/${userId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setBlocked(prev => prev.filter(b => b.userId !== userId));
+    } catch (e) {
+      console.error('Unblock error', e);
+    } finally {
+      setUnblocking(null);
+    }
+  };
+
+  return (
+    <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full p-6 flex items-center gap-4 text-left hover:bg-zinc-800/30 transition-colors">
+        <UserX size={22} style={{ color: '#e05260', flexShrink: 0 }} />
+        <div className="flex-1">
+          <p className="font-semibold" style={{ color: 'var(--c-text)' }}>Blocked Users</p>
+          <p className="text-xs text-zinc-500">Manage who you've blocked</p>
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--c-text-3)' }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-6 pb-5 space-y-2" style={{ borderTop: '1px solid var(--c-border)' }}>
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <Loader2 size={18} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
+            </div>
+          ) : blocked.length === 0 ? (
+            <p className="py-4 text-sm text-center" style={{ color: 'var(--c-text-3)' }}>
+              No blocked users.
+            </p>
+          ) : (
+            blocked.map(b => (
+              <div key={b.userId} className="flex items-center gap-3 py-2">
+                {b.avatarUrl ? (
+                  <img src={b.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
+                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+                    {b.displayName[0]?.toUpperCase() ?? '?'}
+                  </div>
+                )}
+                <p className="flex-1 text-sm" style={{ color: 'var(--c-text)' }}>{b.displayName}</p>
+                <button
+                  onClick={() => handleUnblock(b.userId)}
+                  disabled={unblocking === b.userId}
+                  className="px-3 py-1 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
+                  style={{ background: 'rgba(224,82,96,.12)', border: '1px solid rgba(224,82,96,.3)', color: '#e05260' }}>
+                  {unblocking === b.userId
+                    ? <Loader2 size={12} className="animate-spin" />
+                    : 'Unblock'}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

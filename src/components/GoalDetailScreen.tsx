@@ -6,6 +6,7 @@ import {
   HelpCircle, Loader2, X, BookOpen, Zap, Bell, Info, Trash2,
   MessageCircle, Users, ChevronRight,
   ThumbsUp, Heart, Hand, Star,
+  Bookmark, Volume2, VolumeX, UserX, BellOff,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -1181,6 +1182,8 @@ function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
 
 interface MemberDetail {
   userId:          string;
+  displayName:     string;
+  avatarUrl:       string;
   goalTitle:       string;
   goalDescription: string;
   progressPercent: number;
@@ -1212,105 +1215,447 @@ function MiniRing({ pct, size = 28 }: { pct: number; size?: number }) {
   );
 }
 
-// ── Member detail sheet ───────────────────────────────────────────────────────
-function MemberSheet({ member, onClose }: { member: MemberDetail; onClose: () => void }) {
+// ── Add-to-my-task popup ─────────────────────────────────────────────────────
+function AddTaskPopup({
+  initialText, myGoalId, user, onClose,
+}: {
+  initialText: string; myGoalId: string; user: FirebaseUser | null; onClose: () => void;
+}) {
+  const [text,    setText]    = useState(initialText);
+  const [notes,   setNotes]   = useState('');
+  const [saving,  setSaving]  = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const handleDone = async () => {
+    if (!text.trim() || !user) return;
+    setSaving(true);
+    try {
+      const token = await user.getIdToken();
+      await fetch(`/api/goals/${myGoalId}/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ goalId: myGoalId, text: text.trim(), notes: notes.trim() || undefined }),
+      });
+      setSuccess(true);
+      setTimeout(onClose, 800);
+    } catch (e) {
+      console.error('AddTask error', e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <motion.div
-      key="member-sheet"
-      initial={{ opacity: 0, y: 40 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 40 }}
-      transition={{ type: 'spring', stiffness: 340, damping: 34 }}
-      className="fixed inset-0 z-50 flex flex-col justify-end"
-      style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)' }}
-      onClick={onClose}
-    >
-      <div
-        className="rounded-t-3xl pb-10 overflow-y-auto"
-        style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '85dvh' }}
-        onClick={(e) => e.stopPropagation()}
+    <AnimatePresence>
+      <motion.div key="at-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)' }}
+        onClick={onClose} />
+      <motion.div key="at-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ type: 'spring', stiffness: 340, damping: 36 }}
+        className="fixed bottom-0 left-0 right-0 z-[70] px-5 pb-10 pt-6"
+        style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
+        onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--c-border-light)' }} />
+        <h3 style={{ fontSize: 17, fontWeight: 600, marginBottom: 16 }}>Add to My Tasks</h3>
+        <div className="space-y-3">
+          <textarea
+            value={text} onChange={e => setText(e.target.value)}
+            placeholder="Task text…" rows={2}
+            style={{
+              width: '100%', padding: '10px 14px', borderRadius: 12,
+              border: '1px solid var(--c-gold)', background: 'var(--c-bg)',
+              color: 'var(--c-text)', fontSize: 14, resize: 'none', outline: 'none',
+            }} />
+          <textarea
+            value={notes} onChange={e => setNotes(e.target.value)}
+            placeholder="Notes (optional)…" rows={2}
+            style={{
+              width: '100%', padding: '10px 14px', borderRadius: 12,
+              border: '1px solid var(--c-border)', background: 'var(--c-bg)',
+              color: 'var(--c-text)', fontSize: 14, resize: 'none', outline: 'none',
+            }} />
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} disabled={saving}
+              style={{ flex: 1, padding: '11px', borderRadius: 12, background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)', fontSize: 15, fontWeight: 500 }}>
+              Cancel
+            </button>
+            <button onClick={handleDone} disabled={saving || !text.trim() || success}
+              className="flex items-center justify-center gap-2"
+              style={{ flex: 1, padding: '11px', borderRadius: 12, background: success ? 'var(--c-success)' : 'var(--c-gold)', border: 'none', color: '#000', fontSize: 15, fontWeight: 600, opacity: (!text.trim() || saving) ? 0.5 : 1 }}>
+              {saving ? <Loader2 size={15} className="animate-spin" /> : success ? <Check size={15} /> : null}
+              {success ? 'Added!' : saving ? 'Adding…' : 'Done'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ── Ask-for-help popup ────────────────────────────────────────────────────────
+function AskForHelpPopup({
+  taskText, goal, user, dbUser, memberUserIds, onClose,
+}: {
+  taskText: string; goal: Goal; user: FirebaseUser | null;
+  dbUser: User | null; memberUserIds: string[]; onClose: () => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [sending,     setSending]     = useState(false);
+  const [success,     setSuccess]     = useState(false);
+
+  const handleSend = async () => {
+    if (!user || !goal.groupId) return;
+    setSending(true);
+    try {
+      const token = await user.getIdToken();
+      await fetch('/api/ask-for-help', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          goalId: goal.id,
+          groupId: goal.groupId,
+          taskText,
+          description: description.trim() || undefined,
+          authorName: dbUser?.displayName || 'Someone',
+          authorAvatar: dbUser?.avatarUrl || '',
+          notifyUserIds: memberUserIds,
+        }),
+      });
+      setSuccess(true);
+      setTimeout(onClose, 800);
+    } catch (e) {
+      console.error('AskForHelp error', e);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div key="afh-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)' }}
+        onClick={onClose} />
+      <motion.div key="afh-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ type: 'spring', stiffness: 340, damping: 36 }}
+        className="fixed bottom-0 left-0 right-0 z-[70] px-5 pb-10 pt-6"
+        style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
+        onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--c-border-light)' }} />
+        <h3 style={{ fontSize: 17, fontWeight: 600, marginBottom: 4 }}>Ask for Help</h3>
+        <p className="text-meta mb-4" style={{ color: 'var(--c-gold)', fontSize: 13, fontStyle: 'italic' }}>"{taskText}"</p>
+        <div className="space-y-3">
+          <textarea
+            value={description} onChange={e => setDescription(e.target.value)}
+            placeholder="Add extra context (optional)…" rows={3}
+            style={{
+              width: '100%', padding: '10px 14px', borderRadius: 12,
+              border: '1px solid var(--c-border)', background: 'var(--c-bg)',
+              color: 'var(--c-text)', fontSize: 14, resize: 'none', outline: 'none',
+            }} />
+          <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>
+            This will post a help thread and notify {memberUserIds.length} member{memberUserIds.length !== 1 ? 's' : ''} who share this task.
+          </p>
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} disabled={sending}
+              style={{ flex: 1, padding: '11px', borderRadius: 12, background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-2)', fontSize: 15, fontWeight: 500 }}>
+              Cancel
+            </button>
+            <button onClick={handleSend} disabled={sending || success}
+              className="flex items-center justify-center gap-2"
+              style={{ flex: 1, padding: '11px', borderRadius: 12, background: success ? 'var(--c-success)' : 'var(--c-gold)', border: 'none', color: '#000', fontSize: 15, fontWeight: 600 }}>
+              {sending ? <Loader2 size={15} className="animate-spin" /> : success ? <Check size={15} /> : <Send size={15} />}
+              {success ? 'Sent!' : sending ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ── Task action row (shared by MemberSheet, SimilarTasks, PopularTasks) ───────
+function TaskActionRow({
+  text, isDone, myGoalId, goal, user, dbUser, memberUserIds,
+}: {
+  text: string; isDone?: boolean; myGoalId: string;
+  goal: Goal; user: FirebaseUser | null; dbUser: User | null; memberUserIds: string[];
+}) {
+  const [showAdd,  setShowAdd]  = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+
+  return (
+    <>
+      <div className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
+           style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', opacity: isDone ? 0.6 : 1 }}>
+        {isDone
+          ? <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
+          : <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{ background: 'var(--c-gold)' }} />
+        }
+        <p className={`text-sm leading-snug flex-1 ${isDone ? 'line-through' : ''}`}
+           style={{ color: isDone ? 'var(--c-text-3)' : 'var(--c-text-2)' }}>{text}</p>
+        {!isDone && (
+          <div className="flex items-center gap-1.5 ml-2 flex-shrink-0">
+            <button onClick={() => setShowAdd(true)}
+              className="px-2 py-0.5 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
+              style={{ background: 'rgba(201,168,76,.15)', color: 'var(--c-gold)', border: '1px solid rgba(201,168,76,.3)' }}>
+              + Mine
+            </button>
+            <button onClick={() => setShowHelp(true)}
+              className="px-2 py-0.5 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
+              style={{ background: 'rgba(255,255,255,.06)', color: 'var(--c-text-2)', border: '1px solid var(--c-border)' }}>
+              Help
+            </button>
+          </div>
+        )}
+      </div>
+
+      {showAdd && (
+        <AddTaskPopup
+          initialText={text} myGoalId={myGoalId}
+          user={user} onClose={() => setShowAdd(false)} />
+      )}
+      {showHelp && (
+        <AskForHelpPopup
+          taskText={text} goal={goal} user={user} dbUser={dbUser}
+          memberUserIds={memberUserIds} onClose={() => setShowHelp(false)} />
+      )}
+    </>
+  );
+}
+
+// ── User action popup ─────────────────────────────────────────────────────────
+function UserActionPopup({
+  member, user, dbUser, onClose,
+}: {
+  member: MemberDetail; user: FirebaseUser | null; dbUser: User | null; onClose: () => void;
+}) {
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [done,       setDone]       = useState<string | null>(null);
+
+  const doAction = async (action: 'favourite' | 'poke' | 'silence' | 'block') => {
+    if (!user) return;
+    setBusyAction(action);
+    try {
+      const token = await user.getIdToken();
+      if (action === 'favourite') {
+        await fetch('/api/favourites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            targetUserId:   member.userId,
+            targetUserName: member.displayName,
+            targetAvatarUrl: member.avatarUrl,
+          }),
+        });
+      } else if (action === 'poke') {
+        await fetch('/api/poke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ targetUserId: member.userId, senderName: dbUser?.displayName || 'Someone' }),
+        });
+      } else if (action === 'silence') {
+        await fetch('/api/silence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ targetUserId: member.userId, silent: true }),
+        });
+      } else if (action === 'block') {
+        await fetch('/api/moderation/signal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ targetUserId: member.userId, action: 'block' }),
+        });
+      }
+      setDone(action);
+      setTimeout(onClose, 700);
+    } catch (e) {
+      console.error('UserAction error', e);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const Row = ({ id, label, icon, danger }: { id: 'favourite' | 'poke' | 'silence' | 'block'; label: string; icon: React.ReactNode; danger?: boolean }) => (
+    <button
+      onClick={() => doAction(id)}
+      disabled={!!busyAction || done === id}
+      className="w-full flex items-center gap-4 px-5 py-4 transition-opacity active:opacity-60"
+      style={{ borderBottom: '1px solid var(--c-border)', color: danger ? '#e05260' : 'var(--c-text)' }}>
+      <span style={{ color: danger ? '#e05260' : 'var(--c-gold)' }}>{icon}</span>
+      <span style={{ fontSize: 15, fontWeight: 500, flex: 1, textAlign: 'left' }}>{label}</span>
+      {busyAction === id && <Loader2 size={15} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />}
+      {done === id && <Check size={15} style={{ color: 'var(--c-success)' }} />}
+    </button>
+  );
+
+  return (
+    <AnimatePresence>
+      <motion.div key="ua-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)' }}
+        onClick={onClose} />
+      <motion.div key="ua-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ type: 'spring', stiffness: 340, damping: 36 }}
+        className="fixed bottom-0 left-0 right-0 z-[70] pb-10"
+        style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
+        onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 rounded-full mx-auto mt-3 mb-1" style={{ background: 'var(--c-border-light)' }} />
+        {/* User header */}
+        <div className="flex items-center gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--c-border)' }}>
+          {member.avatarUrl ? (
+            <img src={member.avatarUrl} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
+          ) : (
+            <div className="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold"
+                 style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+              {member.displayName[0]?.toUpperCase() ?? '?'}
+            </div>
+          )}
+          <div>
+            <p style={{ fontSize: 15, fontWeight: 600 }}>{member.displayName}</p>
+            <p style={{ fontSize: 12, color: 'var(--c-text-3)' }}>{member.goalTitle}</p>
+          </div>
+        </div>
+        <Row id="favourite" label="Add to Favourites" icon={<Bookmark size={18} />} />
+        <Row id="poke"      label="Poke"              icon={<Hand size={18} />} />
+        <Row id="silence"   label="Silence"           icon={<BellOff size={18} />} />
+        <Row id="block"     label="Block"             icon={<UserX size={18} />} danger />
+        <button onClick={onClose} className="w-full py-4 text-center"
+          style={{ color: 'var(--c-text-3)', fontSize: 15 }}>
+          Cancel
+        </button>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ── Member detail sheet ───────────────────────────────────────────────────────
+function MemberSheet({
+  member, myGoalId, goal, user, dbUser, allMemberUserIds, onClose,
+}: {
+  member: MemberDetail; myGoalId: string; goal: Goal;
+  user: FirebaseUser | null; dbUser: User | null;
+  allMemberUserIds: string[]; onClose: () => void;
+}) {
+  const [showUserActions, setShowUserActions] = useState(false);
+
+  return (
+    <>
+      <motion.div
+        key="member-sheet"
+        initial={{ opacity: 0, y: 40 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 40 }}
+        transition={{ type: 'spring', stiffness: 340, damping: 34 }}
+        className="fixed inset-0 z-50 flex flex-col justify-end"
+        style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)' }}
+        onClick={onClose}
       >
-        {/* Handle */}
-        <div className="flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 rounded-full" style={{ background: 'var(--c-border)' }} />
-        </div>
-
-        {/* Header */}
-        <div className="flex items-start gap-4 px-5 pt-4 pb-5"
-             style={{ borderBottom: '1px solid var(--c-border)' }}>
-          <div className="flex-1 min-w-0">
-            <h2 style={{ fontSize: 17, fontWeight: 600, letterSpacing: -0.3, lineHeight: 1.25 }}
-                className="mb-1">
-              {member.goalTitle}
-            </h2>
-            {member.goalDescription && (
-              <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-2)' }}>
-                {member.goalDescription}
-              </p>
-            )}
-            <p className="text-meta mt-2" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-              Joined {new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
-            </p>
+        <div
+          className="rounded-t-3xl pb-10 overflow-y-auto"
+          style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '88dvh' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Handle */}
+          <div className="flex justify-center pt-3 pb-1">
+            <div className="w-10 h-1 rounded-full" style={{ background: 'var(--c-border)' }} />
           </div>
-          {/* Progress ring */}
-          <div className="flex flex-col items-center gap-1 flex-shrink-0">
-            <MiniRing pct={member.progressPercent} size={52} />
-            <span style={{ fontSize: 10, color: 'var(--c-text-3)' }}>{member.progressPercent}%</span>
-          </div>
-        </div>
 
-        <div className="px-5 pt-5 space-y-6">
-          {/* Active tasks */}
-          <section>
-            <h3 className="text-meta uppercase tracking-widest mb-3"
-                style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
-              Active Tasks
-            </h3>
-            {member.activeTasks.length > 0 ? (
-              <div className="space-y-1.5">
-                {member.activeTasks.map((t, i) => (
-                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
-                       style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                    <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                         style={{ background: 'var(--c-gold)' }} />
-                    <p className="text-sm leading-snug" style={{ color: 'var(--c-text-2)' }}>{t}</p>
-                  </div>
-                ))}
+          {/* Header — tap user avatar/name to get user actions */}
+          <div className="flex items-start gap-4 px-5 pt-4 pb-5"
+               style={{ borderBottom: '1px solid var(--c-border)' }}>
+
+            {/* Tappable user profile */}
+            <button className="flex items-center gap-3 flex-shrink-0" onClick={() => setShowUserActions(true)}>
+              {member.avatarUrl ? (
+                <img src={member.avatarUrl} alt="" className="w-11 h-11 rounded-full object-cover" />
+              ) : (
+                <div className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold"
+                     style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+                  {member.displayName[0]?.toUpperCase() ?? '?'}
+                </div>
+              )}
+              <div className="text-left">
+                <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--c-text)' }}>{member.displayName}</p>
+                <p style={{ fontSize: 11, color: 'var(--c-text-3)' }}>tap to interact</p>
               </div>
-            ) : (
-              <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No active tasks.</p>
-            )}
-          </section>
+            </button>
 
-          {/* Completed tasks */}
-          {member.completedTasks.length > 0 && (
+            {/* Goal title */}
+            <div className="flex-1 min-w-0">
+              <h2 style={{ fontSize: 16, fontWeight: 600, letterSpacing: -0.3, lineHeight: 1.25, color: 'var(--c-text)' }}
+                  className="mb-1 truncate">
+                {member.goalTitle}
+              </h2>
+              {member.goalDescription && (
+                <p className="text-meta line-clamp-2" style={{ color: 'var(--c-text-2)' }}>
+                  {member.goalDescription}
+                </p>
+              )}
+              <p className="text-meta mt-1" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                Joined {new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+              </p>
+            </div>
+
+            {/* Progress ring */}
+            <div className="flex flex-col items-center gap-1 flex-shrink-0">
+              <MiniRing pct={member.progressPercent} size={44} />
+              <span style={{ fontSize: 10, color: 'var(--c-text-3)' }}>{member.progressPercent}%</span>
+            </div>
+          </div>
+
+          <div className="px-5 pt-5 space-y-6">
+            {/* Active tasks */}
             <section>
               <h3 className="text-meta uppercase tracking-widest mb-3"
                   style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
-                Completed
+                Active Tasks
               </h3>
-              <div className="space-y-1.5">
-                {member.completedTasks.map((t, i) => (
-                  <div key={i} className="flex items-start gap-2.5 px-4 py-2.5 rounded-xl"
-                       style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)', opacity: 0.6 }}>
-                    <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
-                    <p className="text-sm leading-snug line-through" style={{ color: 'var(--c-text-3)' }}>{t}</p>
-                  </div>
-                ))}
-              </div>
+              {member.activeTasks.length > 0 ? (
+                <div className="space-y-1.5">
+                  {member.activeTasks.map((t, i) => (
+                    <TaskActionRow key={i} text={t} isDone={false}
+                      myGoalId={myGoalId} goal={goal} user={user} dbUser={dbUser}
+                      memberUserIds={allMemberUserIds} />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-meta" style={{ color: 'var(--c-text-3)' }}>No active tasks.</p>
+              )}
             </section>
-          )}
+
+            {/* Completed tasks */}
+            {member.completedTasks.length > 0 && (
+              <section>
+                <h3 className="text-meta uppercase tracking-widest mb-3"
+                    style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
+                  Completed
+                </h3>
+                <div className="space-y-1.5">
+                  {member.completedTasks.map((t, i) => (
+                    <TaskActionRow key={i} text={t} isDone={true}
+                      myGoalId={myGoalId} goal={goal} user={user} dbUser={dbUser}
+                      memberUserIds={allMemberUserIds} />
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
         </div>
-      </div>
-    </motion.div>
+      </motion.div>
+
+      {showUserActions && (
+        <UserActionPopup member={member} user={user} dbUser={dbUser}
+          onClose={() => setShowUserActions(false)} />
+      )}
+    </>
   );
 }
 
 // ── People tab ────────────────────────────────────────────────────────────────
-function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | null; dbUser: User | null }) {
   const [data,           setData]           = useState<PeopleData | null>(null);
   const [loading,        setLoading]        = useState(true);
   const [selectedMember, setSelectedMember] = useState<MemberDetail | null>(null);
+  const [userActionTarget, setUserActionTarget] = useState<MemberDetail | null>(null);
 
   useEffect(() => {
     if (!user) { setLoading(false); return; }
@@ -1340,24 +1685,13 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
   }
 
   const { members = [], similarTasks = [], popularTasks = [] } = data ?? {};
+  const allMemberUserIds = members.map(m => m.userId);
 
   const SectionLabel = ({ label }: { label: string }) => (
     <h3 className="text-meta uppercase tracking-widest mb-3"
         style={{ color: 'var(--c-text-3)', letterSpacing: '0.12em', fontSize: 11 }}>
       {label}
     </h3>
-  );
-
-  const TaskList = ({ items }: { items: { text: string }[] }) => (
-    <div className="space-y-2">
-      {items.map((item, i) => (
-        <div key={i} className="flex items-start gap-2.5 px-4 py-3 rounded-2xl"
-             style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-          <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
-          <p className="text-sm leading-snug" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
-        </div>
-      ))}
-    </div>
   );
 
   const Empty = ({ msg }: { msg: string }) => (
@@ -1384,27 +1718,38 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
           {members.length > 0 ? (
             <div className="space-y-2">
               {members.map((m, i) => (
-                <button
-                  key={i}
-                  onClick={() => setSelectedMember(m)}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-opacity active:opacity-70"
-                  style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}
-                >
-                  {/* Avatar placeholder */}
-                  <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
-                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
-                    {m.goalTitle[0]?.toUpperCase() ?? '?'}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate" style={{ color: 'var(--c-text)' }}>
-                      {m.goalTitle}
-                    </p>
-                    <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
-                      {m.activeTasks.length} active · {m.completedTasks.length} done
-                    </p>
-                  </div>
-                  <MiniRing pct={m.progressPercent} />
-                </button>
+                <div key={i} className="rounded-2xl overflow-hidden"
+                     style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                  {/* User row — tap avatar/name for user actions */}
+                  <button
+                    onClick={() => setUserActionTarget(m)}
+                    className="w-full flex items-center gap-3 px-4 pt-3 pb-2 text-left transition-opacity active:opacity-70">
+                    {m.avatarUrl ? (
+                      <img src={m.avatarUrl} alt="" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold"
+                           style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+                        {m.displayName[0]?.toUpperCase() ?? '?'}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate" style={{ color: 'var(--c-text)' }}>
+                        {m.displayName}
+                      </p>
+                      <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                        {m.activeTasks.length} active · {m.completedTasks.length} done
+                      </p>
+                    </div>
+                    <MiniRing pct={m.progressPercent} />
+                  </button>
+                  {/* Goal title row — tap to open task sheet */}
+                  <button
+                    onClick={() => setSelectedMember(m)}
+                    className="w-full flex items-center gap-2 px-4 pb-3 text-left transition-opacity active:opacity-70">
+                    <ChevronRight size={13} style={{ color: 'var(--c-gold)', flexShrink: 0 }} />
+                    <p className="text-sm truncate" style={{ color: 'var(--c-text-2)' }}>{m.goalTitle}</p>
+                  </button>
+                </div>
               ))}
             </div>
           ) : (
@@ -1415,9 +1760,17 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
         {/* Similar Tasks */}
         <section>
           <SectionLabel label="Similar Tasks" />
-          {similarTasks.length > 0
-            ? <TaskList items={similarTasks} />
-            : <Empty msg="Tasks from room members appear here as the group grows." />}
+          {similarTasks.length > 0 ? (
+            <div className="space-y-2">
+              {similarTasks.map((item, i) => (
+                <TaskActionRow key={i} text={item.text}
+                  myGoalId={goal.id} goal={goal} user={user} dbUser={dbUser}
+                  memberUserIds={allMemberUserIds} />
+              ))}
+            </div>
+          ) : (
+            <Empty msg="Tasks from room members appear here as the group grows." />
+          )}
         </section>
 
         {/* Most Popular Tasks */}
@@ -1426,15 +1779,13 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
           {popularTasks.length > 0 ? (
             <div className="space-y-2">
               {popularTasks.map((item, i) => (
-                <div key={i} className="flex items-center justify-between px-4 py-3 rounded-2xl"
-                     style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                  <div className="flex items-start gap-2.5 flex-1 min-w-0">
-                    <ChevronRight size={13} className="flex-shrink-0 mt-0.5" style={{ color: 'var(--c-gold)' }} />
-                    <p className="text-sm leading-snug truncate" style={{ color: 'var(--c-text-2)' }}>{item.text}</p>
-                  </div>
+                <div key={i} className="relative">
+                  <TaskActionRow text={item.text}
+                    myGoalId={goal.id} goal={goal} user={user} dbUser={dbUser}
+                    memberUserIds={allMemberUserIds} />
                   {item.count > 1 && (
-                    <span className="ml-3 flex-shrink-0 text-meta"
-                          style={{ color: 'var(--c-text-3)', fontSize: 11 }}>
+                    <span className="absolute right-3 top-2.5 text-meta"
+                          style={{ color: 'var(--c-text-3)', fontSize: 11, pointerEvents: 'none' }}>
                       ×{item.count}
                     </span>
                   )}
@@ -1448,10 +1799,26 @@ function PeopleTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
 
       </div>
 
-      {/* Member detail sheet */}
+      {/* User action popup */}
+      <AnimatePresence>
+        {userActionTarget && (
+          <UserActionPopup
+            member={userActionTarget} user={user} dbUser={dbUser}
+            onClose={() => setUserActionTarget(null)} />
+        )}
+      </AnimatePresence>
+
+      {/* Member task detail sheet */}
       <AnimatePresence>
         {selectedMember && (
-          <MemberSheet member={selectedMember} onClose={() => setSelectedMember(null)} />
+          <MemberSheet
+            member={selectedMember}
+            myGoalId={goal.id}
+            goal={goal}
+            user={user}
+            dbUser={dbUser}
+            allMemberUserIds={allMemberUserIds}
+            onClose={() => setSelectedMember(null)} />
         )}
       </AnimatePresence>
     </>
@@ -1718,7 +2085,7 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
             )}
 
             {activeTab === 'people' && (
-              <PeopleTab goal={goal} user={user} />
+              <PeopleTab goal={goal} user={user} dbUser={dbUser} />
             )}
 
           </motion.div>

@@ -1801,6 +1801,8 @@ async function startServer() {
 
       interface MemberDetail {
         userId: string;
+        displayName: string;
+        avatarUrl: string;
         goalTitle: string;
         goalDescription: string;
         progressPercent: number;
@@ -1815,6 +1817,10 @@ async function startServer() {
         const mgDoc = await db.collection("goals").doc(member.goalId).get();
         if (!mgDoc.exists) continue;
         const mgData = mgDoc.data()!;
+
+        // Load user profile for display name and avatar
+        const userDoc = await db.collection("users").doc(member.userId).get();
+        const userData = userDoc.exists ? userDoc.data()! : {};
 
         // Load all tasks for this member's goal
         const tasksSnap = await db
@@ -1835,8 +1841,10 @@ async function startServer() {
 
         members.push({
           userId:          member.userId,
-          goalTitle:       mgData.title        || "",
-          goalDescription: mgData.description  || "",
+          displayName:     userData.displayName  || "Unknown",
+          avatarUrl:       userData.avatarUrl    || "",
+          goalTitle:       mgData.title          || "",
+          goalDescription: mgData.description    || "",
           progressPercent: mgData.progressPercent ?? 0,
           joinedAt:        member.joinedAt,
           activeTasks:     activeTasks.slice(0, 10),
@@ -1870,6 +1878,276 @@ async function startServer() {
     } catch (error: any) {
       console.error("/api/goals/:goalId/people-tasks error:", error);
       res.status(500).json({ error: "Failed to load people data" });
+    }
+  });
+
+  // ── Favourites ──────────────────────────────────────────────────────────────
+  // Users can favourite other users; stored in a separate `favourites` collection.
+
+  app.get("/api/favourites", authMiddleware, async (req: any, res) => {
+    try {
+      const snap = await db.collection("favourites")
+        .where("ownerId", "==", req.userId)
+        .orderBy("createdAt", "desc")
+        .get();
+      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      res.json({ favourites: items });
+    } catch (error: any) {
+      console.error("GET /api/favourites error:", error);
+      res.status(500).json({ error: "Failed to load favourites" });
+    }
+  });
+
+  const FavouriteSchema = z.object({
+    targetUserId:   z.string().min(1),
+    targetUserName: z.string().min(1),
+    targetAvatarUrl: z.string().optional(),
+  });
+
+  app.post("/api/favourites", authMiddleware, async (req: any, res) => {
+    try {
+      const v = FavouriteSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { targetUserId, targetUserName, targetAvatarUrl } = v.data;
+      if (targetUserId === req.userId) return res.status(400).json({ error: "Cannot favourite yourself" });
+
+      // Check for duplicate
+      const existing = await db.collection("favourites")
+        .where("ownerId", "==", req.userId)
+        .where("targetUserId", "==", targetUserId)
+        .limit(1).get();
+      if (!existing.empty) return res.json({ success: true, alreadyFavourited: true });
+
+      await db.collection("favourites").add({
+        ownerId:         req.userId,
+        targetUserId,
+        targetUserName,
+        targetAvatarUrl: targetAvatarUrl || "",
+        createdAt:       nowIso(),
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("POST /api/favourites error:", error);
+      res.status(500).json({ error: "Failed to add favourite" });
+    }
+  });
+
+  app.delete("/api/favourites/:targetUserId", authMiddleware, async (req: any, res) => {
+    try {
+      const { targetUserId } = req.params;
+      const snap = await db.collection("favourites")
+        .where("ownerId", "==", req.userId)
+        .where("targetUserId", "==", targetUserId)
+        .get();
+      const batch = db.batch();
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("DELETE /api/favourites error:", error);
+      res.status(500).json({ error: "Failed to remove favourite" });
+    }
+  });
+
+  // ── Poke ────────────────────────────────────────────────────────────────────
+  // Creates a notification record for the target user.
+
+  const PokeSchema = z.object({
+    targetUserId: z.string().min(1),
+    senderName:   z.string().min(1),
+  });
+
+  app.post("/api/poke", authMiddleware, async (req: any, res) => {
+    try {
+      const v = PokeSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { targetUserId, senderName } = v.data;
+      if (targetUserId === req.userId) return res.status(400).json({ error: "Cannot poke yourself" });
+
+      await db.collection("notifications").add({
+        type:      "poke",
+        toUserId:  targetUserId,
+        fromUserId: req.userId,
+        fromName:  senderName,
+        read:      false,
+        createdAt: nowIso(),
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("POST /api/poke error:", error);
+      res.status(500).json({ error: "Failed to poke user" });
+    }
+  });
+
+  // ── Silence ──────────────────────────────────────────────────────────────────
+  // Stores silenced users on the caller's user doc (they see posts but no notifications).
+
+  const SilenceSchema = z.object({
+    targetUserId: z.string().min(1),
+    silent: z.boolean(),
+  });
+
+  app.post("/api/silence", authMiddleware, async (req: any, res) => {
+    try {
+      const v = SilenceSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { targetUserId, silent } = v.data;
+      if (targetUserId === req.userId) return res.status(400).json({ error: "Cannot silence yourself" });
+
+      const op = silent
+        ? admin.firestore.FieldValue.arrayUnion(targetUserId)
+        : admin.firestore.FieldValue.arrayRemove(targetUserId);
+      await db.collection("users").doc(req.userId).update({ silencedUsers: op });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("POST /api/silence error:", error);
+      res.status(500).json({ error: "Failed to update silence setting" });
+    }
+  });
+
+  // ── Get blocked users list ─────────────────────────────────────────────────
+  app.get("/api/blocked-users", authMiddleware, async (req: any, res) => {
+    try {
+      const userDoc = await db.collection("users").doc(req.userId).get();
+      if (!userDoc.exists) return res.json({ blockedUsers: [] });
+      const data = userDoc.data()!;
+      const blockedIds: string[] = data.blockedUsers || [];
+      if (blockedIds.length === 0) return res.json({ blockedUsers: [] });
+
+      // Fetch display names for blocked users
+      const profiles = await Promise.all(
+        blockedIds.map(async (uid) => {
+          const d = await db.collection("users").doc(uid).get();
+          return d.exists
+            ? { userId: uid, displayName: d.data()!.displayName || "Unknown", avatarUrl: d.data()!.avatarUrl || "" }
+            : { userId: uid, displayName: "Unknown", avatarUrl: "" };
+        })
+      );
+      res.json({ blockedUsers: profiles });
+    } catch (error: any) {
+      console.error("GET /api/blocked-users error:", error);
+      res.status(500).json({ error: "Failed to load blocked users" });
+    }
+  });
+
+  // ── Unblock user ──────────────────────────────────────────────────────────
+  app.delete("/api/blocked-users/:targetUserId", authMiddleware, async (req: any, res) => {
+    try {
+      const { targetUserId } = req.params;
+      await db.collection("users").doc(req.userId).update({
+        blockedUsers: admin.firestore.FieldValue.arrayRemove(targetUserId),
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("DELETE /api/blocked-users error:", error);
+      res.status(500).json({ error: "Failed to unblock user" });
+    }
+  });
+
+  // ── Copy task from another member to own goal ──────────────────────────────
+  const CopyTaskSchema = z.object({
+    goalId: z.string().min(1),
+    text:   z.string().min(1).max(500),
+    notes:  z.string().max(1000).optional(),
+  });
+
+  app.post("/api/goals/:goalId/tasks", authMiddleware, async (req: any, res) => {
+    try {
+      const v = CopyTaskSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { goalId } = req.params;
+      const { text, notes } = v.data;
+
+      // Verify ownership
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists) return res.status(404).json({ error: "Goal not found" });
+      if (goalDoc.data()!.ownerId !== req.userId) return res.status(403).json({ error: "Forbidden" });
+
+      // Get current max order
+      const tasksSnap = await db.collection("goals").doc(goalId).collection("tasks")
+        .orderBy("order", "desc").limit(1).get();
+      const maxOrder = tasksSnap.empty ? 0 : (tasksSnap.docs[0].data().order ?? 0);
+
+      const taskData: Record<string, any> = {
+        goalId,
+        ownerId:   req.userId,
+        text:      text.trim(),
+        source:    "manual",
+        order:     maxOrder + 1,
+        isDone:    false,
+        createdAt: nowIso(),
+      };
+
+      if (notes?.trim()) {
+        taskData.notes = [{ id: nowIso(), text: notes.trim(), createdAt: nowIso() }];
+      }
+
+      const ref = await db.collection("goals").doc(goalId).collection("tasks").add(taskData);
+      res.json({ success: true, taskId: ref.id });
+    } catch (error: any) {
+      console.error("POST /api/goals/:goalId/tasks error:", error);
+      res.status(500).json({ error: "Failed to add task" });
+    }
+  });
+
+  // ── Ask for help on a task (creates Goal Room thread) ─────────────────────
+  const AskForHelpSchema = z.object({
+    goalId:      z.string().min(1),
+    groupId:     z.string().min(1),
+    taskText:    z.string().min(1).max(500),
+    description: z.string().max(1000).optional(),
+    authorName:  z.string().min(1),
+    authorAvatar: z.string().optional(),
+    notifyUserIds: z.array(z.string()).optional(),
+  });
+
+  app.post("/api/ask-for-help", authMiddleware, async (req: any, res) => {
+    try {
+      const v = AskForHelpSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { goalId, groupId, taskText, description, authorName, authorAvatar, notifyUserIds } = v.data;
+
+      const threadRef = await db.collection("groups").doc(groupId).collection("threads").add({
+        goalId,
+        badge:         "help",
+        title:         taskText,
+        linkedTaskText: taskText,
+        authorId:       req.userId,
+        authorName,
+        authorAvatar:   authorAvatar || "",
+        previewText:    description || "Asking for help with this task.",
+        replyCount:     0,
+        usefulCount:    0,
+        reactions:      {},
+        isPinned:       false,
+        createdAt:      nowIso(),
+        lastActivityAt: nowIso(),
+      });
+
+      // Send notifications to users who have this task
+      if (notifyUserIds && notifyUserIds.length > 0) {
+        const batch = db.batch();
+        notifyUserIds.forEach((uid) => {
+          const nRef = db.collection("notifications").doc();
+          batch.set(nRef, {
+            type:       "help_request",
+            toUserId:   uid,
+            fromUserId: req.userId,
+            fromName:   authorName,
+            threadId:   threadRef.id,
+            groupId,
+            taskText,
+            read:       false,
+            createdAt:  nowIso(),
+          });
+        });
+        await batch.commit();
+      }
+
+      res.json({ success: true, threadId: threadRef.id });
+    } catch (error: any) {
+      console.error("POST /api/ask-for-help error:", error);
+      res.status(500).json({ error: "Failed to post help request" });
     }
   });
 
