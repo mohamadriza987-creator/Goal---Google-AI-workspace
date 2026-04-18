@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useUserContext } from '../contexts/UserContext';
 import { Goal, GoalTask, GoalRoomThread, GoalRoomReply, User, ThreadBadge } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 import {
@@ -1067,7 +1068,10 @@ function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
     finally { setNewSaving(false); }
   };
 
-  const filtered = filter === 'all' ? threads : threads.filter(t => t.badge === filter);
+  const filtered = useMemo(
+    () => filter === 'all' ? threads : threads.filter(t => t.badge === filter),
+    [filter, threads],
+  );
 
   // ── No room assigned yet
   if (!groupId) {
@@ -1225,10 +1229,11 @@ function MiniRing({ pct, size = 28 }: { pct: number; size?: number }) {
 
 // ── Add-to-my-task popup ─────────────────────────────────────────────────────
 function AddTaskPopup({
-  initialText, myGoalId, user, onClose,
+  initialText, myGoalId, onClose,
 }: {
-  initialText: string; myGoalId: string; user: FirebaseUser | null; onClose: () => void;
+  initialText: string; myGoalId: string; onClose: () => void;
 }) {
+  const { user } = useUserContext();
   const [text,    setText]    = useState(initialText);
   const [notes,   setNotes]   = useState('');
   const [saving,  setSaving]  = useState(false);
@@ -1302,11 +1307,11 @@ function AddTaskPopup({
 
 // ── Ask-for-help popup ────────────────────────────────────────────────────────
 function AskForHelpPopup({
-  taskText, goal, user, dbUser, members, onClose,
+  taskText, goal, members, onClose,
 }: {
-  taskText: string; goal: Goal; user: FirebaseUser | null;
-  dbUser: User | null; members: MemberDetail[]; onClose: () => void;
+  taskText: string; goal: Goal; members: MemberDetail[]; onClose: () => void;
 }) {
+  const { user, dbUser } = useUserContext();
   const [description, setDescription] = useState('');
   const [sending,     setSending]     = useState(false);
   const [success,     setSuccess]     = useState(false);
@@ -1391,10 +1396,10 @@ function AskForHelpPopup({
 
 // ── Task action row (shared by MemberSheet, SimilarTasks, PopularTasks) ───────
 function TaskActionRow({
-  text, isDone, myGoalId, goal, user, dbUser, members,
+  text, isDone, myGoalId, goal, members,
 }: {
   text: string; isDone?: boolean; myGoalId: string;
-  goal: Goal; user: FirebaseUser | null; dbUser: User | null; members: MemberDetail[];
+  goal: Goal; members: MemberDetail[];
 }) {
   const [showAdd,  setShowAdd]  = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1428,11 +1433,11 @@ function TaskActionRow({
       {showAdd && (
         <AddTaskPopup
           initialText={text} myGoalId={myGoalId}
-          user={user} onClose={() => setShowAdd(false)} />
+          onClose={() => setShowAdd(false)} />
       )}
       {showHelp && (
         <AskForHelpPopup
-          taskText={text} goal={goal} user={user} dbUser={dbUser}
+          taskText={text} goal={goal}
           members={members} onClose={() => setShowHelp(false)} />
       )}
     </>
@@ -1441,10 +1446,11 @@ function TaskActionRow({
 
 // ── User action popup ─────────────────────────────────────────────────────────
 function UserActionPopup({
-  member, user, dbUser, onClose,
+  member, onClose,
 }: {
-  member: MemberDetail; user: FirebaseUser | null; dbUser: User | null; onClose: () => void;
+  member: MemberDetail; onClose: () => void;
 }) {
+  const { user, dbUser } = useUserContext();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [done,       setDone]       = useState<string | null>(null);
 
@@ -1545,10 +1551,9 @@ function UserActionPopup({
 
 // ── Member detail sheet ───────────────────────────────────────────────────────
 function MemberSheet({
-  member, myGoalId, goal, user, dbUser, allMembers, onClose,
+  member, myGoalId, goal, allMembers, onClose,
 }: {
   member: MemberDetail; myGoalId: string; goal: Goal;
-  user: FirebaseUser | null; dbUser: User | null;
   allMembers: MemberDetail[]; onClose: () => void;
 }) {
   const [showUserActions, setShowUserActions] = useState(false);
@@ -1629,7 +1634,7 @@ function MemberSheet({
                 <div className="space-y-1.5">
                   {member.activeTasks.map((t, i) => (
                     <TaskActionRow key={i} text={t} isDone={false}
-                      myGoalId={myGoalId} goal={goal} user={user} dbUser={dbUser}
+                      myGoalId={myGoalId} goal={goal}
                       members={allMembers} />
                   ))}
                 </div>
@@ -1648,7 +1653,7 @@ function MemberSheet({
                 <div className="space-y-1.5">
                   {member.completedTasks.map((t, i) => (
                     <TaskActionRow key={i} text={t} isDone={true}
-                      myGoalId={myGoalId} goal={goal} user={user} dbUser={dbUser}
+                      myGoalId={myGoalId} goal={goal}
                       members={allMembers} />
                   ))}
                 </div>
@@ -1659,7 +1664,7 @@ function MemberSheet({
       </motion.div>
 
       {showUserActions && (
-        <UserActionPopup member={member} user={user} dbUser={dbUser}
+        <UserActionPopup member={member}
           onClose={() => setShowUserActions(false)} />
       )}
     </>
@@ -1667,7 +1672,8 @@ function MemberSheet({
 }
 
 // ── People tab ────────────────────────────────────────────────────────────────
-function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | null; dbUser: User | null }) {
+function PeopleTab({ goal }: { goal: Goal }) {
+  const { user } = useUserContext();
   const [data,           setData]           = useState<PeopleData | null>(null);
   const [loading,        setLoading]        = useState(true);
   const [selectedMember, setSelectedMember] = useState<MemberDetail | null>(null);
@@ -1700,7 +1706,11 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
     );
   }
 
-  const { members = [], similarTasks = [], popularTasks = [] } = data ?? {};
+  const { members, similarTasks, popularTasks } = useMemo(() => ({
+    members:      data?.members      ?? [],
+    similarTasks: data?.similarTasks ?? [],
+    popularTasks: data?.popularTasks ?? [],
+  }), [data]);
 
   const SectionLabel = ({ label }: { label: string }) => (
     <h3 className="text-meta uppercase tracking-widest mb-3"
@@ -1779,7 +1789,7 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
             <div className="space-y-2">
               {similarTasks.map((item, i) => (
                 <TaskActionRow key={i} text={item.text}
-                  myGoalId={goal.id} goal={goal} user={user} dbUser={dbUser}
+                  myGoalId={goal.id} goal={goal}
                   members={members} />
               ))}
             </div>
@@ -1796,7 +1806,7 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
               {popularTasks.map((item, i) => (
                 <div key={i} className="relative">
                   <TaskActionRow text={item.text}
-                    myGoalId={goal.id} goal={goal} user={user} dbUser={dbUser}
+                    myGoalId={goal.id} goal={goal}
                     members={members} />
                   {item.count > 1 && (
                     <span className="absolute right-3 top-2.5 text-meta"
@@ -1818,7 +1828,7 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
       <AnimatePresence>
         {userActionTarget && (
           <UserActionPopup
-            member={userActionTarget} user={user} dbUser={dbUser}
+            member={userActionTarget}
             onClose={() => setUserActionTarget(null)} />
         )}
       </AnimatePresence>
@@ -1830,8 +1840,6 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
             member={selectedMember}
             myGoalId={goal.id}
             goal={goal}
-            user={user}
-            dbUser={dbUser}
             allMembers={members}
             onClose={() => setSelectedMember(null)} />
         )}
@@ -2100,7 +2108,7 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
             )}
 
             {activeTab === 'people' && (
-              <PeopleTab goal={goal} user={user} dbUser={dbUser} />
+              <PeopleTab goal={goal} />
             )}
 
           </motion.div>

@@ -33,13 +33,14 @@ enum OperationType {
 
 // ── Screen + feature imports ──────────────────────────────────────────────────
 
-import { HomeScreen }            from './components/HomeScreen';
-import { GoalDetailScreen }      from './components/GoalDetailScreen';
-import { CalendarScreen }        from './components/CalendarScreen';
-import { ChallengeScreen }       from './components/ChallengeScreen';
-import { ProfileScreen }         from './components/ProfileScreen';
+const HomeScreen       = React.lazy(() => import('./components/HomeScreen').then(m => ({ default: m.HomeScreen })));
+const GoalDetailScreen = React.lazy(() => import('./components/GoalDetailScreen').then(m => ({ default: m.GoalDetailScreen })));
+const CalendarScreen   = React.lazy(() => import('./components/CalendarScreen').then(m => ({ default: m.CalendarScreen })));
+const ChallengeScreen  = React.lazy(() => import('./components/ChallengeScreen').then(m => ({ default: m.ChallengeScreen })));
+const ProfileScreen    = React.lazy(() => import('./components/ProfileScreen').then(m => ({ default: m.ProfileScreen })));
 import { SortableNavConsole }    from './components/SortableNavConsole';
 import { HomeEditModeProvider }  from './contexts/HomeEditModeContext';
+import { UserContext }           from './contexts/UserContext';
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -364,11 +365,13 @@ export default function App() {
   const isAuth = currentScreen.name === 'auth';
 
   return (
+    <UserContext.Provider value={{ user, dbUser }}>
     <HomeEditModeProvider userId={user?.uid ?? null}>
     <div className="min-h-screen font-sans selection:bg-white selection:text-black"
          style={{ background: 'var(--c-bg)', color: 'var(--c-text)' }}>
 
       {/* ── Screens ─────────────────────────────────────────────────── */}
+      <React.Suspense fallback={null}>
       <AnimatePresence mode="wait">
 
         {/* AUTH */}
@@ -448,6 +451,7 @@ export default function App() {
         )}
 
       </AnimatePresence>
+      </React.Suspense>
 
       {/* ── Bottom navigation — sortable, edit-mode aware ──────────── */}
       {!isAuth && currentScreen.name !== 'profile' && (
@@ -459,5 +463,6 @@ export default function App() {
       )}
     </div>
     </HomeEditModeProvider>
+    </UserContext.Provider>
   );
 }
