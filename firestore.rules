@@ -90,19 +90,19 @@ service cloud.firestore {
     }
 
     // ── Collection-group queries (calendar reminders) ─────────────────
-    // SECURITY FIX: Verify the intermediate goal path belongs to the user.
-    // path here is the full path to the parent goal document, e.g.
-    //   goals/{goalId}
-    // The get() call returns that goal doc so we can check ownerId.
+    // Tasks and notes store ownerId directly on the document (written by the
+    // server on every create). Check that field directly — no get() needed.
+    // The client query also filters by ownerId == uid, so Firestore validates
+    // the two constraints agree before returning any documents.
 
     match /{path=**}/tasks/{taskId} {
       allow read: if isAuthenticated() &&
-                     get(/databases/$(database)/documents/$(path)).data.ownerId == request.auth.uid;
+                     resource.data.ownerId == request.auth.uid;
     }
 
     match /{path=**}/notes/{noteId} {
       allow read: if isAuthenticated() &&
-                     get(/databases/$(database)/documents/$(path)).data.ownerId == request.auth.uid;
+                     resource.data.ownerId == request.auth.uid;
     }
 
     // ── Groups / Goal Rooms ───────────────────────────────────────────
