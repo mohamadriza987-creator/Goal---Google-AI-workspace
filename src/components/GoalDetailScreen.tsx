@@ -1294,14 +1294,20 @@ function AddTaskPopup({
 
 // ── Ask-for-help popup ────────────────────────────────────────────────────────
 function AskForHelpPopup({
-  taskText, goal, user, dbUser, memberUserIds, onClose,
+  taskText, goal, user, dbUser, members, onClose,
 }: {
   taskText: string; goal: Goal; user: FirebaseUser | null;
-  dbUser: User | null; memberUserIds: string[]; onClose: () => void;
+  dbUser: User | null; members: MemberDetail[]; onClose: () => void;
 }) {
   const [description, setDescription] = useState('');
   const [sending,     setSending]     = useState(false);
   const [success,     setSuccess]     = useState(false);
+
+  // Only notify members who actually have this task in their active list
+  const taskKey = taskText.toLowerCase().trim();
+  const notifyIds = members
+    .filter(m => m.activeTasks.some(t => t.toLowerCase().trim() === taskKey))
+    .map(m => m.userId);
 
   const handleSend = async () => {
     if (!user || !goal.groupId) return;
@@ -1318,7 +1324,7 @@ function AskForHelpPopup({
           description: description.trim() || undefined,
           authorName: dbUser?.displayName || 'Someone',
           authorAvatar: dbUser?.avatarUrl || '',
-          notifyUserIds: memberUserIds,
+          notifyUserIds: notifyIds,
         }),
       });
       setSuccess(true);
@@ -1353,7 +1359,9 @@ function AskForHelpPopup({
               color: 'var(--c-text)', fontSize: 14, resize: 'none', outline: 'none',
             }} />
           <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>
-            This will post a help thread and notify {memberUserIds.length} member{memberUserIds.length !== 1 ? 's' : ''} who share this task.
+            {notifyIds.length > 0
+              ? `Will notify ${notifyIds.length} member${notifyIds.length !== 1 ? 's' : ''} who also have this task.`
+              : 'No other members have this exact task — the help thread will still be posted.'}
           </p>
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} disabled={sending}
@@ -1375,10 +1383,10 @@ function AskForHelpPopup({
 
 // ── Task action row (shared by MemberSheet, SimilarTasks, PopularTasks) ───────
 function TaskActionRow({
-  text, isDone, myGoalId, goal, user, dbUser, memberUserIds,
+  text, isDone, myGoalId, goal, user, dbUser, members,
 }: {
   text: string; isDone?: boolean; myGoalId: string;
-  goal: Goal; user: FirebaseUser | null; dbUser: User | null; memberUserIds: string[];
+  goal: Goal; user: FirebaseUser | null; dbUser: User | null; members: MemberDetail[];
 }) {
   const [showAdd,  setShowAdd]  = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1417,7 +1425,7 @@ function TaskActionRow({
       {showHelp && (
         <AskForHelpPopup
           taskText={text} goal={goal} user={user} dbUser={dbUser}
-          memberUserIds={memberUserIds} onClose={() => setShowHelp(false)} />
+          members={members} onClose={() => setShowHelp(false)} />
       )}
     </>
   );
@@ -1529,11 +1537,11 @@ function UserActionPopup({
 
 // ── Member detail sheet ───────────────────────────────────────────────────────
 function MemberSheet({
-  member, myGoalId, goal, user, dbUser, allMemberUserIds, onClose,
+  member, myGoalId, goal, user, dbUser, allMembers, onClose,
 }: {
   member: MemberDetail; myGoalId: string; goal: Goal;
   user: FirebaseUser | null; dbUser: User | null;
-  allMemberUserIds: string[]; onClose: () => void;
+  allMembers: MemberDetail[]; onClose: () => void;
 }) {
   const [showUserActions, setShowUserActions] = useState(false);
 
@@ -1614,7 +1622,7 @@ function MemberSheet({
                   {member.activeTasks.map((t, i) => (
                     <TaskActionRow key={i} text={t} isDone={false}
                       myGoalId={myGoalId} goal={goal} user={user} dbUser={dbUser}
-                      memberUserIds={allMemberUserIds} />
+                      members={allMembers} />
                   ))}
                 </div>
               ) : (
@@ -1633,7 +1641,7 @@ function MemberSheet({
                   {member.completedTasks.map((t, i) => (
                     <TaskActionRow key={i} text={t} isDone={true}
                       myGoalId={myGoalId} goal={goal} user={user} dbUser={dbUser}
-                      memberUserIds={allMemberUserIds} />
+                      members={allMembers} />
                   ))}
                 </div>
               </section>
@@ -1685,7 +1693,6 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
   }
 
   const { members = [], similarTasks = [], popularTasks = [] } = data ?? {};
-  const allMemberUserIds = members.map(m => m.userId);
 
   const SectionLabel = ({ label }: { label: string }) => (
     <h3 className="text-meta uppercase tracking-widest mb-3"
@@ -1765,7 +1772,7 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
               {similarTasks.map((item, i) => (
                 <TaskActionRow key={i} text={item.text}
                   myGoalId={goal.id} goal={goal} user={user} dbUser={dbUser}
-                  memberUserIds={allMemberUserIds} />
+                  members={members} />
               ))}
             </div>
           ) : (
@@ -1782,7 +1789,7 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
                 <div key={i} className="relative">
                   <TaskActionRow text={item.text}
                     myGoalId={goal.id} goal={goal} user={user} dbUser={dbUser}
-                    memberUserIds={allMemberUserIds} />
+                    members={members} />
                   {item.count > 1 && (
                     <span className="absolute right-3 top-2.5 text-meta"
                           style={{ color: 'var(--c-text-3)', fontSize: 11, pointerEvents: 'none' }}>
@@ -1817,7 +1824,7 @@ function PeopleTab({ goal, user, dbUser }: { goal: Goal; user: FirebaseUser | nu
             goal={goal}
             user={user}
             dbUser={dbUser}
-            allMemberUserIds={allMemberUserIds}
+            allMembers={members}
             onClose={() => setSelectedMember(null)} />
         )}
       </AnimatePresence>
