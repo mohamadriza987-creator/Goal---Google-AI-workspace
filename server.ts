@@ -230,17 +230,24 @@ async function findOrCreateGroupForGoal(goalId: string) {
       return null;
     }
 
-    // Bounded scan: previously a full-collection read on every goal save.
-    // Indexed matching (runIndexedMatching) is the primary path; this scan
-    // is a fallback and a top-N cosine sort still picks the best match
-    // within the cap.
-    const groupsSnap = await db.collection("groups").limit(GROUP_SCAN_CAP).get();
+    // Fire both fallback scans concurrently so the goals scan is already
+    // resolved if we reach the "create new group" path.
+    // Trade-off: on a group-match hit we pay GOAL_SCAN_CAP reads for the
+    // discarded goalsSnap, but we save the full scan latency (~100-200ms)
+    // on the no-match path, which is the common case for new goals.
+    const [groupsSnap, goalsSnapPromise] = await Promise.all([
+      db.collection("groups").limit(GROUP_SCAN_CAP).get(),
+      db.collection("goals").limit(GOAL_SCAN_CAP).get(),
+    ]);
     const allGroups = groupsSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GroupDoc,
     );
 
     const SIMILARITY_THRESHOLD_EXISTING = 0.78;
     const SIMILARITY_THRESHOLD_NEW = 0.72;
+
+    // Compute once here so the group-loop and the goals-path both use it.
+    const goalIsPrivate = isPrivateGoal(goal);
 
     let bestGroup: GroupDoc | null = null;
     let maxScore = -1;
@@ -249,7 +256,6 @@ async function findOrCreateGroupForGoal(goalId: string) {
       if (!group.representativeEmbedding) continue;
       if ((group.memberIds || []).includes(goal.ownerId)) continue;
 
-      const goalIsPrivate = isPrivateGoal(goal);
       const groupIsPrivate = group.matchingCriteria?.privacy === "private";
       if (goalIsPrivate !== groupIsPrivate) continue;
 
@@ -318,13 +324,11 @@ async function findOrCreateGroupForGoal(goalId: string) {
       };
     }
 
-    // Bounded scan: see GROUP_SCAN_CAP note above.
-    const goalsSnap = await db.collection("goals").limit(GOAL_SCAN_CAP).get();
-    const allGoals = goalsSnap.docs.map(
+    // goalsSnapPromise was already resolved above via Promise.all.
+    const allGoals = goalsSnapPromise.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
 
-    const goalIsPrivate = isPrivateGoal(goal);
     const ungroupedGoals = allGoals.filter(
       (g) =>
         !g.groupId &&
@@ -1811,24 +1815,34 @@ async function startServer() {
         completedTasks: string[];
       }
 
+      const slicedMembers = rawMembers.slice(0, 6);
+
+      // Batch all reads for the 6 members in parallel instead of 3 sequential
+      // awaits per member (was up to 18 serial round-trips; now 3 parallel batches).
+      const [goalDocs, userDocs, taskSnaps] = await Promise.all([
+        Promise.all(slicedMembers.map((m) => db.collection("goals").doc(m.goalId).get())),
+        Promise.all(slicedMembers.map((m) => db.collection("users").doc(m.userId).get())),
+        Promise.all(
+          slicedMembers.map((m) =>
+            db.collection("goals").doc(m.goalId).collection("tasks")
+              .orderBy("order", "asc")
+              .limit(20)          // was unbounded; we only ever display 10
+              .get()
+          )
+        ),
+      ]);
+
       const members: MemberDetail[] = [];
 
-      for (const member of rawMembers.slice(0, 6)) {
-        const mgDoc = await db.collection("goals").doc(member.goalId).get();
+      for (let idx = 0; idx < slicedMembers.length; idx++) {
+        const member    = slicedMembers[idx];
+        const mgDoc     = goalDocs[idx];
+        const userDoc   = userDocs[idx];
+        const tasksSnap = taskSnaps[idx];
+
         if (!mgDoc.exists) continue;
-        const mgData = mgDoc.data()!;
-
-        // Load user profile for display name and avatar
-        const userDoc = await db.collection("users").doc(member.userId).get();
+        const mgData   = mgDoc.data()!;
         const userData = userDoc.exists ? userDoc.data()! : {};
-
-        // Load all tasks for this member's goal
-        const tasksSnap = await db
-          .collection("goals")
-          .doc(member.goalId)
-          .collection("tasks")
-          .orderBy("order", "asc")
-          .get();
 
         const activeTasks: string[]    = [];
         const completedTasks: string[] = [];
