@@ -1698,6 +1698,12 @@ function PeopleTab({ goal }: { goal: Goal }) {
     return () => { cancelled = true; };
   }, [goal.id, user]);
 
+  const { members, similarTasks, popularTasks } = useMemo(() => ({
+    members:      data?.members      ?? [],
+    similarTasks: data?.similarTasks ?? [],
+    popularTasks: data?.popularTasks ?? [],
+  }), [data]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -1705,12 +1711,6 @@ function PeopleTab({ goal }: { goal: Goal }) {
       </div>
     );
   }
-
-  const { members, similarTasks, popularTasks } = useMemo(() => ({
-    members:      data?.members      ?? [],
-    similarTasks: data?.similarTasks ?? [],
-    popularTasks: data?.popularTasks ?? [],
-  }), [data]);
 
   const SectionLabel = ({ label }: { label: string }) => (
     <h3 className="text-meta uppercase tracking-widest mb-3"
