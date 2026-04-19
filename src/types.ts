@@ -23,6 +23,22 @@ export interface User {
   updatedAt?: string;
 }
 
+export interface DraftData {
+  structuredGoal: {
+    transcript: string;
+    title: string;
+    description: string;
+    categories: string[];
+    languages: string[];
+    tasks: { text: string; microSteps: string[] }[];
+    tags: string[];
+    timeHorizon: string;
+    privacy: 'private' | 'public';
+    normalizedMatchingText: string;
+  };
+  manualTasks: string[];
+}
+
 export interface Goal {
   id: string;
   ownerId: string;
@@ -44,8 +60,13 @@ export interface Goal {
   eligibleAt?: string;
   createdAt: string;
   updatedAt?: string;
-  savingStatus?: 'saving' | 'success' | 'error';
-  draftData?: any;
+  savingStatus?: 'saving' | 'success' | 'partial' | 'error';
+  saveErrorMessage?: string;
+  // Client-generated temp ID written into the saved doc so the realtime
+  // listener can deduplicate optimistic copies without title+timestamp
+  // heuristics that mis-fire on duplicate titles.
+  tempId?: string;
+  draftData?: DraftData;
   sourceText?: string;
   normalizedMatchingText?: string;
   timeHorizon?: string;
@@ -79,6 +100,7 @@ export interface TaskNote {
 export interface GoalTask {
   id: string;
   goalId: string;
+  ownerId?: string;
   text: string;
   source: 'ai' | 'user' | 'manual';
   order: number;
