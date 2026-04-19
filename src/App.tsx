@@ -33,13 +33,14 @@ enum OperationType {
 
 // ── Screen + feature imports ──────────────────────────────────────────────────
 
-import { HomeScreen }            from './components/HomeScreen';
-import { GoalDetailScreen }      from './components/GoalDetailScreen';
-import { CalendarScreen }        from './components/CalendarScreen';
-import { ChallengeScreen }       from './components/ChallengeScreen';
-import { ProfileScreen }         from './components/ProfileScreen';
+const HomeScreen       = React.lazy(() => import('./components/HomeScreen').then(m => ({ default: m.HomeScreen })));
+const GoalDetailScreen = React.lazy(() => import('./components/GoalDetailScreen').then(m => ({ default: m.GoalDetailScreen })));
+const CalendarScreen   = React.lazy(() => import('./components/CalendarScreen').then(m => ({ default: m.CalendarScreen })));
+const ChallengeScreen  = React.lazy(() => import('./components/ChallengeScreen').then(m => ({ default: m.ChallengeScreen })));
+const ProfileScreen    = React.lazy(() => import('./components/ProfileScreen').then(m => ({ default: m.ProfileScreen })));
 import { SortableNavConsole }    from './components/SortableNavConsole';
 import { HomeEditModeProvider }  from './contexts/HomeEditModeContext';
+import { UserContext }           from './contexts/UserContext';
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -57,6 +58,8 @@ export default function App() {
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
   const [navVisible,     setNavVisible]     = useState(true);
   const lastScrollY = useRef(0);
+  // Stable ref so the reminders effect doesn't re-subscribe on every goals update
+  const goalsRef = useRef<Goal[]>(goals);
 
   // ── Nav hide-on-scroll ──────────────────────────────────────────────────
   useEffect(() => {
@@ -137,6 +140,7 @@ export default function App() {
     );
     const unsub = onSnapshot(q, (snapshot) => {
       const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
+      goalsRef.current = g;
       setGoals(g);
       setGoalsLoading(false);
       // If we got exactly the limit there may be more; fewer means we've reached the end
@@ -162,20 +166,20 @@ export default function App() {
       setAllReminders(merged);
     };
 
-    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid));
+    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid), limit(500));
     const unsubT = onSnapshot(tQ, (snap) => {
       latestTask = [];
       snap.docs.forEach(d => {
         const data = d.data() as GoalTask;
         if (!data.reminderAt) return;
         const goalId = d.ref.parent.parent?.id;
-        const goal   = goals.find(g => g.id === goalId);
+        const goal   = goalsRef.current.find(g => g.id === goalId);
         if (goal) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
 
-    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid));
+    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid), limit(500));
     const unsubN = onSnapshot(nQ, (snap) => {
       latestNote = [];
       snap.docs.forEach(d => {
@@ -183,14 +187,14 @@ export default function App() {
         if (!data.reminderAt) return;
         const taskR = d.ref.parent.parent;
         const goalR = taskR?.parent.parent;
-        const goal  = goals.find(g => g.id === goalR?.id);
+        const goal  = goalsRef.current.find(g => g.id === goalR?.id);
         if (goal) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/notes'));
 
     return () => { unsubT(); unsubN(); };
-  }, [user, goals]);
+  }, [user]);
 
   // ── Calendar notes ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -361,11 +365,13 @@ export default function App() {
   const isAuth = currentScreen.name === 'auth';
 
   return (
+    <UserContext.Provider value={{ user, dbUser }}>
     <HomeEditModeProvider userId={user?.uid ?? null}>
     <div className="min-h-screen font-sans selection:bg-white selection:text-black"
          style={{ background: 'var(--c-bg)', color: 'var(--c-text)' }}>
 
       {/* ── Screens ─────────────────────────────────────────────────── */}
+      <React.Suspense fallback={null}>
       <AnimatePresence mode="wait">
 
         {/* AUTH */}
@@ -445,6 +451,7 @@ export default function App() {
         )}
 
       </AnimatePresence>
+      </React.Suspense>
 
       {/* ── Bottom navigation — sortable, edit-mode aware ──────────── */}
       {!isAuth && currentScreen.name !== 'profile' && (
@@ -456,5 +463,6 @@ export default function App() {
       )}
     </div>
     </HomeEditModeProvider>
+    </UserContext.Provider>
   );
 }
