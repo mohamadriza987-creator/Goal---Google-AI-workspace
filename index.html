@@ -1,8 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" style="color-scheme: dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- POLISH: viewport-fit=cover enables safe-area-inset on notch / home-indicator devices -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- POLISH: matches app background so iOS/Android chrome blends with the shell -->
+    <meta name="theme-color" content="#000000" />
+    <!-- POLISH: iOS home-screen standalone + translucent status bar -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>My Google AI Studio App</title>
   </head>
   <body>
@@ -10,4 +17,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

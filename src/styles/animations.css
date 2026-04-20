@@ -1,0 +1,152 @@
+/* ═══════════════════════════════════════════════════════
+   ANIMATIONS — shared keyframe + utility library  POLISH
+   Imported once from src/index.css. Every class here
+   animates only `transform` / `opacity` so the compositor
+   does the work. Every animation is silenced under
+   `prefers-reduced-motion: reduce` at the bottom.
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Stagger delay custom property ── POLISH */
+:root {
+  --stagger-step: 40ms;
+}
+
+/* ═══════════════════════════════════════════════════════
+   KEYFRAMES
+   ═══════════════════════════════════════════════════════ */
+
+@keyframes pol-fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+@keyframes pol-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes pol-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1);    }
+}
+
+/* Haptic-style visual pulse on press: 1 → 0.97 → 1.02 → 1 */
+@keyframes pol-press-pop {
+  0%   { transform: scale(1);    }
+  40%  { transform: scale(0.97); }
+  70%  { transform: scale(1.02); }
+  100% { transform: scale(1);    }
+}
+
+/* Skeleton shimmer — moves a gradient via transform, never background-position */
+@keyframes pol-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%);  }
+}
+
+/* Gold ring pulse for idle mic / CTA */
+@keyframes pol-gold-pulse {
+  0%, 100% { box-shadow: 0 0 0 0   rgba(201,168,76,0);    }
+  50%      { box-shadow: 0 0 0 6px rgba(201,168,76,.18); }
+}
+
+/* ═══════════════════════════════════════════════════════
+   UTILITY CLASSES
+   ═══════════════════════════════════════════════════════ */
+
+.anim-fade-up {
+  animation: pol-fade-up var(--dur-panel) var(--ease-out-quad) both;
+  will-change: transform, opacity;
+}
+
+.anim-fade-in {
+  animation: pol-fade-in var(--dur-panel) var(--ease-out-quad) both;
+  will-change: opacity;
+}
+
+.anim-scale-in {
+  animation: pol-scale-in var(--dur-panel) var(--ease-out-quad) both;
+  will-change: transform, opacity;
+}
+
+/* Apply on :active via .anim-press, or trigger manually by adding/removing the class */
+.anim-press:active {
+  animation: pol-press-pop var(--dur-micro) var(--ease-out-quad);
+}
+
+.anim-gold-pulse {
+  animation: pol-gold-pulse 2.4s var(--ease-out-quad) infinite;
+}
+
+/* Stagger helper — consumer sets --i on each child (0,1,2…) */
+.anim-stagger > * {
+  animation: pol-fade-up var(--dur-panel) var(--ease-out-quad) both;
+  animation-delay: calc(var(--i, 0) * var(--stagger-step));
+  will-change: transform, opacity;
+}
+
+/* ── Skeleton shimmer ── POLISH
+   Usage: <div class="skeleton-shimmer" style="width:120px;height:12px" /> */
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: var(--c-surface-2);
+  border-radius: var(--r-sm);
+}
+.skeleton-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0)     0%,
+    rgba(255,255,255,.06)  50%,
+    rgba(255,255,255,0)   100%
+  );
+  animation: pol-shimmer 1.4s var(--ease-out-quad) infinite;
+  will-change: transform;
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCROLL + TAP helpers intended for Phase 3 hand-off.
+   Kept here so the motion layer is self-contained. POLISH
+   ═══════════════════════════════════════════════════════ */
+
+.scroll-smooth-touch {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* ═══════════════════════════════════════════════════════
+   REDUCED-MOTION — master override
+   Everything animated above collapses to an instant state. POLISH
+   ═══════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-up,
+  .anim-fade-in,
+  .anim-scale-in,
+  .anim-gold-pulse,
+  .anim-stagger > *,
+  .skeleton-shimmer::after {
+    animation: none !important;
+  }
+  .anim-press:active {
+    animation: none !important;
+    transform: scale(0.98);           /* still give a nudge so the tap feels registered */
+    transition: transform 80ms linear;
+  }
+  .scroll-smooth-touch {
+    scroll-behavior: auto;
+  }
+  /* Blanket safety net — kills any stray transition/animation across the app */
+  *,
+  *::before,
+  *::after {
+    animation-duration:   0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration:  0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
