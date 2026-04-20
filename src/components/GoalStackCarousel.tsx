@@ -280,12 +280,15 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
               width: cardW || '100%',
               height: '100%',
               zIndex: isActive ? 2 : 1,
-              willChange: 'transform',
+              /* POLISH: only hint the compositor for the card the user is steering — others idle */
+              willChange: isActive ? 'transform' : 'auto',
               // Non-active off-screen cards must not intercept touches
               pointerEvents: isActive ? 'auto' : 'none',
             }}
-            animate={{ x: getX(i) }}
-            transition={SPRING}
+            /* POLISH: first-mount stagger — 40ms between cards, opacity + x */
+            initial={{ opacity: 0, x: getX(i) + 12 }}
+            animate={{ opacity: 1, x: getX(i) }}
+            transition={{ ...SPRING, opacity: { duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94], delay: i * 0.04 } }}
             drag={isActive ? 'x' : false}
             dragConstraints={{ left: -(cardW * 0.6), right: cardW * 0.3 }}
             dragElastic={{ left: 0.12, right: 0.18 }}
@@ -321,7 +324,8 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
               height:       5,
               borderRadius: 999,
               background:   i === activeIdx ? 'var(--c-gold)' : 'rgba(255,255,255,0.22)',
-              transition:   'all 0.3s cubic-bezier(0.34,1.56,0.64,1)',
+              /* POLISH: tightened to 160ms with shared ease tokens */
+              transition:   'width 160ms var(--ease-spring), background-color 160ms var(--ease-out-quad)',
             }} />
           ))}
         </div>

@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { Rnd } from 'react-rnd';
-import { motion } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 import { useHomeEditMode } from '../contexts/HomeEditModeContext';
 import { useLongPress } from '../hooks/useLongPress';
 import {
@@ -20,7 +20,8 @@ const JIGGLE_TRANSITION = { repeat: Infinity, duration: 0.45, ease: 'easeInOut' 
 interface EditableGoalCardsProps {
   goals:       Goal[];
   onOpen:      (goalId: string) => void;
-  renderCard:  (goal: Goal, opts: { fillContainer?: boolean; onOpen: () => void }) => React.ReactNode;
+  /* POLISH: renderCard now receives stagger index so cards can enter in sequence */
+  renderCard:  (goal: Goal, opts: { fillContainer?: boolean; onOpen: () => void; index?: number }) => React.ReactNode;
   hasMore?:    boolean;
   onLoadMore?: () => void;
 }
@@ -28,6 +29,8 @@ interface EditableGoalCardsProps {
 export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, onLoadMore }: EditableGoalCardsProps) {
   const { isEditMode, enterEditMode, exitEditMode, layout, setGoalCardLayout } = useHomeEditMode();
   const longPressForCard = useLongPress(enterEditMode, { delay: 1200 });
+  /* POLISH: silence the idle jiggle for users who prefer reduced motion */
+  const prefersReduced = useReducedMotion();
 
   const [cardMaxW, setCardMaxW] = useState(
     typeof window !== 'undefined' ? window.innerWidth - 32 : 380,
@@ -210,24 +213,27 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
           if (!isDisplaced) return null;
           return (
             <div
+              /* POLISH: drive position via transform — no layout thrash as the ghost glides */
               style={{
                 position: 'absolute',
-                left: ghostLayout.x,
-                top: ghostLayout.y,
+                left: 0,
+                top: 0,
                 width: ghostLayout.width,
                 height: ghostLayout.height,
+                transform: `translate3d(${ghostLayout.x}px, ${ghostLayout.y}px, 0)`,
                 border: '2px dashed rgba(201,168,76,0.55)',
                 borderRadius: 12,
                 background: 'rgba(201,168,76,0.07)',
                 pointerEvents: 'none',
                 zIndex: 4,
-                transition: 'left 80ms, top 80ms',
+                transition: 'transform 80ms var(--ease-out-quad)',
+                willChange: 'transform',
               }}
             />
           );
         })()}
 
-        {goals.map(goal => {
+        {goals.map((goal, i) => {
           const cl = effectiveLayouts[goal.id] ?? { x: 16, y: 16, width: 220, height: 150 };
 
           return (
@@ -267,11 +273,12 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
               }}
             >
               <motion.div
-                animate={JIGGLE_ANIMATE}
-                transition={JIGGLE_TRANSITION}
+                /* POLISH: skip the jiggle entirely for reduced-motion users */
+                animate={prefersReduced ? undefined : JIGGLE_ANIMATE}
+                transition={prefersReduced ? undefined : JIGGLE_TRANSITION}
                 style={{ width: '100%', height: '100%', cursor: 'grab' }}
               >
-                {renderCard(goal, { fillContainer: true, onOpen: () => {} })}
+                {renderCard(goal, { fillContainer: true, onOpen: () => {}, index: i /* POLISH: stagger */ })}
               </motion.div>
             </Rnd>
           );
@@ -295,9 +302,9 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
         className="flex gap-3 overflow-x-auto snap-x snap-mandatory pl-4 pr-4 pb-1"
         style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
       >
-        {goals.map(goal => (
+        {goals.map((goal, i) => (
           <div key={goal.id} {...longPressForCard} className="snap-start" style={{ flexShrink: 0 }}>
-            {renderCard(goal, { onOpen: () => { exitEditMode(); onOpen(goal.id); } })}
+            {renderCard(goal, { onOpen: () => { exitEditMode(); onOpen(goal.id); }, index: i /* POLISH: stagger */ })}
           </div>
         ))}
         {hasMore && (

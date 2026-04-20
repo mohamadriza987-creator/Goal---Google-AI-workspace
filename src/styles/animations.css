@@ -30,6 +30,12 @@
   to   { opacity: 1; transform: scale(1);    }
 }
 
+/* Page / panel enter — subtle 8px rise, reserved for App-level screen swaps ── POLISH */
+@keyframes pol-panel-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
 /* Haptic-style visual pulse on press: 1 → 0.97 → 1.02 → 1 */
 @keyframes pol-press-pop {
   0%   { transform: scale(1);    }
@@ -66,6 +72,12 @@
 
 .anim-scale-in {
   animation: pol-scale-in var(--dur-panel) var(--ease-out-quad) both;
+  will-change: transform, opacity;
+}
+
+/* Panel-level page swap — 8px rise, never animates layout props ── POLISH */
+.anim-panel-in {
+  animation: pol-panel-in var(--dur-panel) var(--ease-out-quad) both;
   will-change: transform, opacity;
 }
 
@@ -127,6 +139,7 @@
   .anim-fade-up,
   .anim-fade-in,
   .anim-scale-in,
+  .anim-panel-in,
   .anim-gold-pulse,
   .anim-stagger > *,
   .skeleton-shimmer::after {

@@ -15,7 +15,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { Calendar as CalendarIcon, Trophy } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useHomeEditMode } from '../contexts/HomeEditModeContext';
@@ -49,6 +49,8 @@ function SortableNavItem({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
+  /* POLISH: users with "reduce motion" get a still icon, not a jiggling one */
+  const prefersReduced = useReducedMotion();
 
   const active = activeScreen === NAV_ITEMS[id].screen;
 
@@ -70,8 +72,9 @@ function SortableNavItem({
       {...(isEditMode ? { ...attributes, ...listeners } : {})}
     >
       <motion.div
-        animate={isEditMode ? JIGGLE_ANIMATE   : { rotate: 0 }}
-        transition={isEditMode ? JIGGLE_TRANSITION : { duration: 0.25 }}
+        /* POLISH: reduced-motion → no rotation, instant settle */
+        animate={isEditMode && !prefersReduced ? JIGGLE_ANIMATE : { rotate: 0 }}
+        transition={isEditMode && !prefersReduced ? JIGGLE_TRANSITION : { duration: 0.25 }}
       >
         {id === 'home' ? (
           /* Panda — custom markup to preserve brand styling */
@@ -120,6 +123,11 @@ interface SortableNavConsoleProps {
 export function SortableNavConsole({ currentScreen, navigate, navVisible }: SortableNavConsoleProps) {
   const { isEditMode, enterEditMode, exitEditMode, resetLayout, layout, setNavOrder, canUndo, undoLastMove } =
     useHomeEditMode();
+  /* POLISH: shared reduced-motion flag for the top-right pop + bottom-nav slide */
+  const prefersReduced = useReducedMotion();
+  const popSpring   = prefersReduced ? { duration: 0.01 } : { type: 'spring', stiffness: 400, damping: 30 } as const;
+  const navSpring   = prefersReduced ? { duration: 0.01 } : { type: 'spring', stiffness: 320, damping: 32 } as const;
+  const undoSpring  = prefersReduced ? { duration: 0.01 } : { type: 'spring', stiffness: 400, damping: 28 } as const;
 
   /* Auto-exit edit mode when user leaves the home screen (including goal-detail) */
   useEffect(() => {
@@ -154,10 +162,11 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
       <AnimatePresence>
         {isEditMode && currentScreen === 'home' && (
           <motion.div
+            /* POLISH */
             initial={{ opacity: 0, y: -8, scale: 0.92 }}
             animate={{ opacity: 1, y: 0,  scale: 1 }}
             exit={  { opacity: 0, y: -8,  scale: 0.92 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+            transition={popSpring as any}
             style={{
               position: 'fixed',
               top:      16,
@@ -180,10 +189,11 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
               {canUndo && (
                 <motion.button
                   key="undo-btn"
+                  /* POLISH */
                   initial={{ opacity: 0, scale: 0.85, y: -4 }}
                   animate={{ opacity: 1, scale: 1,    y: 0  }}
                   exit={  { opacity: 0, scale: 0.85, y: -4  }}
-                  transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+                  transition={undoSpring as any}
                   onClick={undoLastMove}
                   style={{
                     padding: '6px 16px',
@@ -214,9 +224,10 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
       {/* Nav bar */}
       <motion.div
         className="fixed bottom-0 left-0 right-0 z-50"
+        /* POLISH: reduced-motion — collapse spring to instant */
         initial={false}
         animate={{ y: navVisible ? 0 : 80, opacity: navVisible ? 1 : 0 }}
-        transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+        transition={navSpring as any}
       >
         {/* Fade above nav */}
         <div

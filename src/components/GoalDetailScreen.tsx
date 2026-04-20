@@ -64,7 +64,8 @@ function ProgressRing({ pct }: { pct: number }) {
         <circle cx={64} cy={64} r={r} strokeWidth={9} fill="none"
           stroke="var(--c-gold)" strokeLinecap="round"
           strokeDasharray={circ} strokeDashoffset={off}
-          style={{ transition: 'stroke-dashoffset .7s cubic-bezier(.25,.46,.45,.94)' }} />
+          /* POLISH: share the ease token — duration intentionally kept at .7s for the long fill */
+          style={{ transition: 'stroke-dashoffset .7s var(--ease-out-quad)' }} />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
         <span style={{ fontSize: 26, fontWeight: 700, color: 'var(--c-gold)' }}>{pct}%</span>
@@ -1222,7 +1223,8 @@ function MiniRing({ pct, size = 28 }: { pct: number; size?: number }) {
       <circle cx={cx} cy={cy} r={r} strokeWidth={sw} fill="none" stroke="var(--c-gold)"
         strokeLinecap="round" strokeDasharray={circ}
         strokeDashoffset={circ - (Math.min(pct, 100) / 100) * circ}
-        style={{ transition: 'stroke-dashoffset .4s ease' }} />
+        /* POLISH: share the ease token */
+        style={{ transition: 'stroke-dashoffset .4s var(--ease-out-quad)' }} />
     </svg>
   );
 }

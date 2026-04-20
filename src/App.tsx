@@ -5,6 +5,13 @@ import { collection, query, where, onSnapshot, doc, orderBy, limit, setDoc, coll
 import { Goal, GoalTask, User, CalendarNote } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 
+/* POLISH: shared screen-transition tokens — mirrors --dur-panel / --ease-out-quad
+   so every page swap animates on transform + opacity (never layout). */
+const PANEL_INITIAL = { opacity: 0, y: 8 };
+const PANEL_ANIMATE = { opacity: 1, y: 0 };
+const PANEL_EXIT    = { opacity: 0, y: -4 };
+const PANEL_TRANS   = { duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] as const };
+
 // ── Screen types ──────────────────────────────────────────────────────────────
 
 type Screen =
@@ -377,7 +384,8 @@ export default function App() {
         {/* AUTH */}
         {currentScreen.name === 'auth' && (
           <motion.div key="auth"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            /* POLISH: shared panel transition — transform + opacity only */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}
             className="flex flex-col items-center justify-center h-screen p-6 text-center">
             <h1 className="text-page-title mb-3" style={{ fontSize: 38, letterSpacing: -1 }}>Goal</h1>
             <p className="text-body mb-12" style={{ color: 'var(--c-text-2)' }}>
@@ -391,7 +399,9 @@ export default function App() {
 
         {/* HOME */}
         {currentScreen.name === 'home' && (
-          <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="home"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <HomeScreen
               user={user}
               dbUser={dbUser}
@@ -409,7 +419,9 @@ export default function App() {
 
         {/* GOAL DETAIL */}
         {currentScreen.name === 'goal-detail' && currentScreen.goalId && (
-          <motion.div key="goal-detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="goal-detail"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <GoalDetailScreen
               user={user}
               dbUser={dbUser}
@@ -424,7 +436,9 @@ export default function App() {
 
         {/* CALENDAR */}
         {currentScreen.name === 'calendar' && (
-          <motion.div key="calendar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="calendar"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <CalendarScreen
               allReminders={allReminders}
               goals={displayGoals}
@@ -438,14 +452,18 @@ export default function App() {
 
         {/* CHALLENGE */}
         {currentScreen.name === 'challenge' && (
-          <motion.div key="challenge" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="challenge"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <ChallengeScreen user={user} dbUser={dbUser} />
           </motion.div>
         )}
 
         {/* PROFILE */}
         {currentScreen.name === 'profile' && (
-          <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="profile"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <ProfileScreen user={user} dbUser={dbUser} onNavigateHome={() => navigate({ name: 'home' })} />
           </motion.div>
         )}

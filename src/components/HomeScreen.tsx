@@ -69,8 +69,14 @@ function motivational() {
 }
 
 // ── GoalCard animation constants (hoisted to avoid re-triggering on re-render)
-const CARD_INITIAL = { opacity: 0, scale: 0.96 as number };
-const CARD_ANIMATE = { opacity: 1, scale: 1 as number };
+const CARD_INITIAL = { opacity: 0, y: 16 as number };    /* POLISH: transform-only enter (was scale) */
+const CARD_ANIMATE = { opacity: 1, y: 0  as number };
+
+/* POLISH: shared ease + stagger step — mirrors --ease-out-quad / 40ms in animations.css */
+const POL_EASE        = [0.25, 0.46, 0.45, 0.94] as const;
+const POL_DUR_PANEL   = 0.3;
+const POL_DUR_MICRO   = 0.16;
+const POL_STAGGER_MS  = 0.04;  // 40 ms per card
 
 // ── Goal Card Skeleton ────────────────────────────────────────────────────────
 function GoalCardSkeleton() {
@@ -92,13 +98,15 @@ function GoalCardSkeleton() {
 }
 
 // ── Goal Card ─────────────────────────────────────────────────────────────────
-function GoalCard({ goal, onOpen, fillContainer = false }: { goal: Goal; onOpen: () => void; fillContainer?: boolean }) {
+function GoalCard({ goal, onOpen, fillContainer = false, index = 0 }: { goal: Goal; onOpen: () => void; fillContainer?: boolean; index?: number }) {
   const nextStep = (goal as any).nextStep || null;
 
   return (
     <motion.div
       initial={CARD_INITIAL}
       animate={CARD_ANIMATE}
+      /* POLISH: 40ms stagger between cards, shared ease, transform+opacity only */
+      transition={{ duration: POL_DUR_PANEL, ease: POL_EASE, delay: index * POL_STAGGER_MS }}
       onClick={onOpen}
       className="card flex flex-col gap-3 cursor-pointer"
       style={{
@@ -540,12 +548,13 @@ export function HomeScreen({
                 <EditableGoalCards
                   goals={goals}
                   onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
-                  renderCard={(goal, { fillContainer, onOpen }) => (
+                  renderCard={(goal, { fillContainer, onOpen, index }) => (
                     <GoalCard
                       key={goal.id}
                       goal={goal}
                       onOpen={onOpen}
                       fillContainer={fillContainer}
+                      index={index}               /* POLISH: stagger index */
                     />
                   )}
                 />
@@ -567,9 +576,11 @@ export function HomeScreen({
         {/* ── RECORDING VIEW ─────────────────────────────────────────── */}
         {currentView === 'recording' && (
           <motion.div key="recording"
+            /* POLISH: token-driven panel transition (duration 300ms, ease-out-quad) */
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: POL_DUR_PANEL, ease: POL_EASE }}
             className="flex flex-col items-center justify-center px-6"
             style={{ minHeight: '100dvh' }}
           >
@@ -598,12 +609,20 @@ export function HomeScreen({
                   </p>
 
                   {isRecording && (
-                    <div className="flex gap-1 justify-center mt-4">
+                    /* POLISH: fixed height + scaleY — stays on the GPU compositor, no layout thrash */
+                    <div className="flex gap-1 justify-center items-center mt-4" style={{ height: 22 }}>
                       {[1,2,3,4,5].map(i => (
                         <motion.div key={i}
-                          animate={{ height: [4, 18, 4] }}
-                          transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                          style={{ width: 4, background: 'var(--c-gold)', borderRadius: 4 }}
+                          animate={{ scaleY: [0.2, 1, 0.2] }}
+                          transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1, ease: 'easeInOut' }}
+                          style={{
+                            width: 4,
+                            height: 18,
+                            background: 'var(--c-gold)',
+                            borderRadius: 4,
+                            transformOrigin: 'center',
+                            willChange: 'transform',
+                          }}
                         />
                       ))}
                     </div>
@@ -645,8 +664,10 @@ export function HomeScreen({
         {/* ── REVIEW VIEW (keep existing logic, updated style) ────────── */}
         {currentView === 'review' && structuredGoal && (
           <motion.div key="review"
+            /* POLISH: token-driven panel transition */
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: POL_DUR_PANEL, ease: POL_EASE }}
             className="max-w-2xl mx-auto px-5 pt-14 pb-32"
           >
             {/* Nav */}
