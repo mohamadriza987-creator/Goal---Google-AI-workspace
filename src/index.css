@@ -175,6 +175,9 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
    BUTTONS
    ═══════════════════════════════════════════════════════ */
 
+/* POLISH: all three button utilities share the press-pop token (scale 0.97)
+   and the shared --ease-out-quad curve. 44px min-height keeps every button
+   thumb-friendly; .btn-icon adds a pure 44×44 square helper. */
 .btn-gold {
   background: linear-gradient(135deg, #C9A84C 0%, #a8873c 100%);
   color: #000;
@@ -182,10 +185,12 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
   font-size: 15px;
   border-radius: var(--r-btn);
   padding: 14px 24px;
-  transition: opacity .2s var(--ease-premium), transform .15s var(--ease-premium);
+  min-height: 44px;
+  transition: opacity var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
   box-shadow: var(--shadow-gold);
 }
-.btn-gold:active { opacity: .85; transform: scale(.97); }
+.btn-gold:active { opacity: .88; transform: scale(.97); }
 
 .btn-ghost {
   background: var(--c-surface-2);
@@ -195,10 +200,31 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
   border-radius: var(--r-btn);
   border: 1px solid var(--c-border);
   padding: 10px 18px;
-  transition: background .2s var(--ease-premium), color .2s;
+  min-height: 44px;
+  transition: background var(--dur-micro) var(--ease-out-quad),
+              color var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
 }
 .btn-ghost:hover  { background: var(--c-surface-3); color: var(--c-text); }
 .btn-ghost:active { transform: scale(.97); }
+
+/* POLISH: 44×44 icon button — square tap target, neutral surface,
+   used for close/back/info/etc. affordances across the app. */
+.btn-icon {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text-2);
+  transition: background var(--dur-micro) var(--ease-out-quad),
+              color var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
+}
+.btn-icon:hover  { background: var(--c-surface-2); color: var(--c-text); }
+.btn-icon:active { transform: scale(.94); }
 
 .btn-pill {
   border-radius: var(--r-pill);

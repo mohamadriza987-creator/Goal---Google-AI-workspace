@@ -83,16 +83,26 @@ function GoalCardSkeleton() {
   return (
     <div
       className="card flex flex-col gap-3"
-      style={{ borderRadius: 18, padding: '16px 16px 14px', minWidth: 240, maxWidth: 260, flexShrink: 0 }}
+      /* POLISH: unified radius + layered shadow + containment, matches GoalCard */
+      style={{
+        borderRadius: 'var(--r-lg)',
+        padding:      '16px 16px 14px',
+        minWidth:     240,
+        maxWidth:     260,
+        flexShrink:   0,
+        boxShadow:    'var(--shadow-1), var(--shadow-2)',
+        contain:      'layout style paint',
+      }}
     >
       <div className="flex items-start gap-3">
         <div className="flex-1 space-y-2">
-          <div className="h-3.5 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)', width: '75%' }} />
-          <div className="h-2.5 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)', width: '55%' }} />
+          {/* POLISH: translateX-driven shimmer (GPU) — replaces animate-pulse */}
+          <div className="h-3.5 rounded-md skeleton-shimmer" style={{ background: 'var(--c-surface-2)', width: '75%' }} />
+          <div className="h-2.5 rounded-md skeleton-shimmer" style={{ background: 'var(--c-surface-2)', width: '55%' }} />
         </div>
-        <div className="w-11 h-11 rounded-full animate-pulse flex-shrink-0" style={{ background: 'var(--c-surface-2)' }} />
+        <div className="w-11 h-11 rounded-full skeleton-shimmer flex-shrink-0" style={{ background: 'var(--c-surface-2)' }} />
       </div>
-      <div className="h-8 rounded-lg animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
+      <div className="h-8 rounded-lg skeleton-shimmer" style={{ background: 'var(--c-surface-2)' }} />
     </div>
   );
 }
@@ -108,10 +118,15 @@ function GoalCard({ goal, onOpen, fillContainer = false, index = 0 }: { goal: Go
       /* POLISH: 40ms stagger between cards, shared ease, transform+opacity only */
       transition={{ duration: POL_DUR_PANEL, ease: POL_EASE, delay: index * POL_STAGGER_MS }}
       onClick={onOpen}
-      className="card flex flex-col gap-3 cursor-pointer"
+      /* POLISH: anim-press for a tactile scale pulse on tap; hit area is the full card. */
+      className="card anim-press flex flex-col gap-3 cursor-pointer"
       style={{
-        borderRadius: 18,
-        padding: '16px 16px 14px',
+        /* POLISH: unified radius to --r-lg (16px), layered shadow (ambient + key),
+           paint containment so the card's internal work doesn't invalidate the grid. */
+        borderRadius: 'var(--r-lg)',
+        padding:      '16px 16px 14px',
+        boxShadow:    'var(--shadow-1), var(--shadow-2)',
+        contain:      'layout style paint',
         ...(fillContainer
           ? { width: '100%', height: '100%', minWidth: 'unset', maxWidth: 'unset', boxSizing: 'border-box', overflow: 'hidden' }
           : { minWidth: 240, maxWidth: 260, flexShrink: 0 }),
@@ -457,13 +472,24 @@ export function HomeScreen({
 
               {/* Input widget — long-press 1.2s to enter edit mode */}
               <DraggableInputWidget>
-                <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
-                     style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                {/* POLISH: 48px min-height tap target, --r-lg (16) radius, focus-within
+                    outline uses `outline` not box-shadow so it never shifts layout. */}
+                <div className="flex items-center gap-3 px-4 rounded-2xl focus-within:outline"
+                     style={{
+                       background:    'var(--c-surface)',
+                       border:        '1px solid var(--c-border)',
+                       minHeight:     48,
+                       borderRadius:  'var(--r-lg)',
+                       outlineColor:  'var(--c-gold)',
+                       outlineOffset: '2px',
+                       outlineWidth:  '2px',
+                     }}>
                   {!isTyping ? (
                     <button
                       onClick={() => setIsTyping(true)}
-                      className="flex-1 text-left text-sm"
-                      style={{ color: 'var(--c-text-3)' }}
+                      /* POLISH: full-row tap target for the "New goal…" affordance */
+                      className="flex-1 text-left text-sm anim-press"
+                      style={{ color: 'var(--c-text-3)', minHeight: 44 }}
                     >
                       New goal…
                     </button>
@@ -500,16 +526,26 @@ export function HomeScreen({
                     </>
                   )}
 
-                  {/* Mic button — right side */}
-                  <motion.button
+                  {/* POLISH: mic button — 44×44 tap target (36×36 visible gold pill),
+                      anim-press scale pulse, gold-pulse breathing only when idle
+                      (and CSS gates it for reduced-motion users). aria-label for SR. */}
+                  <button
                     onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
-                    whileTap={{ scale: 0.92 }}
                     disabled={phase !== 'idle'}
-                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
-                    style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
+                    aria-label="Record new goal"
+                    className={cn(
+                      'tap-target anim-press flex items-center justify-center rounded-xl transition-opacity disabled:opacity-40',
+                      phase === 'idle' && 'anim-gold-pulse',
+                    )}
+                    style={{
+                      flexShrink:   0,
+                      background:   'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)',
+                      boxShadow:    '0 0 16px rgba(201,168,76,.25)',
+                      borderRadius: 'var(--r-md)',
+                    }}
                   >
                     <Mic size={16} style={{ color: '#000' }} />
-                  </motion.button>
+                  </button>
                 </div>
 
                 {(processingError || recorderError) && (

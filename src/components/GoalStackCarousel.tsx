@@ -49,19 +49,21 @@ function GoalStackCard({
   return (
     <div
       onClick={onTap}
+      /* POLISH: token-driven shadow ladder — idle card uses ambient+key,
+         active card gains the modal layer for stronger lift. Radius uses --r-xl (24). */
       style={{
-        height: '100%',
-        borderRadius: 24,
-        background: 'var(--c-surface)',
-        border: '1px solid var(--c-border)',
-        display: 'flex',
+        height:        '100%',
+        borderRadius:  'var(--r-xl)',
+        background:    'var(--c-surface)',
+        border:        '1px solid var(--c-border)',
+        display:       'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
-        boxShadow: isActive
-          ? '0 8px 40px rgba(0,0,0,0.45)'
-          : '0 2px 12px rgba(0,0,0,0.25)',
-        cursor: isActive ? 'grab' : 'pointer',
-        userSelect: 'none',
+        overflow:      'hidden',
+        boxShadow:     isActive
+          ? 'var(--shadow-1), var(--shadow-2), var(--shadow-modal)'
+          : 'var(--shadow-1), var(--shadow-2)',
+        cursor:        isActive ? 'grab' : 'pointer',
+        userSelect:    'none',
       }}
     >
       {/* Progress bar — top accent */}
@@ -261,7 +263,15 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
   return (
     <div
       ref={containerRef}
-      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}
+      /* POLISH: paint + style containment on the stack — cards drag over millions of
+         pixels each frame; we keep repaints local to this subtree. */
+      style={{
+        position:  'relative',
+        width:     '100%',
+        height:    '100%',
+        overflow:  'hidden',
+        contain:   'layout style paint',
+      }}
     >
       {goals.map((goal, i) => {
         const off      = i - activeIdx;

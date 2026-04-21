@@ -374,8 +374,15 @@ export default function App() {
   return (
     <UserContext.Provider value={{ user, dbUser }}>
     <HomeEditModeProvider userId={user?.uid ?? null}>
+    {/* POLISH: app shell — paint containment isolates screen repaints,
+        safe-area top padding respects iOS notch / dynamic island. */}
     <div className="min-h-screen font-sans selection:bg-white selection:text-black"
-         style={{ background: 'var(--c-bg)', color: 'var(--c-text)' }}>
+         style={{
+           background:  'var(--c-bg)',
+           color:       'var(--c-text)',
+           contain:     'layout paint',
+           paddingTop:  'env(safe-area-inset-top)',
+         }}>
 
       {/* ── Screens ─────────────────────────────────────────────────── */}
       <React.Suspense fallback={null}>

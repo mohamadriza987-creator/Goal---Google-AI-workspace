@@ -59,17 +59,25 @@ export function DraggableInputWidget({ children }: Props) {
   /* Normal mode: fixed bar above the nav */
   return (
     <div
+      /* POLISH: safe-area-aware bottom padding so the bar never hides behind
+         the iOS home indicator; layered shadow + saturate blur to match nav;
+         paint containment keeps this element out of global repaints. */
       style={{
-        position: 'fixed',
-        bottom: 68,
-        left: 0,
-        right: 0,
-        zIndex: 45,
-        padding: '10px 16px',
-        background: 'rgba(10,10,10,0.92)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        borderTop: '1px solid var(--c-border)',
+        position:             'fixed',
+        bottom:               68,
+        left:                 0,
+        right:                0,
+        zIndex:               45,
+        paddingTop:           10,
+        paddingLeft:          16,
+        paddingRight:         16,
+        paddingBottom:        'max(10px, env(safe-area-inset-bottom))',
+        background:           'rgba(10,10,10,0.92)',
+        backdropFilter:       'blur(20px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+        borderTop:            '1px solid var(--c-border)',
+        boxShadow:            'var(--shadow-1), var(--shadow-2)',
+        contain:              'layout style paint',
       }}
       {...longPress}
     >

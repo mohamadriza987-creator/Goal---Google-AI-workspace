@@ -92,15 +92,35 @@ function BottomSheet({ open, onClose, title, children }: {
     <AnimatePresence>
       {open && (
         <>
+          {/* POLISH: 60% black scrim w/ 4px blur — tap to close (already wired). */}
           <motion.div key="ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-40" style={{ background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)' }}
+            className="fixed inset-0 z-40"
+            style={{
+              background:           'rgba(0,0,0,.6)',
+              backdropFilter:       'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
+            }}
             onClick={onClose} />
           <motion.div key="sh"
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-            className="fixed bottom-0 left-0 right-0 z-50 px-5 pb-10 pt-6 max-h-[90dvh] overflow-y-auto"
-            style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}>
-            <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--c-border-light)' }} />
+            className="fixed bottom-0 left-0 right-0 z-50 px-5 pt-6 max-h-[90dvh] overflow-y-auto"
+            /* POLISH: modal shadow ladder for lift, safe-area-aware bottom padding,
+               paint containment so sheet content doesn't repaint the page beneath. */
+            style={{
+              background:    'var(--c-surface)',
+              borderRadius:  '28px 28px 0 0',
+              borderTop:     '1px solid var(--c-border)',
+              boxShadow:     'var(--shadow-1), var(--shadow-2), var(--shadow-modal)',
+              paddingBottom: 'max(40px, calc(env(safe-area-inset-bottom) + 24px))',
+              contain:       'layout style paint',
+            }}>
+            {/* POLISH: 36×4 drag handle (token scale) — was 40×4 */}
+            <div
+              className="rounded-full mx-auto mb-5"
+              style={{ width: 36, height: 4, background: 'var(--c-border-light)' }}
+              aria-hidden
+            />
             <h3 className="text-card-title mb-5">{title}</h3>
             {children}
           </motion.div>

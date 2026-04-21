@@ -238,12 +238,17 @@ export function SortableNavConsole({ currentScreen, navigate, navVisible }: Sort
         <nav
           {...longPress}
           className="flex items-center justify-around px-2"
+          /* POLISH: ambient+key layered shadow, tighter blur w/ saturation,
+             style containment so the nav never reflows its siblings. */
           style={{
-            background:     'rgba(10,10,10,0.92)',
-            backdropFilter: 'blur(24px)',
-            borderTop:      '1px solid var(--c-border)',
-            paddingBottom:  'max(env(safe-area-inset-bottom), 12px)',
-            paddingTop:     8,
+            background:        'rgba(10,10,10,0.92)',
+            backdropFilter:    'blur(20px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+            borderTop:         '1px solid var(--c-border)',
+            paddingBottom:     'max(env(safe-area-inset-bottom), 12px)',
+            paddingTop:        8,
+            boxShadow:         'var(--shadow-1), var(--shadow-2)',
+            contain:           'layout style paint',
           }}
         >
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>

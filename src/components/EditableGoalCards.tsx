@@ -213,21 +213,23 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
           if (!isDisplaced) return null;
           return (
             <div
-              /* POLISH: drive position via transform — no layout thrash as the ghost glides */
+              /* POLISH: drive position via transform — no layout thrash as the ghost glides.
+                 Uses outline + outline-offset so the dashed ring doesn't inflate the box. */
               style={{
-                position: 'absolute',
-                left: 0,
-                top: 0,
-                width: ghostLayout.width,
-                height: ghostLayout.height,
-                transform: `translate3d(${ghostLayout.x}px, ${ghostLayout.y}px, 0)`,
-                border: '2px dashed rgba(201,168,76,0.55)',
-                borderRadius: 12,
-                background: 'rgba(201,168,76,0.07)',
+                position:      'absolute',
+                left:          0,
+                top:           0,
+                width:         ghostLayout.width,
+                height:        ghostLayout.height,
+                transform:     `translate3d(${ghostLayout.x}px, ${ghostLayout.y}px, 0)`,
+                outline:       '2px dashed rgba(201,168,76,0.55)',
+                outlineOffset: '-2px',
+                borderRadius:  'var(--r-md)',
+                background:    'rgba(201,168,76,0.07)',
                 pointerEvents: 'none',
-                zIndex: 4,
-                transition: 'transform 80ms var(--ease-out-quad)',
-                willChange: 'transform',
+                zIndex:        4,
+                transition:    'transform 80ms var(--ease-out-quad)',
+                willChange:    'transform',
               }}
             />
           );
@@ -260,7 +262,19 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
                   parseInt(ref.style.height),
                 )
               }
-              style={{ zIndex: draggingId === goal.id ? 10 : 5 }}
+              /* POLISH: shadow ladder — static cards ride the base ambient+key layer,
+                 the card being dragged lifts with the modal-shadow layer + gold outline
+                 drawn via `outline-offset` so the box never changes size. */
+              style={{
+                zIndex:        draggingId === goal.id ? 10 : 5,
+                filter:        draggingId === goal.id
+                  ? 'drop-shadow(0 24px 40px rgba(0,0,0,0.55)) drop-shadow(0 2px 6px rgba(0,0,0,0.35))'
+                  : 'drop-shadow(0 2px 4px rgba(0,0,0,0.25))',
+                outline:       draggingId === goal.id ? '2px solid rgba(201,168,76,0.6)' : 'none',
+                outlineOffset: '4px',
+                borderRadius:  'var(--r-lg)',
+                transition:    'filter 160ms var(--ease-out-quad), outline-color 160ms var(--ease-out-quad)',
+              }}
               /* POLISH: 44×44 invisible hit area, 28×28 visible dot centered via
                  radial-gradient so thumbs have real room to grab. */
               resizeHandleStyles={{
