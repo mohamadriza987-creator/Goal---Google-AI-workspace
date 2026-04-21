@@ -305,14 +305,14 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
 /* ═══════════════════════════════════════════════════════
    BACKDROP-FILTER FALLBACK — SAMSUNG INTERNET ≤ 17
    Old Samsung builds ignore backdrop-filter entirely; without a fallback
-   the translucent rgba surfaces look almost transparent. When the browser
-   reports no backdrop-filter support, lift affected surfaces to 92%
-   opacity solid so nav / sheet / bar panels never look broken.
+   the tab-bar's 72% translucent surface looks almost transparent. When
+   the browser reports no backdrop-filter support, lift it to 92% opacity
+   solid so the bar never looks broken. (SortableNavConsole's nav and
+   DraggableInputWidget already use 92% opacity backgrounds inline, so
+   they degrade gracefully on their own.)
    ═══════════════════════════════════════════════════════ */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .tab-bar,
-  nav[class*="flex items-center justify-around"],
-  .bottom-sheet {
+  .tab-bar {
     background: rgba(10, 10, 10, 0.92) !important;
   }
 }
