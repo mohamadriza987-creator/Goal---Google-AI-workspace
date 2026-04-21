@@ -61,7 +61,9 @@ export function DraggableInputWidget({ children }: Props) {
     <div
       /* POLISH: safe-area-aware bottom padding so the bar never hides behind
          the iOS home indicator; layered shadow + saturate blur to match nav;
-         paint containment keeps this element out of global repaints. */
+         paint containment keeps this element out of global repaints.
+         SAFARI: translate3d promotes this fixed bar to its own compositor
+         layer so the backdrop-filter doesn't flicker during scroll. */
       style={{
         position:             'fixed',
         bottom:               68,
@@ -78,6 +80,8 @@ export function DraggableInputWidget({ children }: Props) {
         borderTop:            '1px solid var(--c-border)',
         boxShadow:            'var(--shadow-1), var(--shadow-2)',
         contain:              'layout style paint',
+        transform:            'translate3d(0, 0, 0)',
+        WebkitTransform:      'translate3d(0, 0, 0)',
       }}
       {...longPress}
     >

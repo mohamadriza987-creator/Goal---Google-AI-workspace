@@ -109,6 +109,29 @@ html, body {
   overscroll-behavior-y: contain;
 }
 
+/* SAFARI iOS: buttery-smooth momentum scroll on any opt-in container */
+.scroll-smooth-touch {
+  -webkit-overflow-scrolling: touch;
+  overflow-y: auto;
+}
+
+/* SAFARI iOS: draggable / tappable surfaces must never trigger text selection
+   (long-press selects a word otherwise) — paired with touch-action on the
+   individual handle elements that set .no-select or [data-draggable]. */
+[data-draggable], .no-select,
+button, [role="button"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* SAFARI iOS: prevent the auto-zoom that fires whenever an input's font-size
+   is < 16px on the viewport ≤640px. Enforce 16px at the small-screen break. */
+@media (max-width: 640px) {
+  input, textarea, select {
+    font-size: 16px;
+  }
+}
+
 /* ─── Utilities ─────────────────────────────────────────── */
 
 /* .tap-target — invisible 44×44 hit area so icons hit iOS HIG minimums */
@@ -278,6 +301,21 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
 .text-gold   { color: var(--c-gold); }
 .border-gold { border-color: var(--c-gold); }
 .bg-gold-dim { background: var(--c-gold-glow); }
+
+/* ═══════════════════════════════════════════════════════
+   BACKDROP-FILTER FALLBACK — SAMSUNG INTERNET ≤ 17
+   Old Samsung builds ignore backdrop-filter entirely; without a fallback
+   the translucent rgba surfaces look almost transparent. When the browser
+   reports no backdrop-filter support, lift affected surfaces to 92%
+   opacity solid so nav / sheet / bar panels never look broken.
+   ═══════════════════════════════════════════════════════ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .tab-bar,
+  nav[class*="flex items-center justify-around"],
+  .bottom-sheet {
+    background: rgba(10, 10, 10, 0.92) !important;
+  }
+}
 
 /* ═══════════════════════════════════════════════════════
    TAB BAR

@@ -250,6 +250,10 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
               bounds="parent"
               dragGrid={[GRID_SNAP, GRID_SNAP]}
               resizeGrid={[GRID_SNAP, GRID_SNAP]}
+              /* SAMSUNG INTERNET: scope drag to the top strip below — without a
+                 handleClassName the whole card gets touch-action:none, which
+                 kills inner scroll on Samsung's browser. */
+              dragHandleClassName="card-drag-handle"
               onDragStart={() => setDraggingId(goal.id)}
               onDrag={(_e, d) => handleDrag(goal.id, d.x, d.y)}
               onDragStop={(_e, d) => handleDragStop(goal.id, d.x, d.y)}
@@ -293,8 +297,25 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
                 /* POLISH: skip the jiggle entirely for reduced-motion users */
                 animate={prefersReduced ? undefined : JIGGLE_ANIMATE}
                 transition={prefersReduced ? undefined : JIGGLE_TRANSITION}
-                style={{ width: '100%', height: '100%', cursor: 'grab' }}
+                style={{ width: '100%', height: '100%', position: 'relative' }}
               >
+                {/* SAMSUNG INTERNET: touch-action:none lives only on this
+                    drag handle strip, so the card body itself still scrolls /
+                    taps normally. 20px tall, invisible but thumb-friendly. */}
+                <div
+                  className="card-drag-handle"
+                  aria-hidden
+                  style={{
+                    position:    'absolute',
+                    top:         0,
+                    left:        0,
+                    right:       0,
+                    height:      20,
+                    cursor:      'grab',
+                    touchAction: 'none',
+                    zIndex:      2,
+                  }}
+                />
                 {renderCard(goal, { fillContainer: true, onOpen: () => {}, index: i /* POLISH: stagger */ })}
               </motion.div>
             </Rnd>

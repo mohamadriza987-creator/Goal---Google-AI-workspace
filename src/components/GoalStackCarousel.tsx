@@ -265,14 +265,23 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
     <div
       ref={containerRef}
       /* POLISH: paint + style containment on the stack — cards drag over millions of
-         pixels each frame; we keep repaints local to this subtree. */
+         pixels each frame; we keep repaints local to this subtree.
+         SAMSUNG INTERNET: overscroll-behavior-x contains horizontal drag so the
+         swipe never bubbles up to the browser chrome; scroll-snap-stop: always
+         (with -webkit- variants for older Samsung builds) prevents skipping
+         intermediate goal cards during a fast flick. */
       style={{
-        position:  'relative',
-        width:     '100%',
-        height:    '100%',
-        overflow:  'hidden',
-        contain:   'layout style paint',
-      }}
+        position:             'relative',
+        width:                '100%',
+        height:               '100%',
+        overflow:             'hidden',
+        contain:              'layout style paint',
+        overscrollBehaviorX:  'contain',
+        scrollSnapType:       'x mandatory',
+        WebkitScrollSnapType: 'x mandatory',
+        scrollSnapStop:       'always',
+        WebkitScrollSnapStop: 'always',
+      } as React.CSSProperties}
     >
       {goals.map((goal, i) => {
         const off      = i - activeIdx;

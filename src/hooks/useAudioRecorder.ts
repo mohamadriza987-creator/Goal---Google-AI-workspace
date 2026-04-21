@@ -20,12 +20,22 @@ export function useAudioRecorder(): AudioRecorder {
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // Determine supported mime type
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
-        ? 'audio/webm' 
-        : 'audio/mp4';
-        
+
+      // Determine supported mime type — webm preferred, mp4 for Safari fallback.
+      let mimeType: string | undefined;
+      if (MediaRecorder.isTypeSupported('audio/webm')) {
+        mimeType = 'audio/webm';
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        mimeType = 'audio/mp4';
+      } else {
+        // SAFARI polish: neither codec works — surface a clear error and bail
+        // cleanly (release the mic) instead of letting MediaRecorder throw.
+        stream.getTracks().forEach(track => track.stop());
+        setError('Audio recording is not supported in this browser. Try Safari, Chrome, or Firefox.');
+        setIsRecording(false);
+        return;
+      }
+
       const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
 

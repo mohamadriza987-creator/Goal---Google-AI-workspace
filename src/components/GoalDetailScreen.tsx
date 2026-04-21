@@ -1292,6 +1292,12 @@ function AddTaskPopup({
   const [saving,  setSaving]  = useState(false);
   const [success, setSuccess] = useState(false);
 
+  /* SAFARI: lock background while the sheet is open — kills rubber-band */
+  useEffect(() => {
+    document.body.classList.add('body-locked');
+    return () => document.body.classList.remove('body-locked');
+  }, []);
+
   const handleDone = async () => {
     if (!text.trim() || !user) return;
     setSaving(true);
@@ -1314,7 +1320,7 @@ function AddTaskPopup({
   return (
     <AnimatePresence>
       <motion.div key="at-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)' }}
+        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       <motion.div key="at-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 36 }}
@@ -1369,6 +1375,12 @@ function AskForHelpPopup({
   const [sending,     setSending]     = useState(false);
   const [success,     setSuccess]     = useState(false);
 
+  /* SAFARI: lock background while the sheet is open — kills rubber-band */
+  useEffect(() => {
+    document.body.classList.add('body-locked');
+    return () => document.body.classList.remove('body-locked');
+  }, []);
+
   // Only notify members who actually have this task in their active list
   const taskKey = taskText.toLowerCase().trim();
   const notifyIds = members
@@ -1405,7 +1417,7 @@ function AskForHelpPopup({
   return (
     <AnimatePresence>
       <motion.div key="afh-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)' }}
+        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       <motion.div key="afh-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 36 }}
@@ -1507,6 +1519,12 @@ function UserActionPopup({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [done,       setDone]       = useState<string | null>(null);
 
+  /* SAFARI: lock background while the sheet is open — kills rubber-band */
+  useEffect(() => {
+    document.body.classList.add('body-locked');
+    return () => document.body.classList.remove('body-locked');
+  }, []);
+
   const doAction = async (action: 'favourite' | 'poke' | 'silence' | 'block') => {
     if (!user) return;
     setBusyAction(action);
@@ -1566,7 +1584,7 @@ function UserActionPopup({
   return (
     <AnimatePresence>
       <motion.div key="ua-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)' }}
+        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       <motion.div key="ua-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 36 }}
@@ -1611,6 +1629,12 @@ function MemberSheet({
 }) {
   const [showUserActions, setShowUserActions] = useState(false);
 
+  /* SAFARI: lock background while the sheet is open — kills rubber-band */
+  useEffect(() => {
+    document.body.classList.add('body-locked');
+    return () => document.body.classList.remove('body-locked');
+  }, []);
+
   return (
     <>
       <motion.div
@@ -1620,7 +1644,7 @@ function MemberSheet({
         exit={{ opacity: 0, y: 40 }}
         transition={{ type: 'spring', stiffness: 340, damping: 34 }}
         className="fixed inset-0 z-50 flex flex-col justify-end"
-        style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)' }}
+        style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose}
       >
         <div
@@ -1929,6 +1953,13 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
   const [showDeleteConfirm,setShowDeleteConfirm]= useState(false);
   const [isDeleting,       setIsDeleting]       = useState(false);
 
+  /* SAFARI: lock background scroll while the delete-confirm sheet is open */
+  useEffect(() => {
+    if (!showDeleteConfirm) return;
+    document.body.classList.add('body-locked');
+    return () => document.body.classList.remove('body-locked');
+  }, [showDeleteConfirm]);
+
   const goal = goals.find(g => g.id === goalId);
 
   if (!goal) {
@@ -1990,7 +2021,7 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
             <motion.div key="del-ov"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 z-50"
-              style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)' }}
+              style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
               onClick={() => !isDeleting && setShowDeleteConfirm(false)}
             />
             <motion.div key="del-sh"

@@ -36,7 +36,18 @@ export function Panda({ isListening, onClick, className }: PandaProps) {
       whileTap={{ scale: 0.95 }}
       style={{ willChange: prefersReduced ? 'auto' : 'transform' }}
     >
-      <svg viewBox="0 0 200 200" className="w-full h-full fill-white drop-shadow-2xl">
+      <svg
+        viewBox="0 0 200 200"
+        className="w-full h-full fill-white drop-shadow-2xl"
+        /* SAFARI: mirror Tailwind's `drop-shadow-2xl` with a -webkit-filter
+           fallback so WebKit renders the soft shadow. The filter/WebkitFilter
+           pair lives inline so an older Safari build always has one it can
+           resolve even if Tailwind's output ever drops the prefix. */
+        style={{
+          filter:       'drop-shadow(0 25px 25px rgba(0,0,0,0.15))',
+          WebkitFilter: 'drop-shadow(0 25px 25px rgba(0,0,0,0.15))',
+        }}
+      >
         {/* Ears */}
         <motion.circle
           cx="50" cy="50" r="25" fill="black"
@@ -62,11 +73,17 @@ export function Panda({ isListening, onClick, className }: PandaProps) {
 
         {/* POLISH: pupils now live inside a motion.g — we animate the group's transform
             (translateX/translateY) instead of the circle's cx/cy. GPU composited,
-            zero paint work per frame. */}
+            zero paint work per frame.
+            SAFARI: wrap the translate in translate3d(...) so WebKit promotes the
+            group to its own layer instead of repainting on every spring tick. */}
         <motion.g
           animate={{ x: leftPupil.x, y: leftPupil.y }}
           transition={{ type: 'spring', stiffness: 100, damping: 14 }}
-          style={{ willChange: prefersReduced ? 'auto' : 'transform' }}
+          style={{
+            willChange:      prefersReduced ? 'auto' : 'transform',
+            transform:       `translate3d(${leftPupil.x}px, ${leftPupil.y}px, 0)`,
+            WebkitTransform: `translate3d(${leftPupil.x}px, ${leftPupil.y}px, 0)`,
+          }}
         >
           <motion.circle
             cx={60} cy={85} r={5} fill="white"
@@ -78,7 +95,11 @@ export function Panda({ isListening, onClick, className }: PandaProps) {
         <motion.g
           animate={{ x: rightPupil.x, y: rightPupil.y }}
           transition={{ type: 'spring', stiffness: 100, damping: 14 }}
-          style={{ willChange: prefersReduced ? 'auto' : 'transform' }}
+          style={{
+            willChange:      prefersReduced ? 'auto' : 'transform',
+            transform:       `translate3d(${rightPupil.x}px, ${rightPupil.y}px, 0)`,
+            WebkitTransform: `translate3d(${rightPupil.x}px, ${rightPupil.y}px, 0)`,
+          }}
         >
           <motion.circle
             cx={120} cy={85} r={5} fill="white"
