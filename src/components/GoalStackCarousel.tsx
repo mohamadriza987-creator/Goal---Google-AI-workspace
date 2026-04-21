@@ -309,24 +309,43 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
       {goals.length > 1 && (
         <div style={{
           position: 'absolute',
-          bottom: 10,
+          bottom: 4,           /* POLISH: dots now live inside 44×44 buttons, so raise the row */
           left: 0,
           right: PEEK_RIGHT,
           display: 'flex',
           justifyContent: 'center',
-          gap: 5,
+          gap: 0,              /* gap comes from the invisible hit-area padding instead */
           zIndex: 10,
-          pointerEvents: 'none',
         }}>
           {goals.slice(0, 9).map((_, i) => (
-            <div key={i} style={{
-              width:        i === activeIdx ? 18 : 5,
-              height:       5,
-              borderRadius: 999,
-              background:   i === activeIdx ? 'var(--c-gold)' : 'rgba(255,255,255,0.22)',
-              /* POLISH: tightened to 160ms with shared ease tokens */
-              transition:   'width 160ms var(--ease-spring), background-color 160ms var(--ease-out-quad)',
-            }} />
+            /* POLISH: 44×44 tap target, visual dot stays compact in the center */
+            <button
+              key={i}
+              onClick={() => setActiveIdx(i)}
+              aria-label={`Go to goal ${i + 1}`}
+              className="anim-press"
+              style={{
+                width: 44,
+                height: 32,
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                touchAction: 'manipulation',
+              }}
+            >
+              <span style={{
+                display: 'block',
+                width:        i === activeIdx ? 18 : 5,
+                height:       5,
+                borderRadius: 999,
+                background:   i === activeIdx ? 'var(--c-gold)' : 'rgba(255,255,255,0.22)',
+                transition:   'width 160ms var(--ease-spring), background-color 160ms var(--ease-out-quad)',
+              }} />
+            </button>
           ))}
         </div>
       )}

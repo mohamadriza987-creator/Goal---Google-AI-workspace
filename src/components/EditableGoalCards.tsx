@@ -261,14 +261,17 @@ export function EditableGoalCards({ goals, onOpen, renderCard, hasMore = false, 
                 )
               }
               style={{ zIndex: draggingId === goal.id ? 10 : 5 }}
-              /* Resize handle — small dark square with faint gold tint */
+              /* POLISH: 44×44 invisible hit area, 28×28 visible dot centered via
+                 radial-gradient so thumbs have real room to grab. */
               resizeHandleStyles={{
                 bottomRight: {
-                  width: 14, height: 14,
-                  bottom: 6, right: 6,
-                  background: 'rgba(201,168,76,0.35)',
-                  borderRadius: 3,
+                  width: 44, height: 44,
+                  bottom: -6, right: -6,
+                  background:
+                    'radial-gradient(circle at center, rgba(201,168,76,0.55) 13px, rgba(201,168,76,0) 14px)',
+                  borderRadius: '50%',
                   cursor: 'se-resize',
+                  touchAction: 'none',
                 },
               }}
             >

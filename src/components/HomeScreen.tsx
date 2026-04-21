@@ -207,6 +207,14 @@ export function HomeScreen({
   const { isRecording, startRecording, stopRecording, error: recorderError } = useAudioRecorder();
   const fetchAbortRef = useRef<AbortController | null>(null);
 
+  /* POLISH: lock body scroll whenever a full-screen view (recording / review) is
+     open, to kill iOS rubber-band and background scroll-through. */
+  useEffect(() => {
+    const lock = currentView === 'recording' || currentView === 'review';
+    document.body.classList.toggle('body-locked', lock);
+    return () => document.body.classList.remove('body-locked');
+  }, [currentView]);
+
   // Auto-resize textareas on review screen
   useEffect(() => {
     if (currentView !== 'review') return;

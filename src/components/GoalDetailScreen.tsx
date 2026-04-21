@@ -81,6 +81,13 @@ function ProgressRing({ pct }: { pct: number }) {
 function BottomSheet({ open, onClose, title, children }: {
   open: boolean; onClose: () => void; title: string; children: React.ReactNode;
 }) {
+  /* POLISH: lock background scroll + kill iOS rubber-band while the sheet is open */
+  useEffect(() => {
+    if (!open) return;
+    document.body.classList.add('body-locked');
+    return () => document.body.classList.remove('body-locked');
+  }, [open]);
+
   return (
     <AnimatePresence>
       {open && (
@@ -164,15 +171,17 @@ function TaskCard({ task, isNextStep, onOpenDetail, onToggleDone }: {
         </div>
 
         {/* Bell */}
+        {/* POLISH: 44×44 tap target + anim-press */}
         <button onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}
-          className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+          className="flex-shrink-0 tap-target anim-press rounded-lg transition-opacity hover:opacity-70"
           style={{ color: task.reminderAt ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
           <Bell size={15} fill={task.reminderAt ? 'currentColor' : 'none'} />
         </button>
 
         {/* Info */}
+        {/* POLISH: 44×44 tap target + anim-press */}
         <button onClick={() => onOpenDetail(task)}
-          className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+          className="flex-shrink-0 tap-target anim-press rounded-lg transition-opacity hover:opacity-70"
           style={{ color: 'var(--c-text-3)' }}>
           <Info size={15} />
         </button>
@@ -731,8 +740,10 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
             style={{ background: 'var(--c-gold)', color: '#000' }}>
             {saving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
           </button>
+          {/* POLISH: 44×44 tap target + anim-press */}
           <button onClick={() => { setAddingTask(false); setNewTaskText(''); }}
-            className="px-3 rounded-xl" style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
+            className="tap-target anim-press rounded-xl"
+            style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-text-3)' }}>
             <X size={16} />
           </button>
         </div>

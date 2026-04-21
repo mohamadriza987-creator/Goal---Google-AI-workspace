@@ -13,10 +13,14 @@ export function NavButton({ active, icon, label, onClick }: NavButtonProps) {
   return (
     <button
       onClick={onClick}
+      /* POLISH: anim-press gives the haptic-style scale pulse on tap,
+         min 44×44 hit area via inline style, touch-action: manipulation
+         inherited from the global button rule. */
       className={cn(
-        'relative flex flex-col items-center justify-center gap-0.5 px-5 py-2 rounded-full transition-all duration-300 group',
+        'anim-press relative flex flex-col items-center justify-center gap-0.5 px-5 py-2 rounded-full transition-all duration-300 group',
         active ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
       )}
+      style={{ minWidth: 44, minHeight: 44 }}
     >
       <div className={cn(
         'relative z-10 transition-transform duration-300',

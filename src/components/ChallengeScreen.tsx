@@ -112,10 +112,12 @@ function FavouritesSection({ user }: { user: FirebaseUser | null }) {
               <p className="flex-1 text-sm font-medium truncate" style={{ color: 'var(--c-text)' }}>
                 {fav.targetUserName}
               </p>
+              {/* POLISH: 44×44 tap target + anim-press */}
               <button
                 onClick={() => handleRemove(fav)}
                 disabled={removing === fav.targetUserId}
-                className="flex-shrink-0 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+                className="flex-shrink-0 tap-target anim-press rounded-lg transition-opacity hover:opacity-70 disabled:opacity-40"
+                aria-label={`Remove ${fav.targetUserName}`}
                 style={{ color: 'var(--c-text-3)' }}>
                 {removing === fav.targetUserId
                   ? <Loader2 size={14} className="animate-spin" />
