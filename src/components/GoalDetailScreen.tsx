@@ -166,15 +166,35 @@ function TaskCard({ task, isNextStep, onOpenDetail, onToggleDone }: {
         </div>
       )}
       <div className="px-4 py-3 flex items-center gap-3">
-        {/* Done toggle */}
-        <button onClick={handleToggle} disabled={toggling}
-          className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
-          style={task.isDone
-            ? { background: 'var(--c-success)', borderColor: 'var(--c-success)' }
-            : { borderColor: 'var(--c-border-light)' }}>
-          {toggling
-            ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
-            : task.isDone && <Check size={13} color="#fff" strokeWidth={3} />}
+        {/* POLISH: checkbox — 44×44 invisible tap area around a 24 visible circle,
+            anim-press scale pulse, check-mark drops in with a 180ms scale-in. */}
+        <button
+          onClick={handleToggle}
+          disabled={toggling}
+          aria-label={task.isDone ? 'Mark task not done' : 'Mark task done'}
+          className="tap-target anim-press flex-shrink-0"
+          style={{ touchAction: 'manipulation' }}
+        >
+          <span
+            className="flex items-center justify-center rounded-full border-2 transition-colors"
+            style={task.isDone
+              ? { width: 24, height: 24, background: 'var(--c-success)', borderColor: 'var(--c-success)' }
+              : { width: 24, height: 24, borderColor: 'var(--c-border-light)' }}
+          >
+            {toggling
+              ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--c-text-3)' }} />
+              : task.isDone && (
+                <motion.span
+                  /* POLISH: scale-in check */
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ duration: 0.18, ease: [0.25, 0.46, 0.45, 0.94] }}
+                  style={{ display: 'inline-flex' }}
+                >
+                  <Check size={13} color="#fff" strokeWidth={3} />
+                </motion.span>
+              )}
+          </span>
         </button>
 
         {/* Task text */}
@@ -2128,8 +2148,10 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
       <div className="flex-1">
         <AnimatePresence mode="wait">
           <motion.div key={activeTab}
+            /* POLISH: tab swap — shared ease token, transform + opacity only */
             initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }} transition={{ duration: .18 }}>
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18, ease: [0.25, 0.46, 0.45, 0.94] }}>
 
             {activeTab === 'plan' && <PlanTab goal={goal} user={user} />}
 

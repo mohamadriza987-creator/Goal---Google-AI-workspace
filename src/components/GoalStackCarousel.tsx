@@ -69,11 +69,12 @@ function GoalStackCard({
       {/* Progress bar — top accent */}
       <div style={{ height: 3, background: 'var(--c-border)', flexShrink: 0 }}>
         <div style={{
-          height: '100%',
-          width: `${pct}%`,
-          background: 'var(--c-gold)',
+          height:       '100%',
+          width:        `${pct}%`,
+          background:   'var(--c-gold)',
           borderRadius: 999,
-          transition: 'width 0.6s ease',
+          /* POLISH: token ease matches every other progress surface */
+          transition:   'width 0.6s var(--ease-out-quad)',
         }} />
       </div>
 

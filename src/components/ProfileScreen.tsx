@@ -244,13 +244,23 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
   };
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="max-w-2xl mx-auto p-6 pt-12 pb-32"
+      /* POLISH: shared panel enter — token ease, transform + opacity only;
+         safe-area top padding respects the iOS notch. */
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+      className="max-w-2xl mx-auto p-6 pb-32"
+      style={{ paddingTop: 'calc(48px + env(safe-area-inset-top))' }}
     >
+      {/* POLISH: 44×44 back button — tap-target + anim-press */}
       <button
         onClick={onNavigateHome}
-        className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors mb-6"
+        aria-label="Back to home"
+        className="tap-target anim-press inline-flex items-center gap-2 text-zinc-400 hover:text-white mb-6 rounded-lg"
+        style={{
+          transition: 'color var(--dur-micro) var(--ease-out-quad)',
+          paddingLeft: 0,
+        }}
       >
         <ArrowLeft size={20} />
         <span className="text-sm font-medium">Home</span>

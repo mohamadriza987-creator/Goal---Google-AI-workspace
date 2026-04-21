@@ -32,10 +32,11 @@ function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }
 }
 
 function EmptyCard({ message }: { message: string }) {
+  /* POLISH: shared .empty-state utility — consistent depth, spacing + typography
+     across every empty block in the app. */
   return (
-    <div className="px-4 py-5 rounded-2xl"
-         style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-      <p style={{ fontSize: 13, color: 'var(--c-text-3)' }}>{message}</p>
+    <div className="empty-state" style={{ alignItems: 'flex-start', textAlign: 'left' }}>
+      <p className="empty-state__body" style={{ maxWidth: 'none' }}>{message}</p>
     </div>
   );
 }
@@ -98,8 +99,15 @@ function FavouritesSection({ user }: { user: FirebaseUser | null }) {
         <div className="space-y-2">
           {favourites.map(fav => (
             <div key={fav.id}
-              className="flex items-center gap-3 px-4 py-3 rounded-2xl"
-              style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+              /* POLISH: token radius + shadow ladder, 44+ row height */
+              className="flex items-center gap-3 px-4 py-3"
+              style={{
+                background:   'var(--c-surface)',
+                border:       '1px solid var(--c-border)',
+                borderRadius: 'var(--r-lg)',
+                boxShadow:    'var(--shadow-1), var(--shadow-2)',
+                minHeight:    44,
+              }}>
               {fav.targetAvatarUrl ? (
                 <img src={fav.targetAvatarUrl} alt=""
                   className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
@@ -134,10 +142,13 @@ function FavouritesSection({ user }: { user: FirebaseUser | null }) {
 export function ChallengeScreen({ user, dbUser }: ChallengeScreenProps) {
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
+      /* POLISH: shared panel enter — token ease, transform + opacity only;
+         safe-area top padding respects the iOS notch. */
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
       className="max-w-2xl mx-auto px-5 pb-32"
-      style={{ paddingTop: 56 }}
+      style={{ paddingTop: 'calc(56px + env(safe-area-inset-top))' }}
     >
       <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5, marginBottom: 28 }}>
         Challenge

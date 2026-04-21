@@ -40,7 +40,8 @@ function ProgressRing({ pct, size = 56 }: { pct: number; size?: number }) {
         <circle cx={size/2} cy={size/2} r={r} strokeWidth={5} fill="none"
           stroke="var(--c-gold)" strokeLinecap="round"
           strokeDasharray={circ} strokeDashoffset={offset}
-          style={{ transition: 'stroke-dashoffset .6s cubic-bezier(.25,.46,.45,.94)' }} />
+          /* POLISH: token ease, willChange on stroke-dashoffset (compositor hint). */
+          style={{ transition: 'stroke-dashoffset .6s var(--ease-out-quad)', willChange: 'stroke-dashoffset' }} />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--c-gold)' }}>{pct}%</span>
@@ -162,18 +163,30 @@ function GoalCard({ goal, onOpen, fillContainer = false, index = 0 }: { goal: Go
         </div>
       )}
 
-      {/* U1/A1: surface partial / failed save state to the user instead of
-          leaving them with a silently-broken card. */}
-      {(goal.savingStatus === 'partial' || goal.savingStatus === 'error') && goal.saveErrorMessage && (
+      {/* POLISH: error state — uses shared .error-state utility (red accent,
+          4.5:1 contrast, role=alert for SR). "Partial" keeps the gold tint
+          since it's a warning, not a failure. */}
+      {goal.savingStatus === 'error' && goal.saveErrorMessage && (
         <div
+          role="alert"
+          className="error-state"
+          style={{ padding: '8px 10px' }}
+        >
+          <span className="error-state__body">{goal.saveErrorMessage}</span>
+        </div>
+      )}
+      {goal.savingStatus === 'partial' && goal.saveErrorMessage && (
+        <div
+          role="status"
           className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg"
           style={{
-            background: goal.savingStatus === 'error' ? 'rgba(220,80,80,.08)' : 'rgba(201,168,76,.08)',
-            border: `1px solid ${goal.savingStatus === 'error' ? 'rgba(220,80,80,.25)' : 'rgba(201,168,76,.25)'}`,
-            color: goal.savingStatus === 'error' ? '#e88' : 'var(--c-gold)',
+            background:   'rgba(201,168,76,.08)',
+            border:       '1px solid rgba(201,168,76,.25)',
+            color:        'var(--c-gold)',
+            borderRadius: 'var(--r-md)',
           }}
         >
-          <span className="text-meta" style={{ fontSize: 10.5, lineHeight: 1.3 }}>{goal.saveErrorMessage}</span>
+          <span className="text-meta" style={{ fontSize: 11, lineHeight: 1.4 }}>{goal.saveErrorMessage}</span>
         </div>
       )}
 
@@ -628,7 +641,26 @@ export function HomeScreen({
             className="flex flex-col items-center justify-center px-6"
             style={{ minHeight: '100dvh' }}
           >
-            <Panda isListening={isRecording} onClick={handlePandaClick} className="w-56 h-56" />
+            {/* POLISH: Panda container — 44 min-h tap ring baked into its own bounds,
+                ambient radial glow behind it (transform-safe, doesn't repaint siblings
+                because the recording view is paint-contained). */}
+            <div
+              className="relative"
+              style={{ width: 224, height: 224, contain: 'layout style paint' }}
+            >
+              <div
+                aria-hidden
+                className={isRecording ? 'anim-gold-pulse' : ''}
+                style={{
+                  position:     'absolute',
+                  inset:        -24,
+                  borderRadius: '50%',
+                  background:   'radial-gradient(circle, rgba(201,168,76,0.18) 0%, transparent 65%)',
+                  pointerEvents:'none',
+                }}
+              />
+              <Panda isListening={isRecording} onClick={handlePandaClick} className="w-56 h-56 relative" />
+            </div>
 
             <div className="mt-8 text-center w-full max-w-sm">
               {phase !== 'idle' ? (
@@ -909,17 +941,33 @@ export function HomeScreen({
                          style={{ color:'var(--c-text-3)', letterSpacing:'0.12em' }}>
                     {t('privacy')}
                   </label>
+                  {/* POLISH: segmented toggle — 44 min-height, anim-press pulse on the
+                      selected side, aria-pressed for assistive tech, ease-out colour swap. */}
                   <div className="flex rounded-xl overflow-hidden"
-                       style={{ border:'1px solid var(--c-border)', background:'var(--c-surface-2)' }}>
-                    {(['public','private'] as const).map(v => (
-                      <button key={v} onClick={() => setStructuredGoal({...structuredGoal, privacy:v})}
-                        className={cn('flex-1 py-2 text-xs font-semibold capitalize transition-all')}
-                        style={structuredGoal.privacy===v
-                          ? { background:'var(--c-gold)', color:'#000' }
-                          : { color:'var(--c-text-3)' }}>
-                        {t(v)}
-                      </button>
-                    ))}
+                       style={{
+                         border:       '1px solid var(--c-border)',
+                         background:   'var(--c-surface-2)',
+                         borderRadius: 'var(--r-md)',
+                       }}>
+                    {(['public','private'] as const).map(v => {
+                      const on = structuredGoal.privacy === v;
+                      return (
+                        <button
+                          key={v}
+                          onClick={() => setStructuredGoal({...structuredGoal, privacy:v})}
+                          aria-pressed={on}
+                          className="anim-press flex-1 text-xs font-semibold capitalize"
+                          style={{
+                            minHeight:  44,
+                            background: on ? 'var(--c-gold)' : 'transparent',
+                            color:      on ? '#000'         : 'var(--c-text-3)',
+                            transition: 'background-color var(--dur-micro) var(--ease-out-quad), color var(--dur-micro) var(--ease-out-quad)',
+                          }}
+                        >
+                          {t(v)}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>

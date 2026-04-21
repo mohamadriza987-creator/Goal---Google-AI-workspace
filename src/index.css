@@ -283,36 +283,125 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
    TAB BAR
    ═══════════════════════════════════════════════════════ */
 
+/* POLISH: tab bar — translucent sticky strip with saturate-blur so content
+   underneath is readable even over coloured cards; tab-item gets 44+ hit
+   area via min-height; underline animates width on the token ease. */
 .tab-bar {
   display: flex;
   border-bottom: 1px solid var(--c-border);
-  background: var(--c-bg);
+  background: rgba(10,10,10,0.72);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
 }
 
 .tab-item {
   flex: 1;
+  min-height: 44px;
   padding: 12px 0 10px;
   font-size: 14px;
   font-weight: 500;
   color: var(--c-text-3);
   text-align: center;
   position: relative;
-  transition: color .2s;
+  transition: color var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
 }
+
+.tab-item:active { transform: scale(.97); }
 
 .tab-item.active {
   color: var(--c-gold);
 }
 
-.tab-item.active::after {
+.tab-item::after {
   content: '';
   position: absolute;
   bottom: -1px;
-  left: 20%;
-  right: 20%;
+  left: 50%;
+  width: 0;
   height: 2px;
   background: var(--c-gold);
   border-radius: 2px 2px 0 0;
+  transform: translateX(-50%);
+  transition: width var(--dur-micro) var(--ease-out-quad);
+}
+
+.tab-item.active::after {
+  width: 60%;
+}
+
+/* ═══════════════════════════════════════════════════════
+   EMPTY / ERROR STATES
+   POLISH: consistent container for "nothing here" + "something went wrong"
+   messages — layered shadow, token radius, accessible contrast.
+   ═══════════════════════════════════════════════════════ */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  box-shadow: var(--shadow-1), var(--shadow-2);
+  contain: layout style paint;
+  color: var(--c-text-2);
+}
+
+.empty-state__icon {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(201,168,76,0.10);
+  color: var(--c-gold);
+  margin-bottom: var(--s-1);
+}
+
+.empty-state__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: -0.2px;
+}
+
+.empty-state__body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--c-text-3);
+  max-width: 28ch;
+}
+
+/* Error variant — same shape, red accent, meets 4.5:1 contrast */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: rgba(224, 82, 96, 0.08);
+  border: 1px solid rgba(224, 82, 96, 0.30);
+  box-shadow: var(--shadow-1);
+  contain: layout style paint;
+}
+
+.error-state__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f39aa1;            /* 4.5:1 against rgba(224,82,96,0.08) on --c-bg */
+  letter-spacing: -0.1px;
+}
+
+.error-state__body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #e6b5b9;
 }
 
 /* ═══════════════════════════════════════════════════════
