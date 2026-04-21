@@ -12,6 +12,7 @@ import { mapLanguageNameToCode } from '../lib/translations';
 import { DraggableInputWidget } from './DraggableInputWidget';
 import { EditableGoalCards }    from './EditableGoalCards';
 import { GoalStackCarousel }    from './GoalStackCarousel';
+import { Skeleton }             from './Skeleton';
 import { useHomeEditMode }      from '../contexts/HomeEditModeContext';
 
 interface HomeScreenProps {
@@ -95,15 +96,15 @@ function GoalCardSkeleton() {
         contain:      'layout style paint',
       }}
     >
+      {/* POLISH: shared Skeleton primitive drives the translateX shimmer (GPU). */}
       <div className="flex items-start gap-3">
         <div className="flex-1 space-y-2">
-          {/* POLISH: translateX-driven shimmer (GPU) — replaces animate-pulse */}
-          <div className="h-3.5 rounded-md skeleton-shimmer" style={{ background: 'var(--c-surface-2)', width: '75%' }} />
-          <div className="h-2.5 rounded-md skeleton-shimmer" style={{ background: 'var(--c-surface-2)', width: '55%' }} />
+          <Skeleton variant="text"  width="75%" height={14} />
+          <Skeleton variant="text"  width="55%" height={10} />
         </div>
-        <div className="w-11 h-11 rounded-full skeleton-shimmer flex-shrink-0" style={{ background: 'var(--c-surface-2)' }} />
+        <Skeleton variant="circle" width={44} height={44} />
       </div>
-      <div className="h-8 rounded-lg skeleton-shimmer" style={{ background: 'var(--c-surface-2)' }} />
+      <Skeleton variant="block" height={32} radius="var(--r-md)" />
     </div>
   );
 }

@@ -48,6 +48,7 @@ const ProfileScreen    = React.lazy(() => import('./components/ProfileScreen').t
 import { SortableNavConsole }    from './components/SortableNavConsole';
 import { HomeEditModeProvider }  from './contexts/HomeEditModeContext';
 import { UserContext }           from './contexts/UserContext';
+import { ToastProvider }         from './components/Toast';
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -373,6 +374,7 @@ export default function App() {
 
   return (
     <UserContext.Provider value={{ user, dbUser }}>
+    <ToastProvider>
     <HomeEditModeProvider userId={user?.uid ?? null}>
     {/* POLISH: app shell — paint containment isolates screen repaints,
         safe-area top padding respects iOS notch / dynamic island. */}
@@ -488,6 +490,7 @@ export default function App() {
       )}
     </div>
     </HomeEditModeProvider>
+    </ToastProvider>
     </UserContext.Provider>
   );
 }
