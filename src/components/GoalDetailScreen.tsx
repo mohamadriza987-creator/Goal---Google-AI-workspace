@@ -1085,6 +1085,11 @@ function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
 
   const groupId = goal.groupId;
 
+  // Mark all goal-room threads as seen the moment this tab is rendered
+  useEffect(() => {
+    localStorage.setItem(`goalRoomLastSeen_${goal.id}`, new Date().toISOString());
+  }, [goal.id]);
+
   useEffect(() => {
     if (!groupId) { setLoading(false); return; }
     let debounce: ReturnType<typeof setTimeout>;

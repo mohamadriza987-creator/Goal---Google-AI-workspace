@@ -37,9 +37,18 @@ function GoalStackCard({
 
   useEffect(() => {
     if (!isActive || !goal.groupId) return;
+    // Read last-seen timestamp written by GoalRoomTab on mount.
+    // Empty string means never seen → all threads are new.
+    const lastSeen = localStorage.getItem(`goalRoomLastSeen_${goal.id}`) ?? '';
     const q = query(collection(db, 'groups', goal.groupId, 'threads'), limit(99));
-    return onSnapshot(q, snap => setActivity(snap.size));
-  }, [goal.groupId, isActive]);
+    return onSnapshot(q, snap => {
+      const unseen = snap.docs.filter(d => {
+        const t = d.data();
+        return (t.lastActivityAt ?? t.createdAt ?? '') > lastSeen;
+      }).length;
+      setActivity(unseen);
+    });
+  }, [goal.groupId, isActive, goal.id]);
 
   const nextTask = tasks.find(t => !t.isDone);
   const pct      = goal.progressPercent ?? 0;
