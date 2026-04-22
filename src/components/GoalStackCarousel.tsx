@@ -7,7 +7,7 @@ import { collection, query, orderBy, onSnapshot, limit } from 'firebase/firestor
 import { Bell, Users, ChevronRight, FileText, Loader2 } from 'lucide-react';
 
 const PEEK_RIGHT = 52;  // px of the next card visible on the right
-const SPRING     = { type: 'spring' as const, stiffness: 360, damping: 38 };
+const SPRING     = { type: 'spring' as const, stiffness: 500, damping: 42 };
 
 // ── Per-card content ──────────────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ function GoalStackCard({
       </div>
 
       {/* Card body */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ flex: 1, overflowY: 'hidden', padding: '20px 20px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {/* Title + progress */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
@@ -278,6 +278,7 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
         overflow:            'hidden',
         contain:             'layout style paint',
         overscrollBehaviorX: 'contain',
+        touchAction:         'pan-y',
       } as React.CSSProperties}
     >
       {goals.map((goal, i) => {
@@ -297,18 +298,15 @@ export function GoalStackCarousel({ goals, onOpen, hasMore, onLoadMore }: Props)
               width: cardW || '100%',
               height: '100%',
               zIndex: isActive ? 2 : 1,
-              /* POLISH: only hint the compositor for the card the user is steering — others idle */
-              willChange: isActive ? 'transform' : 'auto',
-              // Non-active off-screen cards must not intercept touches
+              willChange: (isActive || isNext) ? 'transform' : 'auto',
               pointerEvents: isActive ? 'auto' : 'none',
             }}
-            /* POLISH: first-mount stagger — 40ms between cards, opacity + x */
             initial={{ opacity: 0, x: getX(i) + 12 }}
             animate={{ opacity: 1, x: getX(i) }}
-            transition={{ ...SPRING, opacity: { duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94], delay: i * 0.04 } }}
+            transition={{ ...SPRING, opacity: { duration: 0.25, ease: [0.25, 0.46, 0.45, 0.94], delay: i * 0.03 } }}
             drag={isActive ? 'x' : false}
-            dragConstraints={{ left: -(cardW * 0.6), right: cardW * 0.3 }}
-            dragElastic={{ left: 0.12, right: 0.18 }}
+            dragConstraints={{ left: -(cardW * 0.65), right: cardW * 0.35 }}
+            dragElastic={{ left: 0.25, right: 0.3 }}
             dragMomentum={false}
             onDragEnd={(_, info) => isActive && handleDragEnd(i, info)}
           >

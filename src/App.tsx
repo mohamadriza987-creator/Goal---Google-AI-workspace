@@ -89,6 +89,16 @@ export default function App() {
     window.scrollTo(0, 0);
   }, [currentScreen.name]);
 
+  // ── Prevent spurious window scroll on home screen ────────────────────────
+  // The root div is min-h-screen + safe-area-inset-top, which exceeds 100dvh
+  // on iOS. Locking body overflow on the home screen stops the ~47px of
+  // window scroll that shifts the carousel while leaving fixed elements in place.
+  useEffect(() => {
+    if (currentScreen.name !== 'home') return;
+    document.body.style.overflowY = 'hidden';
+    return () => { document.body.style.overflowY = ''; };
+  }, [currentScreen.name]);
+
   // ── Error handler ───────────────────────────────────────────────────────
   const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
     console.error('Firestore Error:', JSON.stringify({
