@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Goal, User } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
+import { Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
+import { PandaIcon } from './PandaIcon';
 import { generateGoal, transcribeAudio, StructuredGoal, GoalTask } from '../services/geminiService';
 import { GOAL_CATEGORIES } from '../lib/goalCategories';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
@@ -540,26 +541,19 @@ export function HomeScreen({
                     </>
                   )}
 
-                  {/* POLISH: mic button — 44×44 tap target (36×36 visible gold pill),
-                      anim-press scale pulse, gold-pulse breathing only when idle
-                      (and CSS gates it for reduced-motion users). aria-label for SR. */}
-                  <button
+                  {/* Panda tap-to-record button — enlarges on press, starts voice input */}
+                  <motion.button
                     onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
                     disabled={phase !== 'idle'}
                     aria-label="Record new goal"
-                    className={cn(
-                      'tap-target anim-press flex items-center justify-center rounded-xl transition-opacity disabled:opacity-40',
-                      phase === 'idle' && 'anim-gold-pulse',
-                    )}
-                    style={{
-                      flexShrink:   0,
-                      background:   'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)',
-                      boxShadow:    '0 0 16px rgba(201,168,76,.25)',
-                      borderRadius: 'var(--r-md)',
-                    }}
+                    className="group flex-shrink-0 flex items-center justify-center disabled:opacity-40 transition-opacity"
+                    style={{ minWidth: 44, minHeight: 44 }}
+                    whileTap={{ scale: 1.55 }}
+                    animate={phase === 'idle' ? { scale: [1, 1.06, 1] } : { scale: 1 }}
+                    transition={{ type: 'spring', stiffness: 380, damping: 18, repeat: phase === 'idle' ? Infinity : 0, repeatDelay: 3, duration: 1.4 }}
                   >
-                    <Mic size={16} style={{ color: '#000' }} />
-                  </button>
+                    <PandaIcon size={28} active={false} />
+                  </motion.button>
                 </div>
 
                 {(processingError || recorderError) && (
