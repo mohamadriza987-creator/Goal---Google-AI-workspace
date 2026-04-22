@@ -65,17 +65,24 @@ export default function App() {
   const [calendarNotes,  setCalendarNotes]  = useState<CalendarNote[]>([]);
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
   const [navVisible,     setNavVisible]     = useState(true);
-  const lastScrollY = useRef(0);
+  const lastScrollY   = useRef(0);
+  const navLocked     = useRef(false); // true for 400ms after any screen change
   // Stable ref so the reminders effect doesn't re-subscribe on every goals update
   const goalsRef = useRef<Goal[]>(goals);
 
   // ── Nav hide-on-scroll ──────────────────────────────────────────────────
   useEffect(() => {
     const onScroll = () => {
+      if (navLocked.current) return; // screen just changed — keep nav visible
       const y = window.scrollY;
-      if (y < 10)                      setNavVisible(true);
-      else if (y > lastScrollY.current) setNavVisible(false);
-      else                              setNavVisible(true);
+      const delta = y - lastScrollY.current;
+      if (y < 60) {
+        setNavVisible(true);          // always show near the top
+      } else if (delta > 8) {
+        setNavVisible(false);         // scrolled down ≥8px
+      } else if (delta < -8) {
+        setNavVisible(true);          // scrolled up ≥8px
+      }
       lastScrollY.current = y;
     };
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -85,8 +92,14 @@ export default function App() {
   // ── Always show nav + reset scroll tracking on every screen change ───────
   useEffect(() => {
     setNavVisible(true);
-    lastScrollY.current = 0;
-    window.scrollTo(0, 0);
+    // Lock nav visible for 400ms so no stray scroll events can hide it
+    // during the screen transition animation.
+    navLocked.current = true;
+    const unlock = setTimeout(() => {
+      navLocked.current   = false;
+      lastScrollY.current = window.scrollY; // sync after transition settles
+    }, 400);
+    return () => clearTimeout(unlock);
   }, [currentScreen.name]);
 
   // ── Prevent spurious window scroll on home screen ────────────────────────

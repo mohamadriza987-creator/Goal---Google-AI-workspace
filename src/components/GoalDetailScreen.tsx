@@ -103,24 +103,34 @@ function BottomSheet({ open, onClose, title, children }: {
           <motion.div key="sh"
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-            className="fixed bottom-0 left-0 right-0 z-[70] px-5 pt-6 max-h-[90dvh] overflow-y-auto"
+            className="fixed bottom-0 left-0 right-0 z-[70]"
             style={{
-              background:    'var(--c-surface)',
-              borderRadius:  '28px 28px 0 0',
-              borderTop:     '1px solid var(--c-border)',
-              boxShadow:     'var(--shadow-1), var(--shadow-2), var(--shadow-modal)',
-              paddingBottom: 'max(40px, calc(env(safe-area-inset-bottom) + 24px))',
-              contain:       'layout style paint',
-              WebkitOverflowScrolling: 'touch',
+              background:   'var(--c-surface)',
+              borderRadius: '28px 28px 0 0',
+              borderTop:    '1px solid var(--c-border)',
+              boxShadow:    'var(--shadow-1), var(--shadow-2), var(--shadow-modal)',
+              maxHeight:    '90dvh',
+              display:      'flex',
+              flexDirection:'column',
             } as React.CSSProperties}>
-            {/* POLISH: 36×4 drag handle (token scale) — was 40×4 */}
-            <div
-              className="rounded-full mx-auto mb-5"
-              style={{ width: 36, height: 4, background: 'var(--c-border-light)' }}
-              aria-hidden
-            />
-            <h3 className="text-card-title mb-5">{title}</h3>
-            {children}
+            {/* Inner scrollable div — overflow on a fixed element fails on iOS
+                when body is position:fixed (body-locked). Separate container fixes it. */}
+            <div style={{
+              overflowY:               'auto',
+              WebkitOverflowScrolling: 'touch',
+              overscrollBehavior:      'contain',
+              flex:                    1,
+              padding:                 '24px 20px',
+              paddingBottom:           'max(40px, calc(env(safe-area-inset-bottom) + 24px))',
+            } as React.CSSProperties}>
+              <div
+                className="rounded-full mx-auto mb-5"
+                style={{ width: 36, height: 4, background: 'var(--c-border-light)' }}
+                aria-hidden
+              />
+              <h3 className="text-card-title mb-5">{title}</h3>
+              {children}
+            </div>
           </motion.div>
         </>
       )}
