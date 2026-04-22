@@ -735,12 +735,12 @@ export function HomeScreen({
         {/* ── REVIEW VIEW (keep existing logic, updated style) ────────── */}
         {currentView === 'review' && structuredGoal && (
           <motion.div key="review"
-            /* POLISH: token-driven panel transition */
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: POL_DUR_PANEL, ease: POL_EASE }}
-            className="max-w-2xl mx-auto px-5 pt-14 pb-32"
+            style={{ height: '100dvh', overflowY: 'auto', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
           >
+          <div className="max-w-2xl mx-auto px-5 pt-14 pb-32">
             {/* Nav */}
             <div className="flex items-center justify-between mb-8">
               <button onClick={() => setCurrentView('home')}
@@ -1002,6 +1002,7 @@ export function HomeScreen({
                 {phase === 'saving' ? t('saving') : t('saveGoal')}
               </button>
             </div>
+          </div>
           </motion.div>
         )}
 
