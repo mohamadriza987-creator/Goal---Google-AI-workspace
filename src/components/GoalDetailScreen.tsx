@@ -119,6 +119,7 @@ function BottomSheet({ open, onClose, title, children }: {
               overflowY:               'auto',
               WebkitOverflowScrolling: 'touch',
               overscrollBehavior:      'contain',
+              touchAction:             'pan-y',
               flex:                    1,
               padding:                 '24px 20px',
               paddingBottom:           'max(40px, calc(env(safe-area-inset-bottom) + 24px))',
@@ -1006,7 +1007,7 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
       </div>
 
       {/* Replies */}
-      <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto" style={{ paddingBottom: 100 }}>
+      <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto" style={{ paddingBottom: 100, overscrollBehavior: 'contain', touchAction: 'pan-y' }}>
         {loading && <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin" style={{ color: 'var(--c-gold)' }} /></div>}
 
         {!loading && filtered.length === 0 && (
@@ -1662,7 +1663,7 @@ function MemberSheet({
       >
         <div
           className="rounded-t-3xl pb-10 overflow-y-auto"
-          style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '88dvh', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+          style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '88dvh', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', touchAction: 'pan-y' } as React.CSSProperties}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Handle */}

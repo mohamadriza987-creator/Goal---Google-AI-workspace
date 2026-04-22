@@ -738,7 +738,7 @@ export function HomeScreen({
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: POL_DUR_PANEL, ease: POL_EASE }}
-            style={{ height: '100dvh', overflowY: 'auto', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+            style={{ height: '100dvh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', touchAction: 'pan-y' } as React.CSSProperties}
           >
           <div className="max-w-2xl mx-auto px-5 pt-14 pb-32">
             {/* Nav */}

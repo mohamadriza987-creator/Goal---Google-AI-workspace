@@ -146,12 +146,18 @@ button, [role="button"] {
 }
 
 /* .body-locked — applied to <body> while a modal / sheet / fullscreen
-   view is open. Kills iOS rubber-band and freezes the background. */
+   view is open. Prevents background scroll on iOS, Android Chrome, and
+   Samsung Browser.
+   - overflow:hidden stops window scroll on Android Chrome/Samsung.
+   - position:fixed stops iOS Safari rubber-band scroll.
+   - touch-action:none on body prevents stray touch-move events from
+     leaking through to the page behind the sheet. */
 .body-locked {
   position: fixed;
   inset: 0;
   width: 100%;
   overflow: hidden;
+  touch-action: none;
 }
 
 * { min-width: 0; }
