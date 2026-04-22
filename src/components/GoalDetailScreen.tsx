@@ -92,9 +92,8 @@ function BottomSheet({ open, onClose, title, children }: {
     <AnimatePresence>
       {open && (
         <>
-          {/* POLISH: 60% black scrim w/ 4px blur — tap to close (already wired). */}
           <motion.div key="ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-40"
+            className="fixed inset-0 z-[60]"
             style={{
               background:           'rgba(0,0,0,.6)',
               backdropFilter:       'blur(4px)',
@@ -104,9 +103,7 @@ function BottomSheet({ open, onClose, title, children }: {
           <motion.div key="sh"
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-            className="fixed bottom-0 left-0 right-0 z-50 px-5 pt-6 max-h-[90dvh] overflow-y-auto"
-            /* POLISH: modal shadow ladder for lift, safe-area-aware bottom padding,
-               paint containment so sheet content doesn't repaint the page beneath. */
+            className="fixed bottom-0 left-0 right-0 z-[70] px-5 pt-6 max-h-[90dvh] overflow-y-auto"
             style={{
               background:    'var(--c-surface)',
               borderRadius:  '28px 28px 0 0',
@@ -114,7 +111,8 @@ function BottomSheet({ open, onClose, title, children }: {
               boxShadow:     'var(--shadow-1), var(--shadow-2), var(--shadow-modal)',
               paddingBottom: 'max(40px, calc(env(safe-area-inset-bottom) + 24px))',
               contain:       'layout style paint',
-            }}>
+              WebkitOverflowScrolling: 'touch',
+            } as React.CSSProperties}>
             {/* POLISH: 36×4 drag handle (token scale) — was 40×4 */}
             <div
               className="rounded-full mx-auto mb-5"
@@ -1320,11 +1318,11 @@ function AddTaskPopup({
   return (
     <AnimatePresence>
       <motion.div key="at-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        className="fixed inset-0 z-[80]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       <motion.div key="at-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-        className="fixed bottom-0 left-0 right-0 z-[70] px-5 pb-10 pt-6"
+        className="fixed bottom-0 left-0 right-0 z-[90] px-5 pb-10 pt-6"
         style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
         onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--c-border-light)' }} />
@@ -1417,11 +1415,11 @@ function AskForHelpPopup({
   return (
     <AnimatePresence>
       <motion.div key="afh-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        className="fixed inset-0 z-[80]" style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       <motion.div key="afh-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-        className="fixed bottom-0 left-0 right-0 z-[70] px-5 pb-10 pt-6"
+        className="fixed bottom-0 left-0 right-0 z-[90] px-5 pb-10 pt-6"
         style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
         onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: 'var(--c-border-light)' }} />
@@ -1584,11 +1582,11 @@ function UserActionPopup({
   return (
     <AnimatePresence>
       <motion.div key="ua-ov" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60]" style={{ background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        className="fixed inset-0 z-[80]" style={{ background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose} />
       <motion.div key="ua-sh" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-        className="fixed bottom-0 left-0 right-0 z-[70] pb-10"
+        className="fixed bottom-0 left-0 right-0 z-[90] pb-10"
         style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
         onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full mx-auto mt-3 mb-1" style={{ background: 'var(--c-border-light)' }} />
@@ -1643,13 +1641,13 @@ function MemberSheet({
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 40 }}
         transition={{ type: 'spring', stiffness: 340, damping: 34 }}
-        className="fixed inset-0 z-50 flex flex-col justify-end"
+        className="fixed inset-0 z-[70] flex flex-col justify-end"
         style={{ background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
         onClick={onClose}
       >
         <div
           className="rounded-t-3xl pb-10 overflow-y-auto"
-          style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '88dvh' }}
+          style={{ background: 'var(--c-bg)', border: '1px solid var(--c-border)', maxHeight: '88dvh', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Handle */}
@@ -2020,14 +2018,14 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
           <>
             <motion.div key="del-ov"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50"
+              className="fixed inset-0 z-[60]"
               style={{ background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
               onClick={() => !isDeleting && setShowDeleteConfirm(false)}
             />
             <motion.div key="del-sh"
               initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 340, damping: 36 }}
-              className="fixed bottom-0 left-0 right-0 z-50 px-5 pb-10 pt-6"
+              className="fixed bottom-0 left-0 right-0 z-[70] px-5 pb-10 pt-6"
               style={{ background: 'var(--c-surface)', borderRadius: '28px 28px 0 0', borderTop: '1px solid var(--c-border)' }}
             >
               <div className="w-10 h-1 rounded-full mx-auto mb-6" style={{ background: 'var(--c-border-light)' }} />
