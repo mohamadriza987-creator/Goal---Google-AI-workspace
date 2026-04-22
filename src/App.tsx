@@ -82,6 +82,13 @@ export default function App() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
+  // ── Always show nav + reset scroll tracking on every screen change ───────
+  useEffect(() => {
+    setNavVisible(true);
+    lastScrollY.current = 0;
+    window.scrollTo(0, 0);
+  }, [currentScreen.name]);
+
   // ── Error handler ───────────────────────────────────────────────────────
   const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
     console.error('Firestore Error:', JSON.stringify({
