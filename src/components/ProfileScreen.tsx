@@ -3,7 +3,7 @@ import { User as FirebaseUser } from 'firebase/auth';
 import { auth, db } from '../firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
-import { Shield, LogOut, Plus, RefreshCw, Search, Users } from 'lucide-react';
+import { Shield, LogOut, Plus, RefreshCw, Search, Users, ArrowLeft, UserX, Loader2, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
 import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
@@ -11,11 +11,12 @@ import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, ord
 interface ProfileScreenProps {
   user: FirebaseUser | null;
   dbUser: User | null;
+  onNavigateHome: () => void;
 }
 
 import { useTranslation } from '../contexts/LanguageContext';
 
-export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
+export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenProps) {
   const { t, language, setLanguage } = useTranslation();
   const [isSyncing,      setIsSyncing]      = React.useState(false);
   const [syncProgress,   setSyncProgress]   = React.useState(0);
@@ -37,8 +38,63 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   const [indexStatusLoading, setIndexStatusLoading] = React.useState(false);
   const [forceRebuildStatus, setForceRebuildStatus] = React.useState<'idle'|'running'|'done'|'error'>('idle');
   const [forceRebuildMsg, setForceRebuildMsg] = React.useState('');
+  const [modelOrder, setModelOrder] = React.useState<string[]>(['', '', '', '', '']);
+  const [modelOrderSaving, setModelOrderSaving] = React.useState(false);
+  const [modelOrderMsg, setModelOrderMsg] = React.useState<{ ok: boolean; text: string } | null>(null);
+  const [modelStats, setModelStats] = React.useState<Record<string, { calls: number; quotaErrors: number }>>({});
 
   const isAdminUser = dbUser?.role === 'admin' || user?.email === 'mohamadriza987@gmail.com';
+
+  React.useEffect(() => {
+    if (!isAdminUser || !user) return;
+    user.getIdToken().then((tok) =>
+      fetch('/api/admin/gemini-model-order', { headers: { Authorization: `Bearer ${tok}` } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.modelOrder) {
+            const padded = [...data.modelOrder, '', '', '', '', ''].slice(0, 5);
+            setModelOrder(padded);
+          }
+        })
+        .catch(() => {})
+    );
+  }, [isAdminUser, user]);
+
+  React.useEffect(() => {
+    if (!isAdminUser || !user) return;
+    const fetchStats = () => {
+      user.getIdToken().then((tok) =>
+        fetch('/api/admin/gemini-model-stats', { headers: { Authorization: `Bearer ${tok}` } })
+          .then((r) => r.ok ? r.json() : null)
+          .then((data) => { if (data?.stats) setModelStats(data.stats); })
+          .catch(() => {})
+      );
+    };
+    fetchStats();
+    const id = setInterval(fetchStats, 15 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [isAdminUser, user]);
+
+  const saveModelOrder = async () => {
+    if (!user) return;
+    setModelOrderSaving(true);
+    setModelOrderMsg(null);
+    try {
+      const tok = await user.getIdToken();
+      const r = await fetch('/api/admin/gemini-model-order', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelOrder }),
+      });
+      const data = await r.json();
+      if (r.ok) setModelOrderMsg({ ok: true, text: 'Saved' });
+      else setModelOrderMsg({ ok: false, text: data.error ?? 'Failed' });
+    } catch (e: any) {
+      setModelOrderMsg({ ok: false, text: e.message ?? 'Error' });
+    } finally {
+      setModelOrderSaving(false);
+    }
+  };
 
   const loadIndexStatus = React.useCallback(async () => {
     if (!user || !isAdminUser) return;
@@ -188,10 +244,28 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
   };
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="max-w-2xl mx-auto p-6 pt-12 pb-32"
+      /* POLISH: shared panel enter — token ease, transform + opacity only;
+         safe-area top padding respects the iOS notch. */
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+      className="max-w-2xl mx-auto p-6 pb-32"
+      style={{ paddingTop: 'calc(48px + env(safe-area-inset-top))' }}
     >
+      {/* POLISH: 44×44 back button — tap-target + anim-press */}
+      <button
+        onClick={onNavigateHome}
+        aria-label="Back to home"
+        className="tap-target anim-press inline-flex items-center gap-2 text-zinc-400 hover:text-white mb-6 rounded-lg"
+        style={{
+          transition: 'color var(--dur-micro) var(--ease-out-quad)',
+          paddingLeft: 0,
+        }}
+      >
+        <ArrowLeft size={20} />
+        <span className="text-sm font-medium">Home</span>
+      </button>
+
       <div className="flex flex-col items-center text-center mb-12">
         <div className="w-24 h-24 rounded-full bg-zinc-800 mb-4" />
         <h2 className="text-2xl font-bold break-words w-full">{user?.displayName}</h2>
@@ -420,6 +494,76 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
           </button>
         )}
 
+        {/* Gemini Model Order — owner only */}
+        {isAdminUser && (
+          <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl space-y-4">
+            <p className="font-semibold text-sm">Gemini Model Order</p>
+            <p className="text-xs text-zinc-500">Fallback order for goal generation. Blank slots are skipped.</p>
+            <div className="space-y-2">
+              {modelOrder.map((val, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <span className="text-xs text-zinc-500 w-5 shrink-0">{i + 1}.</span>
+                  <select
+                    value={val}
+                    onChange={(e) => {
+                      const next = [...modelOrder];
+                      next[i] = e.target.value;
+                      setModelOrder(next);
+                    }}
+                    className="flex-1 bg-zinc-800 text-white text-sm rounded-xl px-3 py-2.5 border border-zinc-700 outline-none"
+                  >
+                    <option value="">— none —</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                    <option value="gemini-3.1-pro">gemini-3.1-pro</option>
+                    <option value="gemini-3.1-lite">gemini-3.1-lite</option>
+                    <option value="gemini-3.1">gemini-3.1</option>
+                    <option value="gemini-live">gemini-live</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={saveModelOrder}
+                disabled={modelOrderSaving}
+                className="px-4 py-2 rounded-xl bg-white text-black text-sm font-semibold disabled:opacity-50 hover:bg-zinc-200 transition-colors"
+              >
+                {modelOrderSaving ? 'Saving…' : 'Save'}
+              </button>
+              {modelOrderMsg && (
+                <span className={`text-xs ${modelOrderMsg.ok ? 'text-green-400' : 'text-red-400'}`}>
+                  {modelOrderMsg.text}
+                </span>
+              )}
+            </div>
+            <div className="border-t border-zinc-800 pt-3 space-y-1">
+              <div className="flex items-center justify-between text-xs text-zinc-500 mb-2">
+                <span>Model</span>
+                <span className="flex gap-4">
+                  <span>Calls</span>
+                  <span className="text-amber-500">Quota</span>
+                </span>
+              </div>
+              {['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.1-pro', 'gemini-3.1-lite', 'gemini-3.1', 'gemini-live'].map((m) => (
+                <div key={m} className="flex items-center justify-between text-xs">
+                  <span className="text-zinc-400 font-mono">{m}</span>
+                  <span className="flex gap-4 tabular-nums">
+                    <span className="text-zinc-300 font-semibold w-6 text-right">{modelStats[m]?.calls ?? 0}</span>
+                    <span className={`font-semibold w-6 text-right ${(modelStats[m]?.quotaErrors ?? 0) > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>
+                      {modelStats[m]?.quotaErrors ?? 0}
+                    </span>
+                  </span>
+                </div>
+              ))}
+              <p className="text-xs text-zinc-600 pt-1">Resets every 15 min</p>
+            </div>
+          </div>
+        )}
+
+        {/* Blocked Users */}
+        <BlockedUsersSection user={user} />
+
         <button
           onClick={() => auth.signOut()}
           className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-red-500 hover:bg-red-500/10 transition-colors"
@@ -429,6 +573,109 @@ export function ProfileScreen({ user, dbUser }: ProfileScreenProps) {
         </button>
       </div>
     </motion.div>
+  );
+}
+
+interface BlockedProfile {
+  userId: string;
+  displayName: string;
+  avatarUrl: string;
+}
+
+function BlockedUsersSection({ user }: { user: FirebaseUser | null }) {
+  const [blocked,    setBlocked]    = React.useState<BlockedProfile[]>([]);
+  const [loading,    setLoading]    = React.useState(true);
+  const [unblocking, setUnblocking] = React.useState<string | null>(null);
+  const [open,       setOpen]       = React.useState(false);
+
+  React.useEffect(() => {
+    if (!user || !open) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const token = await user.getIdToken();
+        const res   = await fetch('/api/blocked-users', { headers: { Authorization: `Bearer ${token}` } });
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setBlocked(data.blockedUsers ?? []);
+        }
+      } catch (e) {
+        console.error('Blocked users load error', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, open]);
+
+  const handleUnblock = async (userId: string) => {
+    if (!user) return;
+    setUnblocking(userId);
+    try {
+      const token = await user.getIdToken();
+      await fetch(`/api/blocked-users/${userId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setBlocked(prev => prev.filter(b => b.userId !== userId));
+    } catch (e) {
+      console.error('Unblock error', e);
+    } finally {
+      setUnblocking(null);
+    }
+  };
+
+  return (
+    <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full p-6 flex items-center gap-4 text-left hover:bg-zinc-800/30 transition-colors">
+        <UserX size={22} style={{ color: '#e05260', flexShrink: 0 }} />
+        <div className="flex-1">
+          <p className="font-semibold" style={{ color: 'var(--c-text)' }}>Blocked Users</p>
+          <p className="text-xs text-zinc-500">Manage who you've blocked</p>
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--c-text-3)' }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-6 pb-5 space-y-2" style={{ borderTop: '1px solid var(--c-border)' }}>
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <Loader2 size={18} className="animate-spin" style={{ color: 'var(--c-gold)' }} />
+            </div>
+          ) : blocked.length === 0 ? (
+            <p className="py-4 text-sm text-center" style={{ color: 'var(--c-text-3)' }}>
+              No blocked users.
+            </p>
+          ) : (
+            blocked.map(b => (
+              <div key={b.userId} className="flex items-center gap-3 py-2">
+                {b.avatarUrl ? (
+                  <img src={b.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
+                       style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)', color: 'var(--c-gold)' }}>
+                    {b.displayName[0]?.toUpperCase() ?? '?'}
+                  </div>
+                )}
+                <p className="flex-1 text-sm" style={{ color: 'var(--c-text)' }}>{b.displayName}</p>
+                <button
+                  onClick={() => handleUnblock(b.userId)}
+                  disabled={unblocking === b.userId}
+                  className="px-3 py-1 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
+                  style={{ background: 'rgba(224,82,96,.12)', border: '1px solid rgba(224,82,96,.3)', color: '#e05260' }}>
+                  {unblocking === b.userId
+                    ? <Loader2 size={12} className="animate-spin" />
+                    : 'Unblock'}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

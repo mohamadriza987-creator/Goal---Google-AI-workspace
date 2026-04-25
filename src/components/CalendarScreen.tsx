@@ -72,8 +72,14 @@ export function CalendarScreen({
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-      className="max-w-4xl mx-auto px-5 pt-12 pb-32">
+    <motion.div
+      /* POLISH: shared panel enter — transform + opacity only, token ease */
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+      className="max-w-4xl mx-auto px-5 pb-32"
+      style={{ paddingTop: 'calc(48px + env(safe-area-inset-top))' }}
+    >
 
       <h1 className="text-page-title mb-8">Calendar</h1>
 
@@ -83,8 +89,15 @@ export function CalendarScreen({
         <div className="lg:col-span-2 space-y-6">
 
           {/* react-calendar */}
+          {/* POLISH: layered shadow + paint containment — calendar redraws are expensive. */}
           <div className="p-4 rounded-3xl overflow-hidden"
-               style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+               style={{
+                 background:   'var(--c-surface)',
+                 border:       '1px solid var(--c-border)',
+                 boxShadow:    'var(--shadow-1), var(--shadow-2)',
+                 contain:      'layout style paint',
+                 borderRadius: 'var(--r-xl)',
+               }}>
             <Calendar
               value={selectedDate}
               onChange={v => { setSelectedDate(v as Date); setEditingNote(false); }}
@@ -116,8 +129,14 @@ export function CalendarScreen({
             {dateReminders.map((r, i) => (
               <button key={i}
                 onClick={() => setCurrentScreen({ name: 'goal-detail', goalId: r.goal.id, initialTab: 'plan' })}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
-                style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
+                /* POLISH: 44+ min-height tap row w/ press pulse */
+                className="anim-press w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
+                style={{
+                  background:   'var(--c-surface-2)',
+                  border:       '1px solid var(--c-border)',
+                  minHeight:    44,
+                  borderRadius: 'var(--r-lg)',
+                }}>
                 {r.task.isDone
                   ? <CheckCircle2 size={14} style={{ color: 'var(--c-success, #4a7c59)', flexShrink: 0 }} />
                   : <Bell        size={14} style={{ color: 'var(--c-gold)',              flexShrink: 0 }} />}
@@ -192,8 +211,14 @@ export function CalendarScreen({
               {upcoming.length > 0 ? upcoming.map((r, i) => (
                 <button key={i}
                   onClick={() => setCurrentScreen({ name: 'goal-detail', goalId: r.goal.id, initialTab: 'plan' })}
-                  className="w-full flex items-start gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
-                  style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
+                  /* POLISH: 44+ min-height tap row w/ press pulse */
+                  className="anim-press w-full flex items-start gap-3 px-4 py-3 rounded-2xl text-left transition-opacity hover:opacity-80"
+                  style={{
+                    background:   'var(--c-surface)',
+                    border:       '1px solid var(--c-border)',
+                    minHeight:    44,
+                    borderRadius: 'var(--r-lg)',
+                  }}>
                   <Bell size={13} style={{ color: 'var(--c-gold)', flexShrink: 0, marginTop: 2 }} />
                   <div className="flex-1 min-w-0">
                     <p className="text-body truncate">{r.task.text}</p>

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./styles/animations.css"; /* POLISH: shared keyframe + reduced-motion layer */
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -27,20 +28,49 @@
 
   --c-text:         #FFFFFF;
   --c-text-2:       #A0A0A0;          /* secondary text           */
-  --c-text-3:       #606060;          /* metadata / placeholder   */
+  --c-text-3:       #7A7A7A;          /* POLISH: raised from #606060 to clear 4.5:1 on #000 */
 
-  /* ── Radii ── */
-  --r-card:         20px;
-  --r-btn:          16px;
-  --r-pill:         999px;
-  --r-sheet:        28px 28px 0 0;
+  /* ── Spacing — 8pt grid ── POLISH */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-7:  32px;
+  --s-8:  40px;
+  --s-9:  48px;
+  --s-10: 64px;
 
-  /* ── Shadows ── */
-  --shadow-card:    0 2px 16px rgba(0,0,0,.6);
-  --shadow-gold:    0 0 24px rgba(201,168,76,.15);
+  /* ── Radii — POLISH: unified scale, legacy names alias onto it ── */
+  --r-sm:    8px;
+  --r-md:   12px;
+  --r-lg:   16px;
+  --r-xl:   24px;
+  --r-pill: 999px;
+  --r-card:  var(--r-xl);             /* was 20px */
+  --r-btn:   var(--r-lg);             /* was 16px */
+  --r-sheet: 28px 28px 0 0;
 
-  /* ── Transitions ── */
-  --ease-premium:   cubic-bezier(.25,.46,.45,.94);
+  /* ── Shadows — POLISH: two-layer ambient + key ── */
+  --shadow-1:     0 1px 2px rgba(0,0,0,.45);
+  --shadow-2:     0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
+  --shadow-modal: 0 2px 8px rgba(0,0,0,.5), 0 24px 60px rgba(0,0,0,.6);
+  --shadow-card:  var(--shadow-2);    /* legacy alias */
+  --shadow-gold:  0 0 24px rgba(201,168,76,.15);
+
+  /* ── Motion — POLISH: premium easing + duration tokens ── */
+  --dur-micro:     160ms;
+  --dur-panel:     300ms;
+  --ease-out-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ease-spring:   cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-premium:  var(--ease-out-quad);  /* legacy alias */
+
+  /* ── Safe-area helpers — POLISH ── */
+  --safe-top:    env(safe-area-inset-top,    0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left:   env(safe-area-inset-left,   0px);
+  --safe-right:  env(safe-area-inset-right,  0px);
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -57,6 +87,50 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ═══════════════════════════════════════════════════════
+   GLOBAL TOUCH + TAP RULES — POLISH (Phase 3)
+   ═══════════════════════════════════════════════════════ */
+
+/* Kill the grey tap-highlight everywhere — we render our own press feedback */
+html, body, button, a, [role="button"],
+input, textarea, label, select {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+/* Disable double-tap zoom + remove 300 ms click delay on tappables */
+button, a, [role="button"],
+input, textarea, select, label {
+  touch-action: manipulation;
+}
+
+/* Prevent vertical rubber-band bleed at the document level */
+html, body {
+  overscroll-behavior-y: contain;
+}
+
+/* ─── Utilities ─────────────────────────────────────────── */
+
+/* .tap-target — invisible 44×44 hit area so icons hit iOS HIG minimums */
+.tap-target {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  touch-action: manipulation;
+}
+
+/* .body-locked — applied to <body> while a modal / sheet / fullscreen
+   view is open. Kills iOS rubber-band and freezes the background. */
+.body-locked {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
 * { min-width: 0; }
 
 p, h1, h2, h3, h4, h5, h6, span, label, li, div {
@@ -71,11 +145,14 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
    TYPOGRAPHY SCALE
    ═══════════════════════════════════════════════════════ */
 
-.text-page-title   { font-size: 28px; font-weight: 600; letter-spacing: -0.5px; }
-.text-section-title{ font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
-.text-card-title   { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
-.text-body         { font-size: 15px; font-weight: 400; }
-.text-meta         { font-size: 12px; font-weight: 500; letter-spacing: 0.1px; }
+/* POLISH: tightened line-heights (1.3 headings / 1.6 body) and added -lg / -sm tiers */
+.text-page-title   { font-size: 28px; font-weight: 600; letter-spacing: -0.5px; line-height: 1.3;  }
+.text-section-title{ font-size: 20px; font-weight: 600; letter-spacing: -0.3px; line-height: 1.3;  }
+.text-card-title   { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; line-height: 1.35; }
+.text-body-lg      { font-size: 17px; font-weight: 400; line-height: 1.6;                          } /* POLISH: new */
+.text-body         { font-size: 15px; font-weight: 400; line-height: 1.6;                          }
+.text-meta         { font-size: 12px; font-weight: 500; letter-spacing: 0.1px; line-height: 1.45;  }
+.text-meta-sm      { font-size: 11px; font-weight: 500; letter-spacing: 0.2px; line-height: 1.4;   } /* POLISH: new */
 
 /* ═══════════════════════════════════════════════════════
    CARDS
@@ -98,6 +175,9 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
    BUTTONS
    ═══════════════════════════════════════════════════════ */
 
+/* POLISH: all three button utilities share the press-pop token (scale 0.97)
+   and the shared --ease-out-quad curve. 44px min-height keeps every button
+   thumb-friendly; .btn-icon adds a pure 44×44 square helper. */
 .btn-gold {
   background: linear-gradient(135deg, #C9A84C 0%, #a8873c 100%);
   color: #000;
@@ -105,10 +185,12 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
   font-size: 15px;
   border-radius: var(--r-btn);
   padding: 14px 24px;
-  transition: opacity .2s var(--ease-premium), transform .15s var(--ease-premium);
+  min-height: 44px;
+  transition: opacity var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
   box-shadow: var(--shadow-gold);
 }
-.btn-gold:active { opacity: .85; transform: scale(.97); }
+.btn-gold:active { opacity: .88; transform: scale(.97); }
 
 .btn-ghost {
   background: var(--c-surface-2);
@@ -118,10 +200,31 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
   border-radius: var(--r-btn);
   border: 1px solid var(--c-border);
   padding: 10px 18px;
-  transition: background .2s var(--ease-premium), color .2s;
+  min-height: 44px;
+  transition: background var(--dur-micro) var(--ease-out-quad),
+              color var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
 }
 .btn-ghost:hover  { background: var(--c-surface-3); color: var(--c-text); }
 .btn-ghost:active { transform: scale(.97); }
+
+/* POLISH: 44×44 icon button — square tap target, neutral surface,
+   used for close/back/info/etc. affordances across the app. */
+.btn-icon {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text-2);
+  transition: background var(--dur-micro) var(--ease-out-quad),
+              color var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
+}
+.btn-icon:hover  { background: var(--c-surface-2); color: var(--c-text); }
+.btn-icon:active { transform: scale(.94); }
 
 .btn-pill {
   border-radius: var(--r-pill);
@@ -180,36 +283,125 @@ p, h1, h2, h3, h4, h5, h6, span, label, li, div {
    TAB BAR
    ═══════════════════════════════════════════════════════ */
 
+/* POLISH: tab bar — translucent sticky strip with saturate-blur so content
+   underneath is readable even over coloured cards; tab-item gets 44+ hit
+   area via min-height; underline animates width on the token ease. */
 .tab-bar {
   display: flex;
   border-bottom: 1px solid var(--c-border);
-  background: var(--c-bg);
+  background: rgba(10,10,10,0.72);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
 }
 
 .tab-item {
   flex: 1;
+  min-height: 44px;
   padding: 12px 0 10px;
   font-size: 14px;
   font-weight: 500;
   color: var(--c-text-3);
   text-align: center;
   position: relative;
-  transition: color .2s;
+  transition: color var(--dur-micro) var(--ease-out-quad),
+              transform var(--dur-micro) var(--ease-out-quad);
 }
+
+.tab-item:active { transform: scale(.97); }
 
 .tab-item.active {
   color: var(--c-gold);
 }
 
-.tab-item.active::after {
+.tab-item::after {
   content: '';
   position: absolute;
   bottom: -1px;
-  left: 20%;
-  right: 20%;
+  left: 50%;
+  width: 0;
   height: 2px;
   background: var(--c-gold);
   border-radius: 2px 2px 0 0;
+  transform: translateX(-50%);
+  transition: width var(--dur-micro) var(--ease-out-quad);
+}
+
+.tab-item.active::after {
+  width: 60%;
+}
+
+/* ═══════════════════════════════════════════════════════
+   EMPTY / ERROR STATES
+   POLISH: consistent container for "nothing here" + "something went wrong"
+   messages — layered shadow, token radius, accessible contrast.
+   ═══════════════════════════════════════════════════════ */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  box-shadow: var(--shadow-1), var(--shadow-2);
+  contain: layout style paint;
+  color: var(--c-text-2);
+}
+
+.empty-state__icon {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(201,168,76,0.10);
+  color: var(--c-gold);
+  margin-bottom: var(--s-1);
+}
+
+.empty-state__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: -0.2px;
+}
+
+.empty-state__body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--c-text-3);
+  max-width: 28ch;
+}
+
+/* Error variant — same shape, red accent, meets 4.5:1 contrast */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border-radius: var(--r-lg);
+  background: rgba(224, 82, 96, 0.08);
+  border: 1px solid rgba(224, 82, 96, 0.30);
+  box-shadow: var(--shadow-1);
+  contain: layout style paint;
+}
+
+.error-state__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f39aa1;            /* 4.5:1 against rgba(224,82,96,0.08) on --c-bg */
+  letter-spacing: -0.1px;
+}
+
+.error-state__body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #e6b5b9;
 }
 
 /* ═══════════════════════════════════════════════════════

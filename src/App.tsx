@@ -1,11 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, onSnapshot, doc, orderBy, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, orderBy, limit, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { Goal, GoalTask, User, CalendarNote } from './types';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from './lib/utils';
-import { Calendar as CalendarIcon, Trophy } from 'lucide-react';
+
+/* POLISH: shared screen-transition tokens — mirrors --dur-panel / --ease-out-quad
+   so every page swap animates on transform + opacity (never layout). */
+const PANEL_INITIAL = { opacity: 0, y: 8 };
+const PANEL_ANIMATE = { opacity: 1, y: 0 };
+const PANEL_EXIT    = { opacity: 0, y: -4 };
+const PANEL_TRANS   = { duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] as const };
 
 // ── Screen types ──────────────────────────────────────────────────────────────
 
@@ -33,30 +38,16 @@ enum OperationType {
   WRITE  = 'write',
 }
 
-// ── Panda logo (centre home button) ──────────────────────────────────────────
+// ── Screen + feature imports ──────────────────────────────────────────────────
 
-const PandaIcon = ({ size = 24, active = false }: { size?: number; active?: boolean }) => (
-  <div className={cn('relative flex items-center justify-center transition-all duration-300', active ? 'scale-110' : 'hover:scale-105')}>
-    <svg width={size} height={size} viewBox="0 0 200 200"
-      className={cn('transition-all duration-300', active ? 'fill-black' : 'fill-zinc-400 group-hover:fill-white')}>
-      <circle cx="50"  cy="50"  r="25" />
-      <circle cx="150" cy="50"  r="25" />
-      <circle cx="100" cy="100" r="80" fill={active ? 'white' : 'none'} stroke={active ? 'black' : 'currentColor'} strokeWidth="8" />
-      <ellipse cx="70"  cy="90" rx="20" ry="25" />
-      <ellipse cx="130" cy="90" rx="20" ry="25" />
-      <circle  cx="100" cy="120" r="8" />
-    </svg>
-  </div>
-);
-
-// ── Screen imports ───────────────────────────────────────────────────────────
-
-import { HomeScreen }       from './components/HomeScreen';
-import { GoalDetailScreen } from './components/GoalDetailScreen';
-import { CalendarScreen }   from './components/CalendarScreen';
-import { ChallengeScreen }  from './components/ChallengeScreen';
-import { ProfileScreen }    from './components/ProfileScreen';
-import { NavButton }        from './components/NavButton';
+const HomeScreen       = React.lazy(() => import('./components/HomeScreen').then(m => ({ default: m.HomeScreen })));
+const GoalDetailScreen = React.lazy(() => import('./components/GoalDetailScreen').then(m => ({ default: m.GoalDetailScreen })));
+const CalendarScreen   = React.lazy(() => import('./components/CalendarScreen').then(m => ({ default: m.CalendarScreen })));
+const ChallengeScreen  = React.lazy(() => import('./components/ChallengeScreen').then(m => ({ default: m.ChallengeScreen })));
+const ProfileScreen    = React.lazy(() => import('./components/ProfileScreen').then(m => ({ default: m.ProfileScreen })));
+import { SortableNavConsole }    from './components/SortableNavConsole';
+import { HomeEditModeProvider }  from './contexts/HomeEditModeContext';
+import { UserContext }           from './contexts/UserContext';
 
 // ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -66,11 +57,16 @@ export default function App() {
   const [dbUser,         setDbUser]         = useState<User | null>(null);
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
+  const [goalsLoading,   setGoalsLoading]   = useState(true);
+  const [goalLimit,      setGoalLimit]      = useState(5);
+  const [hasMoreGoals,   setHasMoreGoals]   = useState(false);
   const [allReminders,   setAllReminders]   = useState<{task: GoalTask; goal: Goal; reminderAt: string; noteText?: string}[]>([]);
   const [calendarNotes,  setCalendarNotes]  = useState<CalendarNote[]>([]);
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
   const [navVisible,     setNavVisible]     = useState(true);
   const lastScrollY = useRef(0);
+  // Stable ref so the reminders effect doesn't re-subscribe on every goals update
+  const goalsRef = useRef<Goal[]>(goals);
 
   // ── Nav hide-on-scroll ──────────────────────────────────────────────────
   useEffect(() => {
@@ -95,10 +91,9 @@ export default function App() {
     }));
   };
 
-  // ── Auth + realtime subscriptions ───────────────────────────────────────
+  // ── Auth + user profile subscription ───────────────────────────────────
   useEffect(() => {
-    let userUnsubscribe:  (() => void) | null = null;
-    let goalsUnsubscribe: (() => void) | null = null;
+    let userUnsubscribe: (() => void) | null = null;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (u) => {
       setUser(u);
@@ -123,34 +118,47 @@ export default function App() {
         }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
 
         if (currentScreen.name === 'auth') setCurrentScreen({ name: 'home' });
-
-        // Goals (own goals only)
-        const q = query(collection(db, 'goals'), where('ownerId', '==', u.uid), orderBy('createdAt', 'desc'));
-        goalsUnsubscribe = onSnapshot(q, (snapshot) => {
-          const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
-          setGoals(g);
-          setOptimisticGoals(prev =>
-            prev.filter(og => !g.some(rg =>
-              rg.title === og.title &&
-              Math.abs(new Date(rg.createdAt).getTime() - new Date(og.createdAt).getTime()) < 5000
-            ))
-          );
-        }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
-
       } else {
         setDbUser(null);
+        setGoals([]);
+        setGoalsLoading(true);
+        setGoalLimit(5);
+        setHasMoreGoals(false);
         setCurrentScreen({ name: 'auth' });
-        if (userUnsubscribe)  userUnsubscribe();
-        if (goalsUnsubscribe) goalsUnsubscribe();
+        if (userUnsubscribe) userUnsubscribe();
       }
     });
 
     return () => {
       unsubscribeAuth();
-      if (userUnsubscribe)  userUnsubscribe();
-      if (goalsUnsubscribe) goalsUnsubscribe();
+      if (userUnsubscribe) userUnsubscribe();
     };
   }, []);
+
+  // ── Goals subscription (paginated) ─────────────────────────────────────
+  useEffect(() => {
+    if (!user) return;
+    setGoalsLoading(true);
+    const q = query(
+      collection(db, 'goals'),
+      where('ownerId', '==', user.uid),
+      orderBy('createdAt', 'desc'),
+      limit(goalLimit),
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
+      goalsRef.current = g;
+      setGoals(g);
+      setGoalsLoading(false);
+      // If we got exactly the limit there may be more; fewer means we've reached the end
+      setHasMoreGoals(g.length === goalLimit);
+      // Dedup by tempId only
+      setOptimisticGoals(prev =>
+        prev.filter(og => !g.some(rg => rg.tempId && rg.tempId === og.id))
+      );
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
+    return () => unsub();
+  }, [user, goalLimit]);
 
   // ── Reminders (calendar data) ──────────────────────────────────────────
   useEffect(() => {
@@ -165,33 +173,35 @@ export default function App() {
       setAllReminders(merged);
     };
 
-    const tQ = query(collectionGroup(db, 'tasks'), where('reminderAt', '!=', null));
+    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid), limit(500));
     const unsubT = onSnapshot(tQ, (snap) => {
       latestTask = [];
       snap.docs.forEach(d => {
         const data = d.data() as GoalTask;
+        if (!data.reminderAt) return;
         const goalId = d.ref.parent.parent?.id;
-        const goal   = goals.find(g => g.id === goalId);
-        if (goal && data.reminderAt) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
+        const goal   = goalsRef.current.find(g => g.id === goalId);
+        if (goal) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
 
-    const nQ = query(collectionGroup(db, 'notes'), where('reminderAt', '!=', null));
+    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid), limit(500));
     const unsubN = onSnapshot(nQ, (snap) => {
       latestNote = [];
       snap.docs.forEach(d => {
         const data  = d.data();
+        if (!data.reminderAt) return;
         const taskR = d.ref.parent.parent;
         const goalR = taskR?.parent.parent;
-        const goal  = goals.find(g => g.id === goalR?.id);
-        if (goal && data.reminderAt) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
+        const goal  = goalsRef.current.find(g => g.id === goalR?.id);
+        if (goal) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
       });
       recompute();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/notes'));
 
     return () => { unsubT(); unsubN(); };
-  }, [user, goals]);
+  }, [user]);
 
   // ── Calendar notes ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -233,25 +243,35 @@ export default function App() {
     if (!user || !goal.draftData) return;
     const { structuredGoal, manualTasks } = goal.draftData;
     const tempId = goal.id;
-    updateOptimisticGoal(tempId, { savingStatus: 'saving' });
+    updateOptimisticGoal(tempId, { savingStatus: 'saving', saveErrorMessage: undefined });
 
     try {
-      // 1. Embedding
+      // Single token reused across this save cycle — Firebase caches internally
+      // but back-to-back awaits still serialise unnecessarily.
+      const idToken = await user.getIdToken();
+      const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` };
+
+      // 1. Embedding — surface failure rather than silently saving without one
       let embedding: number[] | undefined;
+      let embeddingFailed = false;
       try {
-        const tok = await user.getIdToken();
-        const r   = await fetch('/api/generate-embedding', {
+        const r = await fetch('/api/generate-embedding', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
+          headers: authHeaders,
           body: JSON.stringify({ text: structuredGoal.normalizedMatchingText }),
         });
-        if (r.ok) embedding = (await r.json()).embedding;
-      } catch (e) { console.error('Embedding failed:', e); }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        embedding = (await r.json()).embedding;
+      } catch (e) {
+        embeddingFailed = true;
+        console.error('Embedding failed:', e);
+      }
 
       // 2. Save goal doc — default visibility to 'public'
       const visibility = structuredGoal.privacy === 'private' ? 'private' : 'public';
       const goalRef = await addDoc(collection(db, 'goals'), {
         ownerId: user.uid,
+        tempId,
         title:   structuredGoal.title,
         description: structuredGoal.description,
         category: structuredGoal.categories[0],
@@ -279,49 +299,69 @@ export default function App() {
           microSteps: task.microSteps,
           createdAt: new Date().toISOString(),
           source: 'ai',
+          goalId: goalRef.id,
+          ownerId: user.uid,
         });
       });
-      manualTasks.forEach((text, i) => {
+      manualTasks.forEach((text: string, i: number) => {
         const tRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
         batch.set(tRef, {
           text, isDone: false, order: structuredGoal.tasks.length + i,
           microSteps: [],
           createdAt: new Date().toISOString(),
           source: 'manual',
+          goalId: goalRef.id,
+          ownerId: user.uid,
         });
       });
       await batch.commit();
+
+      if (embeddingFailed) {
+        updateOptimisticGoal(tempId, {
+          savingStatus: 'partial',
+          saveErrorMessage: 'Saved, but no community room was matched. Open the goal to retry.',
+        });
+        return;
+      }
       updateOptimisticGoal(tempId, { savingStatus: 'success' });
 
-      // 4. Group assign + precompute + new index layer (all fire-and-forget)
+      // 4. Combined post-save: assign group + precompute matches + index — one
+      //    round trip, one auth token, server runs them in the right order.
       if (embedding) {
-        const tok = await user.getIdToken();
-        fetch('/api/groups/assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
-          body: JSON.stringify({ goalId: goalRef.id }),
-        }).catch(console.error);
-
-        const tok2 = await user.getIdToken();
-        fetch('/api/goals/precompute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok2}` },
-          body: JSON.stringify({ goalId: goalRef.id, embedding }),
-        }).catch(console.error);
-
-        // New structured index layer — runs in parallel, does not block UI
-        const tok3 = await user.getIdToken();
-        fetch('/api/goals/index-new', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok3}` },
-          body: JSON.stringify({ goalId: goalRef.id }),
-        }).catch(console.error);
+        try {
+          const res = await fetch('/api/goals/post-save', {
+            method: 'POST',
+            headers: authHeaders,
+            body: JSON.stringify({ goalId: goalRef.id, embedding }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (data && data.groupId === null) {
+            updateOptimisticGoal(tempId, {
+              savingStatus: 'partial',
+              saveErrorMessage: 'No matching community room yet. We\'ll keep looking as more goals join.',
+            });
+          }
+        } catch (e) {
+          console.error('Post-save (group assign / index) failed', e);
+          updateOptimisticGoal(tempId, {
+            savingStatus: 'partial',
+            saveErrorMessage: 'Goal saved, but joining a community room failed. Open the goal to retry.',
+          });
+        }
       }
     } catch (err) {
       console.error('Save error:', err);
-      updateOptimisticGoal(tempId, { savingStatus: 'error' });
+      updateOptimisticGoal(tempId, {
+        savingStatus: 'error',
+        saveErrorMessage: 'Could not save goal. Please try again.',
+      });
     }
   };
+
+  const loadMoreGoals = useCallback(() => {
+    if (hasMoreGoals) setGoalLimit(prev => prev + 5);
+  }, [hasMoreGoals]);
 
   const displayGoals = React.useMemo(() => [...optimisticGoals, ...goals], [optimisticGoals, goals]);
 
@@ -332,16 +372,27 @@ export default function App() {
   const isAuth = currentScreen.name === 'auth';
 
   return (
+    <UserContext.Provider value={{ user, dbUser }}>
+    <HomeEditModeProvider userId={user?.uid ?? null}>
+    {/* POLISH: app shell — paint containment isolates screen repaints,
+        safe-area top padding respects iOS notch / dynamic island. */}
     <div className="min-h-screen font-sans selection:bg-white selection:text-black"
-         style={{ background: 'var(--c-bg)', color: 'var(--c-text)' }}>
+         style={{
+           background:  'var(--c-bg)',
+           color:       'var(--c-text)',
+           contain:     'layout paint',
+           paddingTop:  'env(safe-area-inset-top)',
+         }}>
 
       {/* ── Screens ─────────────────────────────────────────────────── */}
+      <React.Suspense fallback={null}>
       <AnimatePresence mode="wait">
 
         {/* AUTH */}
         {currentScreen.name === 'auth' && (
           <motion.div key="auth"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            /* POLISH: shared panel transition — transform + opacity only */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}
             className="flex flex-col items-center justify-center h-screen p-6 text-center">
             <h1 className="text-page-title mb-3" style={{ fontSize: 38, letterSpacing: -1 }}>Goal</h1>
             <p className="text-body mb-12" style={{ color: 'var(--c-text-2)' }}>
@@ -355,11 +406,16 @@ export default function App() {
 
         {/* HOME */}
         {currentScreen.name === 'home' && (
-          <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="home"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <HomeScreen
               user={user}
               dbUser={dbUser}
               goals={displayGoals}
+              goalsLoading={goalsLoading}
+              hasMoreGoals={hasMoreGoals}
+              loadMoreGoals={loadMoreGoals}
               setCurrentScreen={navigate}
               handleFirestoreError={handleFirestoreError}
               addOptimisticGoal={addOptimisticGoal}
@@ -370,7 +426,9 @@ export default function App() {
 
         {/* GOAL DETAIL */}
         {currentScreen.name === 'goal-detail' && currentScreen.goalId && (
-          <motion.div key="goal-detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="goal-detail"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <GoalDetailScreen
               user={user}
               dbUser={dbUser}
@@ -385,7 +443,9 @@ export default function App() {
 
         {/* CALENDAR */}
         {currentScreen.name === 'calendar' && (
-          <motion.div key="calendar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="calendar"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <CalendarScreen
               allReminders={allReminders}
               goals={displayGoals}
@@ -399,77 +459,35 @@ export default function App() {
 
         {/* CHALLENGE */}
         {currentScreen.name === 'challenge' && (
-          <motion.div key="challenge" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="challenge"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <ChallengeScreen user={user} dbUser={dbUser} />
           </motion.div>
         )}
 
         {/* PROFILE */}
         {currentScreen.name === 'profile' && (
-          <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <ProfileScreen user={user} dbUser={dbUser} />
+          <motion.div key="profile"
+            /* POLISH */
+            initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
+            <ProfileScreen user={user} dbUser={dbUser} onNavigateHome={() => navigate({ name: 'home' })} />
           </motion.div>
         )}
 
       </AnimatePresence>
+      </React.Suspense>
 
-      {/* ── Bottom navigation (hidden on auth & profile) ───────────── */}
+      {/* ── Bottom navigation — sortable, edit-mode aware ──────────── */}
       {!isAuth && currentScreen.name !== 'profile' && (
-        <motion.div
-          className="fixed bottom-0 left-0 right-0 z-50"
-          initial={false}
-          animate={{ y: navVisible ? 0 : 80, opacity: navVisible ? 1 : 0 }}
-          transition={{ type: 'spring', stiffness: 320, damping: 32 }}
-        >
-          {/* Gradient fade above nav */}
-          <div className="h-6 pointer-events-none"
-               style={{ background: 'linear-gradient(to bottom, transparent, var(--c-bg))' }} />
-
-          <nav className="flex items-center justify-around px-2 pb-safe"
-               style={{
-                 background:    'rgba(10,10,10,0.92)',
-                 backdropFilter: 'blur(24px)',
-                 borderTop:     '1px solid var(--c-border)',
-                 paddingBottom: 'max(env(safe-area-inset-bottom), 12px)',
-                 paddingTop:    8,
-               }}>
-
-            {/* Home (Panda — centre/brand) */}
-            <button
-              onClick={() => navigate({ name: 'home' })}
-              className={cn(
-                'group relative flex flex-col items-center justify-center gap-0.5 px-5 py-1 rounded-full transition-all duration-300',
-                currentScreen.name === 'home' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'
-              )}
-            >
-              <div className={cn('transition-transform duration-300', currentScreen.name === 'home' ? 'scale-110' : 'hover:scale-105')}>
-                <PandaIcon size={22} active={currentScreen.name === 'home'} />
-              </div>
-              <span className="text-[10px] font-semibold"
-                    style={{ color: currentScreen.name === 'home' ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
-                Home
-              </span>
-            </button>
-
-            {/* Calendar */}
-            <NavButton
-              active={currentScreen.name === 'calendar'}
-              icon={<CalendarIcon size={20} />}
-              label="Calendar"
-              onClick={() => navigate({ name: 'calendar' })}
-            />
-
-            {/* Challenge */}
-            <NavButton
-              active={currentScreen.name === 'challenge'}
-              icon={<Trophy size={20} />}
-              label="Challenge"
-              onClick={() => navigate({ name: 'challenge' })}
-            />
-
-          </nav>
-        </motion.div>
+        <SortableNavConsole
+          currentScreen={currentScreen.name}
+          navigate={navigate}
+          navVisible={navVisible}
+        />
       )}
     </div>
+    </HomeEditModeProvider>
+    </UserContext.Provider>
   );
 }

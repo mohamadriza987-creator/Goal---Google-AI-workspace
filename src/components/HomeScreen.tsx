@@ -1,19 +1,26 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Goal, User } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Panda } from './Panda';
-import { generateGoal, StructuredGoal, GoalTask } from '../services/geminiService';
+import { generateGoal, transcribeAudio, StructuredGoal, GoalTask } from '../services/geminiService';
 import { GOAL_CATEGORIES } from '../lib/goalCategories';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useTranslation } from '../contexts/LanguageContext';
 import { mapLanguageNameToCode } from '../lib/translations';
+import { DraggableInputWidget } from './DraggableInputWidget';
+import { EditableGoalCards }    from './EditableGoalCards';
+import { GoalStackCarousel }    from './GoalStackCarousel';
+import { useHomeEditMode }      from '../contexts/HomeEditModeContext';
 
 interface HomeScreenProps {
   user: any;
   dbUser: User | null;
   goals: Goal[];
+  goalsLoading?: boolean;
+  hasMoreGoals?: boolean;
+  loadMoreGoals?: () => void;
   setCurrentScreen: (screen: any) => void;
   handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
   addOptimisticGoal: (goal: Goal) => void;
@@ -33,7 +40,8 @@ function ProgressRing({ pct, size = 56 }: { pct: number; size?: number }) {
         <circle cx={size/2} cy={size/2} r={r} strokeWidth={5} fill="none"
           stroke="var(--c-gold)" strokeLinecap="round"
           strokeDasharray={circ} strokeDashoffset={offset}
-          style={{ transition: 'stroke-dashoffset .6s cubic-bezier(.25,.46,.45,.94)' }} />
+          /* POLISH: token ease, willChange on stroke-dashoffset (compositor hint). */
+          style={{ transition: 'stroke-dashoffset .6s var(--ease-out-quad)', willChange: 'stroke-dashoffset' }} />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--c-gold)' }}>{pct}%</span>
@@ -61,22 +69,69 @@ function motivational() {
   return lines[new Date().getDay() % lines.length];
 }
 
-// ── Goal Card (carousel) ──────────────────────────────────────────────────────
-function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
-  const similarCount = goal.similarGoals?.length ?? 0;
-  const threadCount  = 0; // will be populated when Goal Room is built
-  const helpCount    = goal.similarGoals?.filter(g => g.similarityScore >= 0.9).length ?? 0;
+// ── GoalCard animation constants (hoisted to avoid re-triggering on re-render)
+const CARD_INITIAL = { opacity: 0, y: 16 as number };    /* POLISH: transform-only enter (was scale) */
+const CARD_ANIMATE = { opacity: 1, y: 0  as number };
 
-  // Find first task text if stored in draftData (before Firestore tasks load)
+/* POLISH: shared ease + stagger step — mirrors --ease-out-quad / 40ms in animations.css */
+const POL_EASE        = [0.25, 0.46, 0.45, 0.94] as const;
+const POL_DUR_PANEL   = 0.3;
+const POL_DUR_MICRO   = 0.16;
+const POL_STAGGER_MS  = 0.04;  // 40 ms per card
+
+// ── Goal Card Skeleton ────────────────────────────────────────────────────────
+function GoalCardSkeleton() {
+  return (
+    <div
+      className="card flex flex-col gap-3"
+      /* POLISH: unified radius + layered shadow + containment, matches GoalCard */
+      style={{
+        borderRadius: 'var(--r-lg)',
+        padding:      '16px 16px 14px',
+        minWidth:     240,
+        maxWidth:     260,
+        flexShrink:   0,
+        boxShadow:    'var(--shadow-1), var(--shadow-2)',
+        contain:      'layout style paint',
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1 space-y-2">
+          {/* POLISH: translateX-driven shimmer (GPU) — replaces animate-pulse */}
+          <div className="h-3.5 rounded-md skeleton-shimmer" style={{ background: 'var(--c-surface-2)', width: '75%' }} />
+          <div className="h-2.5 rounded-md skeleton-shimmer" style={{ background: 'var(--c-surface-2)', width: '55%' }} />
+        </div>
+        <div className="w-11 h-11 rounded-full skeleton-shimmer flex-shrink-0" style={{ background: 'var(--c-surface-2)' }} />
+      </div>
+      <div className="h-8 rounded-lg skeleton-shimmer" style={{ background: 'var(--c-surface-2)' }} />
+    </div>
+  );
+}
+
+// ── Goal Card ─────────────────────────────────────────────────────────────────
+function GoalCard({ goal, onOpen, fillContainer = false, index = 0 }: { goal: Goal; onOpen: () => void; fillContainer?: boolean; index?: number }) {
   const nextStep = (goal as any).nextStep || null;
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.96 }}
-      animate={{ opacity: 1, scale: 1 }}
+      initial={CARD_INITIAL}
+      animate={CARD_ANIMATE}
+      /* POLISH: 40ms stagger between cards, shared ease, transform+opacity only */
+      transition={{ duration: POL_DUR_PANEL, ease: POL_EASE, delay: index * POL_STAGGER_MS }}
       onClick={onOpen}
-      className="card flex flex-col gap-3 snap-start flex-shrink-0 cursor-pointer"
-      style={{ borderRadius: 18, minWidth: 240, maxWidth: 260, padding: '16px 16px 14px' }}
+      /* POLISH: anim-press for a tactile scale pulse on tap; hit area is the full card. */
+      className="card anim-press flex flex-col gap-3 cursor-pointer"
+      style={{
+        /* POLISH: unified radius to --r-lg (16px), layered shadow (ambient + key),
+           paint containment so the card's internal work doesn't invalidate the grid. */
+        borderRadius: 'var(--r-lg)',
+        padding:      '16px 16px 14px',
+        boxShadow:    'var(--shadow-1), var(--shadow-2)',
+        contain:      'layout style paint',
+        ...(fillContainer
+          ? { width: '100%', height: '100%', minWidth: 'unset', maxWidth: 'unset', boxSizing: 'border-box', overflow: 'hidden' }
+          : { minWidth: 240, maxWidth: 260, flexShrink: 0 }),
+      }}
     >
       {/* Top row — title + ring */}
       <div className="flex items-start gap-3">
@@ -108,6 +163,33 @@ function GoalCard({ goal, onOpen }: { goal: Goal; onOpen: () => void }) {
         </div>
       )}
 
+      {/* POLISH: error state — uses shared .error-state utility (red accent,
+          4.5:1 contrast, role=alert for SR). "Partial" keeps the gold tint
+          since it's a warning, not a failure. */}
+      {goal.savingStatus === 'error' && goal.saveErrorMessage && (
+        <div
+          role="alert"
+          className="error-state"
+          style={{ padding: '8px 10px' }}
+        >
+          <span className="error-state__body">{goal.saveErrorMessage}</span>
+        </div>
+      )}
+      {goal.savingStatus === 'partial' && goal.saveErrorMessage && (
+        <div
+          role="status"
+          className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg"
+          style={{
+            background:   'rgba(201,168,76,.08)',
+            border:       '1px solid rgba(201,168,76,.25)',
+            color:        'var(--c-gold)',
+            borderRadius: 'var(--r-md)',
+          }}
+        >
+          <span className="text-meta" style={{ fontSize: 11, lineHeight: 1.4 }}>{goal.saveErrorMessage}</span>
+        </div>
+      )}
+
     </motion.div>
   );
 }
@@ -117,6 +199,9 @@ export function HomeScreen({
   user,
   dbUser,
   goals,
+  goalsLoading = false,
+  hasMoreGoals = false,
+  loadMoreGoals,
   setCurrentScreen,
   handleFirestoreError,
   addOptimisticGoal,
@@ -125,17 +210,16 @@ export function HomeScreen({
 // ═════════════════════════════════════════════════════════════════════════════
 
   const { t, setLanguage } = useTranslation();
+  const { isEditMode } = useHomeEditMode();
 
   // ── View state ───────────────────────────────────────────────────────────
   const [currentView, setCurrentView] = useState<'home' | 'recording' | 'review'>('home');
 
   // ── Voice / transcript state ─────────────────────────────────────────────
-  const [loading,          setLoading]          = useState(false);
-  const [processingState,  setProcessingState]  = useState<'idle' | 'generating'>('idle');
+  const [phase,            setPhase]            = useState<'idle' | 'generating' | 'saving'>('idle');
   const [processingError,  setProcessingError]  = useState<string | null>(null);
   const [currentTranscript,setCurrentTranscript]= useState<string | null>(null);
   const [structuredGoal,   setStructuredGoal]   = useState<StructuredGoal | null>(null);
-  const [isSaving,         setIsSaving]         = useState(false);
   const [isTyping,         setIsTyping]         = useState(false);
   const [typedGoal,        setTypedGoal]        = useState('');
   const [refinementCount,  setRefinementCount]  = useState(0);
@@ -149,6 +233,15 @@ export function HomeScreen({
   const REFINEMENT_LIMIT = 5;
 
   const { isRecording, startRecording, stopRecording, error: recorderError } = useAudioRecorder();
+  const fetchAbortRef = useRef<AbortController | null>(null);
+
+  /* POLISH: lock body scroll whenever a full-screen view (recording / review) is
+     open, to kill iOS rubber-band and background scroll-through. */
+  useEffect(() => {
+    const lock = currentView === 'recording' || currentView === 'review';
+    document.body.classList.toggle('body-locked', lock);
+    return () => document.body.classList.remove('body-locked');
+  }, [currentView]);
 
   // Auto-resize textareas on review screen
   useEffect(() => {
@@ -168,17 +261,20 @@ export function HomeScreen({
   const runGoalGeneration = async (
     input: { text: string } | { audioBase64: string; mimeType: string },
     isRefinement = false,
+    idToken?: string,
   ) => {
-    setLoading(true);
-    setProcessingState('generating');
+    fetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    fetchAbortRef.current = ac;
+    setPhase('generating');
     setProcessingError(null);
     try {
-      const idToken = await user.getIdToken();
-      const structured = await generateGoal(input, idToken, {
+      const token = idToken ?? await user.getIdToken();
+      const structured = await generateGoal(input, token, {
         age: dbUser?.age,
         nationality: dbUser?.nationality,
         locality: dbUser?.locality,
-      });
+      }, ac.signal);
       const primaryLang = structured.languages?.[0];
       if (primaryLang) {
         const code = mapLanguageNameToCode(primaryLang);
@@ -193,30 +289,44 @@ export function HomeScreen({
         setAdditionalDetails('');
       }
     } catch (err: any) {
-      setProcessingError(err.message || 'Error');
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Error');
     } finally {
-      setLoading(false);
-      setProcessingState('idle');
+      setPhase('idle');
     }
   };
 
   const processAudio = async (blob: Blob, isRefinement = false) => {
+    fetchAbortRef.current?.abort();
+    const ac = new AbortController();
+    fetchAbortRef.current = ac;
     const reader = new FileReader();
     const b64 = await new Promise<string>((res) => {
       reader.onloadend = () => res((reader.result as string).split(',')[1]);
       reader.readAsDataURL(blob);
     });
-    // For refinements combine the transcribed text from Gemini's prior response
     if (isRefinement && currentTranscript) {
-      // Send combined context as text (prior transcript + note that more audio was recorded)
-      await runGoalGeneration({ text: `${currentTranscript}\n\n[User recorded additional audio — refine the goal accordingly]` }, true);
+      // Transcribe the new audio then append to existing transcript before regenerating
+      setPhase('generating');
+      setProcessingError(null);
+      try {
+        const idToken = await user.getIdToken();
+        const newTranscript = await transcribeAudio(b64, blob.type, idToken, ac.signal);
+        const combined = newTranscript
+          ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
+          : currentTranscript;
+        await runGoalGeneration({ text: combined }, true, idToken);
+      } catch (err: any) {
+        if (err.name !== 'AbortError') setProcessingError(err.message || 'Error transcribing audio');
+        setPhase('idle');
+      }
     } else {
-      await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false);
+      const idToken = await user.getIdToken();
+      await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false, idToken);
     }
   };
 
-  const processTranscript = async (transcript: string, _idToken?: string, isRefinement = false) => {
-    await runGoalGeneration({ text: transcript }, isRefinement);
+  const processTranscript = async (transcript: string, idToken?: string, isRefinement = false) => {
+    await runGoalGeneration({ text: transcript }, isRefinement, idToken);
   };
 
   const handlePandaClick = async () => {
@@ -261,14 +371,18 @@ export function HomeScreen({
 
   // ── Save goal ────────────────────────────────────────────────────────────
   const saveGoal = async () => {
-    if (!user || !structuredGoal || isSaving) return;
-    setIsSaving(true);
-    const tempId    = `temp-${Date.now()}`;
+    if (!user || !structuredGoal || phase !== 'idle') return;
+    setPhase('saving');
+    // B1: Date.now() collides when two goals are created in the same
+    // millisecond. crypto.randomUUID() is collision-free for dedup purposes.
+    const tempId    = `temp-${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
     const optimistic: Goal = {
       id: tempId, ownerId: user.uid,
       title: structuredGoal.title, description: structuredGoal.description,
-      category: structuredGoal.categories[0], visibility: structuredGoal.privacy,
+      category: structuredGoal.categories[0],
+      // CLAUDE.md: Default visibility = public, only public/private allowed.
+      visibility: structuredGoal.privacy === 'private' ? 'private' : 'public',
       progressPercent: 0, likesCount: 0, status: 'active', createdAt,
       savingStatus: 'saving', sourceText: structuredGoal.transcript,
       normalizedMatchingText: structuredGoal.normalizedMatchingText,
@@ -286,7 +400,7 @@ export function HomeScreen({
     } catch (err) {
       console.error('Save error:', err);
     } finally {
-      setIsSaving(false);
+      setPhase('idle');
     }
   };
 
@@ -323,10 +437,18 @@ export function HomeScreen({
         {currentView === 'home' && (
           <motion.div key="home"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            style={{ paddingBottom: 120 }}
+            style={{
+              height: isEditMode ? undefined : '100dvh',
+              minHeight: isEditMode ? '100dvh' : undefined,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: isEditMode ? 'auto' : 'hidden',
+              paddingBottom: isEditMode ? 200 : 0,
+            }}
           >
-            {/* Header */}
-            <div className="flex items-start justify-between px-5 pt-14 pb-2">
+            {/* Header — never editable */}
+            <div className="flex items-start justify-between px-5 pt-14 pb-2"
+                 style={{ flexShrink: 0, position: 'relative', zIndex: 20 }}>
               <div>
                 <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1.2 }}>
                   {greeting()}, {firstName}
@@ -353,118 +475,195 @@ export function HomeScreen({
               </button>
             </div>
 
-            {/* Add goal — compact bar */}
-            <div className="px-4 mt-4">
-              <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
-                   style={{ background: 'var(--c-surface)', border: '1px solid var(--c-border)' }}>
-                {/* Mic button */}
-                <motion.button
-                  onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
-                  whileTap={{ scale: 0.92 }}
-                  disabled={loading}
-                  className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl transition-all"
-                  style={{ background: 'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)', boxShadow: '0 0 16px rgba(201,168,76,.25)' }}
-                >
-                  <Mic size={16} style={{ color: '#000' }} />
-                </motion.button>
+            {/* Content area — flex:1 fills remaining height; relative gives react-rnd its bounds */}
+            <div style={{
+              position: 'relative',
+              flex: isEditMode ? undefined : 1,
+              minHeight: isEditMode ? '60vh' : 0,
+              overflow: 'hidden',
+            }}>
 
-                {!isTyping ? (
+              {/* Input widget — long-press 1.2s to enter edit mode */}
+              <DraggableInputWidget>
+                {/* POLISH: 48px min-height tap target, --r-lg (16) radius, focus-within
+                    outline uses `outline` not box-shadow so it never shifts layout. */}
+                <div className="flex items-center gap-3 px-4 rounded-2xl focus-within:outline"
+                     style={{
+                       background:    'var(--c-surface)',
+                       border:        '1px solid var(--c-border)',
+                       minHeight:     48,
+                       borderRadius:  'var(--r-lg)',
+                       outlineColor:  'var(--c-gold)',
+                       outlineOffset: '2px',
+                       outlineWidth:  '2px',
+                     }}>
+                  {!isTyping ? (
+                    <button
+                      onClick={() => setIsTyping(true)}
+                      /* POLISH: full-row tap target for the "New goal…" affordance */
+                      className="flex-1 text-left text-sm anim-press"
+                      style={{ color: 'var(--c-text-3)', minHeight: 44 }}
+                    >
+                      New goal…
+                    </button>
+                  ) : (
+                    <>
+                      <input
+                        autoFocus
+                        type="text"
+                        placeholder="Describe your goal…"
+                        value={typedGoal}
+                        onChange={(e) => setTypedGoal(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleTypedGoalSubmit();
+                          if (e.key === 'Escape') { setIsTyping(false); setTypedGoal(''); }
+                        }}
+                        className="flex-1 bg-transparent border-none outline-none text-sm"
+                        style={{ color: 'var(--c-text)' }}
+                      />
+                      <button
+                        onClick={handleTypedGoalSubmit}
+                        disabled={!typedGoal.trim() || phase !== 'idle'}
+                        className="flex-shrink-0 disabled:opacity-40 transition-opacity"
+                        style={{ color: 'var(--c-gold)' }}
+                      >
+                        {phase !== 'idle' ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                      </button>
+                      <button
+                        onClick={() => { setIsTyping(false); setTypedGoal(''); }}
+                        className="flex-shrink-0"
+                        style={{ color: 'var(--c-text-3)' }}
+                      >
+                        <X size={15} />
+                      </button>
+                    </>
+                  )}
+
+                  {/* POLISH: mic button — 44×44 tap target (36×36 visible gold pill),
+                      anim-press scale pulse, gold-pulse breathing only when idle
+                      (and CSS gates it for reduced-motion users). aria-label for SR. */}
                   <button
-                    onClick={() => setIsTyping(true)}
-                    className="flex-1 text-left text-sm"
-                    style={{ color: 'var(--c-text-3)' }}
+                    onClick={async () => { setProcessingError(null); setCurrentView('recording'); await startRecording(); }}
+                    disabled={phase !== 'idle'}
+                    aria-label="Record new goal"
+                    className={cn(
+                      'tap-target anim-press flex items-center justify-center rounded-xl transition-opacity disabled:opacity-40',
+                      phase === 'idle' && 'anim-gold-pulse',
+                    )}
+                    style={{
+                      flexShrink:   0,
+                      background:   'linear-gradient(135deg, #C9A84C 0%, #a8873c 100%)',
+                      boxShadow:    '0 0 16px rgba(201,168,76,.25)',
+                      borderRadius: 'var(--r-md)',
+                    }}
                   >
-                    New goal…
+                    <Mic size={16} style={{ color: '#000' }} />
                   </button>
-                ) : (
-                  <>
-                    <input
-                      autoFocus
-                      type="text"
-                      placeholder="Describe your goal…"
-                      value={typedGoal}
-                      onChange={(e) => setTypedGoal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleTypedGoalSubmit();
-                        if (e.key === 'Escape') { setIsTyping(false); setTypedGoal(''); }
-                      }}
-                      className="flex-1 bg-transparent border-none outline-none text-sm"
-                      style={{ color: 'var(--c-text)' }}
-                    />
-                    <button
-                      onClick={handleTypedGoalSubmit}
-                      disabled={!typedGoal.trim() || loading}
-                      className="flex-shrink-0 disabled:opacity-40 transition-opacity"
-                      style={{ color: 'var(--c-gold)' }}
-                    >
-                      {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                    </button>
-                    <button
-                      onClick={() => { setIsTyping(false); setTypedGoal(''); }}
-                      className="flex-shrink-0"
-                      style={{ color: 'var(--c-text-3)' }}
-                    >
-                      <X size={15} />
-                    </button>
-                  </>
-                )}
-              </div>
-
-              {(processingError || recorderError) && (
-                <p className="text-meta mt-2 px-1" style={{ color: '#e07070', fontSize: 12 }}>
-                  {processingError || recorderError}
-                </p>
-              )}
-            </div>
-
-            {/* My Goals — horizontal carousel */}
-            {goals.length > 0 && (
-              <div className="mt-6">
-                <div className="flex items-center justify-between px-4 mb-3">
-                  <h2 style={{ fontSize: 16, fontWeight: 600, letterSpacing: -0.3 }}>My Goals</h2>
-                  <span className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>
-                    {goals.length} {goals.length === 1 ? 'goal' : 'goals'}
-                  </span>
                 </div>
-                <div
-                  className="flex gap-3 overflow-x-auto snap-x snap-mandatory pl-4 pr-4 pb-1"
-                  style={{ scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
-                >
-                  {goals.map((goal) => (
+
+                {(processingError || recorderError) && (
+                  <p className="text-meta mt-2 px-1" style={{ color: '#e07070', fontSize: 12 }}>
+                    {processingError || recorderError}
+                  </p>
+                )}
+              </DraggableInputWidget>
+
+              {/* Loading skeleton (normal mode only) */}
+              {!isEditMode && goalsLoading && goals.length === 0 && (
+                <div className="mt-6">
+                  <div className="flex items-center justify-between px-4 mb-3">
+                    <div className="h-4 w-20 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
+                    <div className="h-3 w-10 rounded-md animate-pulse" style={{ background: 'var(--c-surface-2)' }} />
+                  </div>
+                  <div className="flex gap-3 overflow-hidden pl-4 pr-4">
+                    <GoalCardSkeleton />
+                    <GoalCardSkeleton />
+                  </div>
+                </div>
+              )}
+
+              {/* Normal mode — horizontal swipe carousel */}
+              {!isEditMode && goals.length > 0 && (
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 16,        /* 16px from left edge */
+                  right: 0,
+                  bottom: 132,     /* leave room above the fixed input bar + nav */
+                }}>
+                  <GoalStackCarousel
+                    goals={goals}
+                    hasMore={hasMoreGoals}
+                    onLoadMore={loadMoreGoals}
+                    onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
+                  />
+                </div>
+              )}
+
+              {/* Edit mode — free canvas */}
+              {isEditMode && goals.length > 0 && (
+                <EditableGoalCards
+                  goals={goals}
+                  onOpen={goalId => setCurrentScreen({ name: 'goal-detail', goalId, initialTab: 'plan' })}
+                  renderCard={(goal, { fillContainer, onOpen, index }) => (
                     <GoalCard
                       key={goal.id}
                       goal={goal}
-                      onOpen={() => setCurrentScreen({ name: 'goal-detail', goalId: goal.id, initialTab: 'plan' })}
+                      onOpen={onOpen}
+                      fillContainer={fillContainer}
+                      index={index}               /* POLISH: stagger index */
                     />
-                  ))}
-                </div>
-              </div>
-            )}
+                  )}
+                />
+              )}
 
-            {/* Empty state */}
-            {goals.length === 0 && (
-              <div className="px-4 mt-10 text-center">
-                <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
-                  Record your first goal above to get started.
-                </p>
-              </div>
-            )}
+              {/* Empty state */}
+              {!isEditMode && !goalsLoading && goals.length === 0 && (
+                <div className="px-4 mt-10 text-center">
+                  <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
+                    Record your first goal using the bar below.
+                  </p>
+                </div>
+              )}
+
+            </div>{/* /editable area */}
           </motion.div>
         )}
 
         {/* ── RECORDING VIEW ─────────────────────────────────────────── */}
         {currentView === 'recording' && (
           <motion.div key="recording"
+            /* POLISH: token-driven panel transition (duration 300ms, ease-out-quad) */
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: POL_DUR_PANEL, ease: POL_EASE }}
             className="flex flex-col items-center justify-center px-6"
             style={{ minHeight: '100dvh' }}
           >
-            <Panda isListening={isRecording} onClick={handlePandaClick} className="w-56 h-56" />
+            {/* POLISH: Panda container — 44 min-h tap ring baked into its own bounds,
+                ambient radial glow behind it (transform-safe, doesn't repaint siblings
+                because the recording view is paint-contained). */}
+            <div
+              className="relative"
+              style={{ width: 224, height: 224, contain: 'layout style paint' }}
+            >
+              <div
+                aria-hidden
+                className={isRecording ? 'anim-gold-pulse' : ''}
+                style={{
+                  position:     'absolute',
+                  inset:        -24,
+                  borderRadius: '50%',
+                  background:   'radial-gradient(circle, rgba(201,168,76,0.18) 0%, transparent 65%)',
+                  pointerEvents:'none',
+                }}
+              />
+              <Panda isListening={isRecording} onClick={handlePandaClick} className="w-56 h-56 relative" />
+            </div>
 
             <div className="mt-8 text-center w-full max-w-sm">
-              {loading ? (
+              {phase !== 'idle' ? (
                 <div className="flex flex-col items-center gap-4">
                   <div className="flex items-center gap-3 px-5 py-3 rounded-2xl"
                        style={{ background: 'var(--c-surface-2)', border: '1px solid var(--c-border)' }}>
@@ -474,7 +673,7 @@ export function HomeScreen({
                     </span>
                   </div>
                   <button
-                    onClick={() => { setLoading(false); setProcessingState('idle'); setCurrentView('home'); }}
+                    onClick={() => { setPhase('idle'); setCurrentView('home'); }}
                     className="text-meta" style={{ color: 'var(--c-text-3)' }}>
                     Cancel
                   </button>
@@ -486,12 +685,20 @@ export function HomeScreen({
                   </p>
 
                   {isRecording && (
-                    <div className="flex gap-1 justify-center mt-4">
+                    /* POLISH: fixed height + scaleY — stays on the GPU compositor, no layout thrash */
+                    <div className="flex gap-1 justify-center items-center mt-4" style={{ height: 22 }}>
                       {[1,2,3,4,5].map(i => (
                         <motion.div key={i}
-                          animate={{ height: [4, 18, 4] }}
-                          transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1 }}
-                          style={{ width: 4, background: 'var(--c-gold)', borderRadius: 4 }}
+                          animate={{ scaleY: [0.2, 1, 0.2] }}
+                          transition={{ repeat: Infinity, duration: 0.6, delay: i * 0.1, ease: 'easeInOut' }}
+                          style={{
+                            width: 4,
+                            height: 18,
+                            background: 'var(--c-gold)',
+                            borderRadius: 4,
+                            transformOrigin: 'center',
+                            willChange: 'transform',
+                          }}
                         />
                       ))}
                     </div>
@@ -533,8 +740,10 @@ export function HomeScreen({
         {/* ── REVIEW VIEW (keep existing logic, updated style) ────────── */}
         {currentView === 'review' && structuredGoal && (
           <motion.div key="review"
+            /* POLISH: token-driven panel transition */
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: POL_DUR_PANEL, ease: POL_EASE }}
             className="max-w-2xl mx-auto px-5 pt-14 pb-32"
           >
             {/* Nav */}
@@ -561,7 +770,7 @@ export function HomeScreen({
                     {t('transcript')}
                   </span>
                   <button onClick={() => isEditingTranscript ? handleRegenerate() : setIsEditingTranscript(true)}
-                    disabled={loading}
+                    disabled={phase !== 'idle'}
                     className="text-meta transition-opacity hover:opacity-70"
                     style={{ color: isEditingTranscript ? 'var(--c-gold)' : 'var(--c-text-3)' }}>
                     {isEditingTranscript ? 'Regenerate ↺' : <Edit2 size={13} />}
@@ -595,10 +804,10 @@ export function HomeScreen({
                           style={{ background:'var(--c-surface-2)', border:'1px solid var(--c-border)', color:'var(--c-text)', minHeight:60 }}
                         />
                         {additionalDetails.trim() && (
-                          <button onClick={handleAddDetailsSubmit} disabled={loading}
+                          <button onClick={handleAddDetailsSubmit} disabled={phase !== 'idle'}
                             className="absolute bottom-2.5 right-2.5 p-2 rounded-xl disabled:opacity-40"
                             style={{ background:'var(--c-gold)', color:'#000' }}>
-                            {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                            {phase !== 'idle' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                           </button>
                         )}
                       </div>
@@ -732,17 +941,33 @@ export function HomeScreen({
                          style={{ color:'var(--c-text-3)', letterSpacing:'0.12em' }}>
                     {t('privacy')}
                   </label>
+                  {/* POLISH: segmented toggle — 44 min-height, anim-press pulse on the
+                      selected side, aria-pressed for assistive tech, ease-out colour swap. */}
                   <div className="flex rounded-xl overflow-hidden"
-                       style={{ border:'1px solid var(--c-border)', background:'var(--c-surface-2)' }}>
-                    {(['public','private'] as const).map(v => (
-                      <button key={v} onClick={() => setStructuredGoal({...structuredGoal, privacy:v})}
-                        className={cn('flex-1 py-2 text-xs font-semibold capitalize transition-all')}
-                        style={structuredGoal.privacy===v
-                          ? { background:'var(--c-gold)', color:'#000' }
-                          : { color:'var(--c-text-3)' }}>
-                        {t(v)}
-                      </button>
-                    ))}
+                       style={{
+                         border:       '1px solid var(--c-border)',
+                         background:   'var(--c-surface-2)',
+                         borderRadius: 'var(--r-md)',
+                       }}>
+                    {(['public','private'] as const).map(v => {
+                      const on = structuredGoal.privacy === v;
+                      return (
+                        <button
+                          key={v}
+                          onClick={() => setStructuredGoal({...structuredGoal, privacy:v})}
+                          aria-pressed={on}
+                          className="anim-press flex-1 text-xs font-semibold capitalize"
+                          style={{
+                            minHeight:  44,
+                            background: on ? 'var(--c-gold)' : 'transparent',
+                            color:      on ? '#000'         : 'var(--c-text-3)',
+                            transition: 'background-color var(--dur-micro) var(--ease-out-quad), color var(--dur-micro) var(--ease-out-quad)',
+                          }}
+                        >
+                          {t(v)}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -776,10 +1001,10 @@ export function HomeScreen({
               </div>
 
               {/* Save button */}
-              <button onClick={saveGoal} disabled={isSaving}
+              <button onClick={saveGoal} disabled={phase === 'saving'}
                 className="btn-gold w-full flex items-center justify-center gap-2 mt-4">
-                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
-                {isSaving ? t('saving') : t('saveGoal')}
+                {phase === 'saving' ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
+                {phase === 'saving' ? t('saving') : t('saveGoal')}
               </button>
             </div>
           </motion.div>

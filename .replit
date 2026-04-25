@@ -39,10 +39,14 @@ externalPort = 3000
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["npm", "start"]
+run = ["npm", "run", "start"]
 build = ["npm", "run", "build"]
 
 [userenv]
 
 [userenv.shared]
 PORT = "5000"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000

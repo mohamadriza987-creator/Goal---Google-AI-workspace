@@ -12,6 +12,8 @@ import {
   generateEmbedding,
   generateGroupName,
   generateMicroSteps,
+  setGeminiModelOrder,
+  getModelCallStats,
 } from "./server/gemini.ts";
 import { z } from "zod";
 import fs from "fs";
@@ -112,6 +114,7 @@ type GroupDoc = {
 type GroupIndexEntry = {
   groupId: string;
   memberGoalIds: string[];
+  memberUserIds: string[];
   memberCount: number;
   categories: string[];
   languages: string[];
@@ -162,8 +165,26 @@ function uniqueStrings(values: Array<string | undefined | null>) {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
-async function isAdminRequest(req: any) {
-  return req.user?.email === "mohamadriza987@gmail.com" && req.user?.email_verified === true;
+// Bootstrap admin email (configurable). Roles also recognised via:
+//   1. Custom claim:  decodedToken.role === 'admin'  or  decodedToken.admin === true
+//   2. Firestore:     users/{uid}.role === 'admin'
+// Email match remains as a one-time bootstrap for the very first admin.
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "mohamadriza987@gmail.com";
+
+async function isAdminRequest(req: any): Promise<boolean> {
+  const u = req.user;
+  if (!u) return false;
+  if (u.role === "admin" || u.admin === true) return true;
+  if (u.email_verified === true && typeof u.email === "string" && u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return true;
+  if (u.uid) {
+    try {
+      const doc = await db.collection("users").doc(u.uid).get();
+      if (doc.exists && doc.data()?.role === "admin") return true;
+    } catch {
+      // fall through
+    }
+  }
+  return false;
 }
 
 function cosineSimilarity(vecA: number[], vecB: number[]) {
@@ -187,6 +208,12 @@ function cosineSimilarity(vecA: number[], vecB: number[]) {
   return dotProduct / magnitude;
 }
 
+// Upper bounds for fallback full-collection scans. Indexed matching
+// (goals_unassigned_index, group_index) is the primary path; these caps
+// keep the fallback path from O(N) degradation as the corpus grows.
+const GROUP_SCAN_CAP = 500;
+const GOAL_SCAN_CAP = 1000;
+
 async function findOrCreateGroupForGoal(goalId: string) {
   try {
     console.log(`Attempting to find or create group for goal ${goalId}...`);
@@ -203,7 +230,15 @@ async function findOrCreateGroupForGoal(goalId: string) {
       return null;
     }
 
-    const groupsSnap = await db.collection("groups").get();
+    // Fire both fallback scans concurrently so the goals scan is already
+    // resolved if we reach the "create new group" path.
+    // Trade-off: on a group-match hit we pay GOAL_SCAN_CAP reads for the
+    // discarded goalsSnap, but we save the full scan latency (~100-200ms)
+    // on the no-match path, which is the common case for new goals.
+    const [groupsSnap, goalsSnapPromise] = await Promise.all([
+      db.collection("groups").limit(GROUP_SCAN_CAP).get(),
+      db.collection("goals").limit(GOAL_SCAN_CAP).get(),
+    ]);
     const allGroups = groupsSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GroupDoc,
     );
@@ -211,13 +246,16 @@ async function findOrCreateGroupForGoal(goalId: string) {
     const SIMILARITY_THRESHOLD_EXISTING = 0.78;
     const SIMILARITY_THRESHOLD_NEW = 0.72;
 
+    // Compute once here so the group-loop and the goals-path both use it.
+    const goalIsPrivate = isPrivateGoal(goal);
+
     let bestGroup: GroupDoc | null = null;
     let maxScore = -1;
 
     for (const group of allGroups) {
       if (!group.representativeEmbedding) continue;
+      if ((group.memberIds || []).includes(goal.ownerId)) continue;
 
-      const goalIsPrivate = isPrivateGoal(goal);
       const groupIsPrivate = group.matchingCriteria?.privacy === "private";
       if (goalIsPrivate !== groupIsPrivate) continue;
 
@@ -268,9 +306,16 @@ async function findOrCreateGroupForGoal(goalId: string) {
         transaction.set(groupRef, groupUpdate, { merge: true });
       });
 
-      // Index maintenance (fire-and-forget)
-      removeGoalFromUnassignedIndex(goal.id).catch(console.error);
-      upsertGroupIndex(bestGroup!.id).catch(console.error);
+      // D2: index maintenance must complete before returning so the goal is
+      // searchable / removable in the same request lifecycle.
+      await Promise.all([
+        removeGoalFromUnassignedIndex(goal.id).catch((e) => {
+          console.error("removeGoalFromUnassignedIndex failed:", e);
+        }),
+        upsertGroupIndex(bestGroup!.id).catch((e) => {
+          console.error("upsertGroupIndex failed:", e);
+        }),
+      ]);
 
       return {
         action: "assigned",
@@ -279,16 +324,16 @@ async function findOrCreateGroupForGoal(goalId: string) {
       };
     }
 
-    const goalsSnap = await db.collection("goals").get();
-    const allGoals = goalsSnap.docs.map(
+    // goalsSnapPromise was already resolved above via Promise.all.
+    const allGoals = goalsSnapPromise.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
 
-    const goalIsPrivate = isPrivateGoal(goal);
     const ungroupedGoals = allGoals.filter(
       (g) =>
         !g.groupId &&
         g.id !== goal.id &&
+        g.ownerId !== goal.ownerId &&
         Array.isArray(g.embedding) &&
         isPrivateGoal(g) === goalIsPrivate,
     );
@@ -403,7 +448,9 @@ async function upsertGroupIndex(groupId: string): Promise<void> {
   const group = { id: groupDoc.id, ...groupDoc.data() } as GroupDoc;
   if (!group.representativeEmbedding) return;
 
-  const memberGoalIds = (group.members || []).map((m) => m.goalId);
+  const memberGoalIds  = (group.members || []).map((m) => m.goalId);
+  const memberUserIds  = group.memberIds
+    ?? uniqueStrings((group.members || []).map((m) => m.userId).filter(Boolean) as string[]);
 
   const categories    = new Set<string>();
   const languages     = new Set<string>();
@@ -440,6 +487,7 @@ async function upsertGroupIndex(groupId: string): Promise<void> {
   const entry: GroupIndexEntry = {
     groupId,
     memberGoalIds,
+    memberUserIds,
     memberCount: typeof group.memberCount === "number" ? group.memberCount : memberGoalIds.length,
     categories:    [...categories],
     languages:     [...languages],
@@ -626,7 +674,8 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
   const groupIndexSnap = await db.collection("group_index").get();
   let gPool: GroupIndexEntry[] = groupIndexSnap.docs
     .map((d) => d.data() as GroupIndexEntry)
-    .filter((g) => g.memberCount < 100);
+    .filter((g) => g.memberCount < 100)
+    .filter((g) => !(g.memberUserIds ?? []).includes(userId));
 
   gPool = narrowGroupPool(gPool, goalCategories, goalLanguages, goalAgeCategory, goalLocation, goalNationality);
 
@@ -684,7 +733,7 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
 
   let uPool: UnassignedGoalIndexEntry[] = unassignedSnap.docs
     .map((d) => d.data() as UnassignedGoalIndexEntry)
-    .filter((e) => e.goalId !== goalId);
+    .filter((e) => e.goalId !== goalId && e.userId !== userId);
 
   uPool = narrowUnassignedPool(uPool, goalCategories, goalLanguages, goalAgeCategory, goalLocation, goalNationality);
 
@@ -696,6 +745,14 @@ async function runIndexedMatching(goalId: string): Promise<IndexedMatchResult> {
     .slice(0, 5);
 
   if (strongMatches.length >= 1) {
+    const clusterUserIds = uniqueStrings(
+      [userId, ...strongMatches.map((m) => m.entry.userId)].filter(Boolean) as string[],
+    );
+    if (clusterUserIds.length < 2) {
+      await upsertGoalToUnassignedIndex(goalId, { stampNow: true });
+      return { action: "placed-unassigned", activityStatus: "active" };
+    }
+
     const clusterGoalIds = [goalId, ...strongMatches.map((m) => m.entry.goalId)];
     const clusterDocs    = await Promise.all(clusterGoalIds.map((id) => db.collection("goals").doc(id).get()));
     const clusterGoals   = clusterDocs.filter((d) => d.exists).map((d) => ({ id: d.id, ...d.data() }) as GoalDoc);
@@ -839,7 +896,9 @@ async function computeAndStoreSimilarGoals(
   try {
     console.log(`Computing similar goals for ${goalId}...`);
 
-    const goalsSnap = await db.collection("goals").get();
+    // Bounded scan — called on every goal save. Without a cap this scan
+    // degrades linearly with total goals across the entire app.
+    const goalsSnap = await db.collection("goals").limit(GOAL_SCAN_CAP).get();
     const allGoals = goalsSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() }) as GoalDoc,
     );
@@ -970,25 +1029,125 @@ async function hardResetGroups() {
   }
 }
 
-const rateLimitMap = new Map<string, { count: number; lastReset: number }>();
+// ── Rate limiting (Firestore-backed) ─────────────────────────────────────────
+// Previously stored in-memory Maps, which reset on every server restart and
+// made the limit meaningless against an attacker who could trigger a redeploy
+// (or just wait out sticky routing). Backed by Firestore docs now so state
+// survives process restarts and scales horizontally across instances.
+//
+// Throughput note: these are called from already-expensive endpoints
+// (Gemini / Firestore writes), so the extra ~10ms of a transactional read is
+// not the bottleneck.
 const RATE_LIMIT_WINDOW = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 10;
 
-function checkRateLimit(userId: string) {
+async function checkRateLimit(userId: string): Promise<boolean> {
+  const ref = db.collection("rate_limits").doc(`user_${userId}`);
   const now = Date.now();
-  const limit = rateLimitMap.get(userId);
-
-  if (!limit || now - limit.lastReset > RATE_LIMIT_WINDOW) {
-    rateLimitMap.set(userId, { count: 1, lastReset: now });
+  try {
+    return await db.runTransaction(async (tx: any) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() : null;
+      if (!data || now - (data.lastReset as number) > RATE_LIMIT_WINDOW) {
+        tx.set(ref, { count: 1, lastReset: now });
+        return true;
+      }
+      if ((data.count as number) >= MAX_REQUESTS_PER_WINDOW) return false;
+      tx.update(ref, { count: (data.count as number) + 1 });
+      return true;
+    });
+  } catch (err) {
+    // Fail-open on transient Firestore errors — rate limit is best-effort,
+    // refusing legit requests on a Firestore blip is worse than letting
+    // through a handful extra.
+    console.error("checkRateLimit failed; fail-open:", err);
     return true;
   }
+}
 
-  if (limit.count >= MAX_REQUESTS_PER_WINDOW) {
+// ── Moderation-specific rate limiting ────────────────────────────────────────
+// Caps the number of moderation signals (hide/block/report) a single reporter
+// may file against a single target within an hour. Stops one user from
+// spamming hide/block actions to bury another user.
+const MODERATION_TARGET_WINDOW = 60 * 60 * 1000; // 1 hour
+const MODERATION_TARGET_MAX = 3;
+
+async function checkModerationTargetLimit(
+  reporterId: string,
+  targetUserId: string,
+): Promise<boolean> {
+  // Abuse-prevention fails CLOSED: if we can't verify the counter, we refuse
+  // the signal. Unlike the generic rate limit, a false positive here just
+  // asks the user to try again — whereas a false negative enables the exact
+  // spam pattern this check exists to block.
+  const safeKey = `${reporterId}_${targetUserId}`.replace(/[^A-Za-z0-9_]/g, "_");
+  const ref = db.collection("moderation_target_limits").doc(safeKey);
+  const now = Date.now();
+  try {
+    return await db.runTransaction(async (tx: any) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() : null;
+      if (!data || now - (data.firstAt as number) > MODERATION_TARGET_WINDOW) {
+        tx.set(ref, { count: 1, firstAt: now, reporterId, targetUserId });
+        return true;
+      }
+      if ((data.count as number) >= MODERATION_TARGET_MAX) return false;
+      tx.update(ref, { count: (data.count as number) + 1 });
+      return true;
+    });
+  } catch (err) {
+    console.error("checkModerationTargetLimit failed; fail-closed:", err);
     return false;
   }
+}
 
-  limit.count++;
-  return true;
+// ── Audio MIME / content validation ──────────────────────────────────────────
+// Claimed Content-Type is untrusted; verify it matches the actual binary
+// signature of the uploaded base64 payload before forwarding to Gemini.
+const ALLOWED_AUDIO_MIME = new Set<string>([
+  "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/wav",
+  "audio/x-wav", "audio/mp3", "audio/aac", "audio/flac", "audio/m4a",
+  "audio/x-m4a",
+  // Browser MediaRecorder occasionally emits video/webm for an audio-only stream.
+  "video/webm",
+]);
+
+function detectAudioFormat(b64: string): string | null {
+  let header: Buffer;
+  try {
+    header = Buffer.from(b64.slice(0, 64), "base64");
+  } catch {
+    return null;
+  }
+  if (header.length < 8) return null;
+  const b0 = header[0], b1 = header[1], b2 = header[2], b3 = header[3];
+  if (b0 === 0x1A && b1 === 0x45 && b2 === 0xDF && b3 === 0xA3) return "webm";   // EBML
+  if (b0 === 0x4F && b1 === 0x67 && b2 === 0x67 && b3 === 0x53) return "ogg";    // OggS
+  if (b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46) return "wav";    // RIFF
+  if (b0 === 0x49 && b1 === 0x44 && b2 === 0x33) return "mp3";                   // ID3
+  if (b0 === 0xFF && (b1 & 0xE0) === 0xE0) return "mp3";                         // MPEG sync
+  if (b0 === 0x66 && b1 === 0x4C && b2 === 0x61 && b3 === 0x43) return "flac";   // fLaC
+  if (header[4] === 0x66 && header[5] === 0x74 && header[6] === 0x79 && header[7] === 0x70) return "mp4"; // ftyp
+  return null;
+}
+
+function validateAudioMime(mimeType: string, b64: string): { ok: boolean; reason?: string } {
+  if (!mimeType || typeof mimeType !== "string") return { ok: false, reason: "Missing MIME type" };
+  const m = mimeType.toLowerCase().split(";")[0].trim();
+  if (!ALLOWED_AUDIO_MIME.has(m)) return { ok: false, reason: `Unsupported MIME: ${mimeType}` };
+
+  const detected = detectAudioFormat(b64);
+  if (!detected) return { ok: false, reason: "Could not recognise audio content" };
+
+  const compatible =
+    (detected === "webm" && m.includes("webm")) ||
+    (detected === "ogg"  && m.includes("ogg")) ||
+    (detected === "wav"  && (m.includes("wav") || m.includes("x-wav"))) ||
+    (detected === "mp3"  && (m.includes("mp3") || m.includes("mpeg"))) ||
+    (detected === "flac" && m.includes("flac")) ||
+    (detected === "mp4"  && (m.includes("mp4") || m.includes("m4a") || m.includes("aac")));
+  if (!compatible) return { ok: false, reason: `Declared MIME (${mimeType}) does not match audio content (${detected})` };
+  return { ok: true };
 }
 
 const TranscribeSchema = z.object({
@@ -1087,6 +1246,17 @@ async function startServer() {
     }),
   );
 
+  // Load persisted Gemini model order on startup
+  db.collection("admin_settings").doc("gemini").get().then((snap) => {
+    if (snap.exists) {
+      const order: string[] = snap.data()?.modelOrder ?? [];
+      if (order.length > 0) {
+        setGeminiModelOrder(order);
+        console.log("[startup] Gemini model order loaded:", order);
+      }
+    }
+  }).catch((e) => console.warn("[startup] Could not load Gemini model order:", e));
+
   app.get("/api/health", async (_req, res) => {
     try {
       await db.collection("test").doc("health").get();
@@ -1108,7 +1278,7 @@ async function startServer() {
   app.post("/api/transcribe", authMiddleware, async (req: any, res) => {
     try {
       console.log(`[API] /api/transcribe - Received request. Content-Length: ${req.headers['content-length']} bytes`);
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         console.warn(`[API] /api/transcribe - Rate limit exceeded for user ${req.userId}`);
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
@@ -1122,6 +1292,11 @@ async function startServer() {
       }
 
       const { audioBase64, mimeType } = validation.data;
+      const mimeCheck = validateAudioMime(mimeType, audioBase64);
+      if (!mimeCheck.ok) {
+        console.warn(`[API] /api/transcribe - MIME mismatch for user ${req.userId}: ${mimeCheck.reason}`);
+        return res.status(415).json({ error: mimeCheck.reason });
+      }
       console.log(`[API] /api/transcribe - Starting transcription for user ${req.userId}...`);
       const transcript = await transcribeAudio(audioBase64, mimeType);
       console.log(`[API] /api/transcribe - Transcription successful for user ${req.userId}. Length: ${transcript.length}`);
@@ -1137,13 +1312,20 @@ async function startServer() {
 
   app.post("/api/generate-goal", authMiddleware, async (req: any, res) => {
     try {
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
       const { text, audioBase64, mimeType, userContext } = req.body;
       if (!text && !audioBase64) {
         return res.status(400).json({ error: "text or audioBase64 required" });
+      }
+      if (audioBase64) {
+        const mimeCheck = validateAudioMime(mimeType, audioBase64);
+        if (!mimeCheck.ok) {
+          console.warn(`[API] /api/generate-goal - MIME mismatch for user ${req.userId}: ${mimeCheck.reason}`);
+          return res.status(415).json({ error: mimeCheck.reason });
+        }
       }
 
       const input: { text: string } | { audioBase64: string; mimeType: string } =
@@ -1161,7 +1343,7 @@ async function startServer() {
 
   app.post("/api/normalize-goal", authMiddleware, async (req: any, res) => {
     try {
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
@@ -1198,7 +1380,7 @@ async function startServer() {
 
   app.post("/api/generate-embedding", authMiddleware, async (req: any, res) => {
     try {
-      if (!checkRateLimit(req.userId)) {
+      if (!(await checkRateLimit(req.userId))) {
         return res.status(429).json({ error: "Too many requests. Please wait a minute." });
       }
 
@@ -1243,6 +1425,32 @@ async function startServer() {
     } catch (error: any) {
       console.error("Precompute similarity error:", error);
       res.status(500).json({ error: "Failed to precompute similarity" });
+    }
+  });
+
+  // One-time bootstrap so the configured ADMIN_EMAIL (env) can claim the
+  // 'admin' custom claim on their own UID. Firestore rules can't read env
+  // vars, so without this the email would have to be burned into the rules
+  // — which is what we're trying to avoid. After calling this once, the
+  // operator must sign out and back in for the fresh ID token to include
+  // the claim, after which rules-level admin access works on the claim alone.
+  app.post("/api/admin/bootstrap", authMiddleware, async (req: any, res) => {
+    try {
+      const u = req.user;
+      const configured = (process.env.ADMIN_EMAIL || ADMIN_EMAIL).toLowerCase();
+      if (!u?.email_verified || (u.email || "").toLowerCase() !== configured) {
+        return res.status(403).json({ error: "Forbidden: not the configured admin email" });
+      }
+      await admin.auth().setCustomUserClaims(u.uid, { admin: true, role: "admin" });
+      await db.collection("users").doc(u.uid).set({ role: "admin" }, { merge: true });
+      res.json({
+        success: true,
+        message:
+          "Admin claim set. Sign out and back in for the new ID token to take effect.",
+      });
+    } catch (error: any) {
+      console.error("Admin bootstrap error:", error);
+      res.status(500).json({ error: "Failed to set admin claim" });
     }
   });
 
@@ -1350,6 +1558,95 @@ async function startServer() {
     } catch (error: any) {
       console.error("Group assignment error:", error);
       res.status(500).json({ error: "Failed to assign group", details: error.message });
+    }
+  });
+
+  // P2: combined post-save endpoint — replaces 3 separate sequential
+  // round-trips (assign → precompute → index-new). Single auth check,
+  // single network round-trip, deterministic ordering on the server.
+  const PostSaveSchema = z.object({
+    goalId: z.string().min(1),
+    embedding: z.array(z.number()),
+  });
+
+  app.post("/api/goals/post-save", authMiddleware, async (req: any, res) => {
+    try {
+      const validation = PostSaveSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid payload", details: validation.error.format() });
+      }
+
+      const { goalId, embedding } = validation.data;
+
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists || goalDoc.data()?.ownerId !== req.userId) {
+        return res.status(403).json({ error: "Forbidden: goal does not belong to you" });
+      }
+
+      const assignResult = await findOrCreateGroupForGoal(goalId).catch((e) => {
+        console.error("post-save: findOrCreateGroupForGoal failed:", e);
+        return null;
+      });
+
+      const matches = await computeAndStoreSimilarGoals(goalId, embedding, req.userId).catch(
+        (e) => {
+          console.error("post-save: computeAndStoreSimilarGoals failed:", e);
+          return [] as any[];
+        },
+      );
+
+      const indexResult = await runIndexedMatching(goalId).catch((e) => {
+        console.error("post-save: runIndexedMatching failed:", e);
+        return null;
+      });
+
+      res.json({
+        success: true,
+        groupId: assignResult?.groupId ?? null,
+        groupAction: assignResult?.action ?? "none",
+        matchesCount: Array.isArray(matches) ? matches.length : 0,
+        indexed: !!indexResult,
+      });
+    } catch (error: any) {
+      console.error("post-save error:", error);
+      res.status(500).json({ error: "Failed to finalize goal", details: error.message });
+    }
+  });
+
+  // S3: server-side group fetch — replaces direct client-side getDoc on
+  // groups, which sidestepped server-enforced authorization.
+  app.get("/api/groups/:groupId", authMiddleware, async (req: any, res) => {
+    try {
+      const { groupId } = req.params;
+      if (!groupId) return res.status(400).json({ error: "groupId required" });
+
+      const groupDoc = await db.collection("groups").doc(groupId).get();
+      if (!groupDoc.exists) return res.status(404).json({ error: "Group not found" });
+
+      const data = groupDoc.data() as GroupDoc;
+      const memberIds: string[] = data.memberIds || [];
+      const eligibleGoalIds: string[] = data.eligibleGoalIds || [];
+
+      // Caller must either be a member OR own a goal that is eligible to join.
+      let allowed = memberIds.includes(req.userId);
+      if (!allowed && eligibleGoalIds.length) {
+        const ownedSnap = await db
+          .collection("goals")
+          .where("ownerId", "==", req.userId)
+          .get();
+        const ownedIds = new Set(ownedSnap.docs.map((d) => d.id));
+        allowed = eligibleGoalIds.some((gid) => ownedIds.has(gid));
+      }
+      if (!allowed) return res.status(403).json({ error: "Forbidden" });
+
+      // Strip representativeEmbedding — large, internal-only.
+      const { representativeEmbedding: _drop, ...safe } = data as any;
+      res.json({ id: groupDoc.id, ...safe });
+    } catch (error: any) {
+      console.error("Group fetch error:", error);
+      res.status(500).json({ error: "Failed to fetch group" });
     }
   });
 
@@ -1508,6 +1805,8 @@ async function startServer() {
 
       interface MemberDetail {
         userId: string;
+        displayName: string;
+        avatarUrl: string;
         goalTitle: string;
         goalDescription: string;
         progressPercent: number;
@@ -1516,20 +1815,34 @@ async function startServer() {
         completedTasks: string[];
       }
 
+      const slicedMembers = rawMembers.slice(0, 6);
+
+      // Batch all reads for the 6 members in parallel instead of 3 sequential
+      // awaits per member (was up to 18 serial round-trips; now 3 parallel batches).
+      const [goalDocs, userDocs, taskSnaps] = await Promise.all([
+        Promise.all(slicedMembers.map((m) => db.collection("goals").doc(m.goalId).get())),
+        Promise.all(slicedMembers.map((m) => db.collection("users").doc(m.userId).get())),
+        Promise.all(
+          slicedMembers.map((m) =>
+            db.collection("goals").doc(m.goalId).collection("tasks")
+              .orderBy("order", "asc")
+              .limit(20)          // was unbounded; we only ever display 10
+              .get()
+          )
+        ),
+      ]);
+
       const members: MemberDetail[] = [];
 
-      for (const member of rawMembers.slice(0, 6)) {
-        const mgDoc = await db.collection("goals").doc(member.goalId).get();
-        if (!mgDoc.exists) continue;
-        const mgData = mgDoc.data()!;
+      for (let idx = 0; idx < slicedMembers.length; idx++) {
+        const member    = slicedMembers[idx];
+        const mgDoc     = goalDocs[idx];
+        const userDoc   = userDocs[idx];
+        const tasksSnap = taskSnaps[idx];
 
-        // Load all tasks for this member's goal
-        const tasksSnap = await db
-          .collection("goals")
-          .doc(member.goalId)
-          .collection("tasks")
-          .orderBy("order", "asc")
-          .get();
+        if (!mgDoc.exists) continue;
+        const mgData   = mgDoc.data()!;
+        const userData = userDoc.exists ? userDoc.data()! : {};
 
         const activeTasks: string[]    = [];
         const completedTasks: string[] = [];
@@ -1542,8 +1855,10 @@ async function startServer() {
 
         members.push({
           userId:          member.userId,
-          goalTitle:       mgData.title        || "",
-          goalDescription: mgData.description  || "",
+          displayName:     userData.displayName  || "Unknown",
+          avatarUrl:       userData.avatarUrl    || "",
+          goalTitle:       mgData.title          || "",
+          goalDescription: mgData.description    || "",
           progressPercent: mgData.progressPercent ?? 0,
           joinedAt:        member.joinedAt,
           activeTasks:     activeTasks.slice(0, 10),
@@ -1577,6 +1892,276 @@ async function startServer() {
     } catch (error: any) {
       console.error("/api/goals/:goalId/people-tasks error:", error);
       res.status(500).json({ error: "Failed to load people data" });
+    }
+  });
+
+  // ── Favourites ──────────────────────────────────────────────────────────────
+  // Users can favourite other users; stored in a separate `favourites` collection.
+
+  app.get("/api/favourites", authMiddleware, async (req: any, res) => {
+    try {
+      const snap = await db.collection("favourites")
+        .where("ownerId", "==", req.userId)
+        .orderBy("createdAt", "desc")
+        .get();
+      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      res.json({ favourites: items });
+    } catch (error: any) {
+      console.error("GET /api/favourites error:", error);
+      res.status(500).json({ error: "Failed to load favourites" });
+    }
+  });
+
+  const FavouriteSchema = z.object({
+    targetUserId:   z.string().min(1),
+    targetUserName: z.string().min(1),
+    targetAvatarUrl: z.string().optional(),
+  });
+
+  app.post("/api/favourites", authMiddleware, async (req: any, res) => {
+    try {
+      const v = FavouriteSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { targetUserId, targetUserName, targetAvatarUrl } = v.data;
+      if (targetUserId === req.userId) return res.status(400).json({ error: "Cannot favourite yourself" });
+
+      // Check for duplicate
+      const existing = await db.collection("favourites")
+        .where("ownerId", "==", req.userId)
+        .where("targetUserId", "==", targetUserId)
+        .limit(1).get();
+      if (!existing.empty) return res.json({ success: true, alreadyFavourited: true });
+
+      await db.collection("favourites").add({
+        ownerId:         req.userId,
+        targetUserId,
+        targetUserName,
+        targetAvatarUrl: targetAvatarUrl || "",
+        createdAt:       nowIso(),
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("POST /api/favourites error:", error);
+      res.status(500).json({ error: "Failed to add favourite" });
+    }
+  });
+
+  app.delete("/api/favourites/:targetUserId", authMiddleware, async (req: any, res) => {
+    try {
+      const { targetUserId } = req.params;
+      const snap = await db.collection("favourites")
+        .where("ownerId", "==", req.userId)
+        .where("targetUserId", "==", targetUserId)
+        .get();
+      const batch = db.batch();
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("DELETE /api/favourites error:", error);
+      res.status(500).json({ error: "Failed to remove favourite" });
+    }
+  });
+
+  // ── Poke ────────────────────────────────────────────────────────────────────
+  // Creates a notification record for the target user.
+
+  const PokeSchema = z.object({
+    targetUserId: z.string().min(1),
+    senderName:   z.string().min(1),
+  });
+
+  app.post("/api/poke", authMiddleware, async (req: any, res) => {
+    try {
+      const v = PokeSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { targetUserId, senderName } = v.data;
+      if (targetUserId === req.userId) return res.status(400).json({ error: "Cannot poke yourself" });
+
+      await db.collection("notifications").add({
+        type:      "poke",
+        toUserId:  targetUserId,
+        fromUserId: req.userId,
+        fromName:  senderName,
+        read:      false,
+        createdAt: nowIso(),
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("POST /api/poke error:", error);
+      res.status(500).json({ error: "Failed to poke user" });
+    }
+  });
+
+  // ── Silence ──────────────────────────────────────────────────────────────────
+  // Stores silenced users on the caller's user doc (they see posts but no notifications).
+
+  const SilenceSchema = z.object({
+    targetUserId: z.string().min(1),
+    silent: z.boolean(),
+  });
+
+  app.post("/api/silence", authMiddleware, async (req: any, res) => {
+    try {
+      const v = SilenceSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { targetUserId, silent } = v.data;
+      if (targetUserId === req.userId) return res.status(400).json({ error: "Cannot silence yourself" });
+
+      const op = silent
+        ? admin.firestore.FieldValue.arrayUnion(targetUserId)
+        : admin.firestore.FieldValue.arrayRemove(targetUserId);
+      await db.collection("users").doc(req.userId).update({ silencedUsers: op });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("POST /api/silence error:", error);
+      res.status(500).json({ error: "Failed to update silence setting" });
+    }
+  });
+
+  // ── Get blocked users list ─────────────────────────────────────────────────
+  app.get("/api/blocked-users", authMiddleware, async (req: any, res) => {
+    try {
+      const userDoc = await db.collection("users").doc(req.userId).get();
+      if (!userDoc.exists) return res.json({ blockedUsers: [] });
+      const data = userDoc.data()!;
+      const blockedIds: string[] = data.blockedUsers || [];
+      if (blockedIds.length === 0) return res.json({ blockedUsers: [] });
+
+      // Fetch display names for blocked users
+      const profiles = await Promise.all(
+        blockedIds.map(async (uid) => {
+          const d = await db.collection("users").doc(uid).get();
+          return d.exists
+            ? { userId: uid, displayName: d.data()!.displayName || "Unknown", avatarUrl: d.data()!.avatarUrl || "" }
+            : { userId: uid, displayName: "Unknown", avatarUrl: "" };
+        })
+      );
+      res.json({ blockedUsers: profiles });
+    } catch (error: any) {
+      console.error("GET /api/blocked-users error:", error);
+      res.status(500).json({ error: "Failed to load blocked users" });
+    }
+  });
+
+  // ── Unblock user ──────────────────────────────────────────────────────────
+  app.delete("/api/blocked-users/:targetUserId", authMiddleware, async (req: any, res) => {
+    try {
+      const { targetUserId } = req.params;
+      await db.collection("users").doc(req.userId).update({
+        blockedUsers: admin.firestore.FieldValue.arrayRemove(targetUserId),
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("DELETE /api/blocked-users error:", error);
+      res.status(500).json({ error: "Failed to unblock user" });
+    }
+  });
+
+  // ── Copy task from another member to own goal ──────────────────────────────
+  const CopyTaskSchema = z.object({
+    goalId: z.string().min(1),
+    text:   z.string().min(1).max(500),
+    notes:  z.string().max(1000).optional(),
+  });
+
+  app.post("/api/goals/:goalId/tasks", authMiddleware, async (req: any, res) => {
+    try {
+      const v = CopyTaskSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { goalId } = req.params;
+      const { text, notes } = v.data;
+
+      // Verify ownership
+      const goalDoc = await db.collection("goals").doc(goalId).get();
+      if (!goalDoc.exists) return res.status(404).json({ error: "Goal not found" });
+      if (goalDoc.data()!.ownerId !== req.userId) return res.status(403).json({ error: "Forbidden" });
+
+      // Get current max order
+      const tasksSnap = await db.collection("goals").doc(goalId).collection("tasks")
+        .orderBy("order", "desc").limit(1).get();
+      const maxOrder = tasksSnap.empty ? 0 : (tasksSnap.docs[0].data().order ?? 0);
+
+      const taskData: Record<string, any> = {
+        goalId,
+        ownerId:   req.userId,
+        text:      text.trim(),
+        source:    "manual",
+        order:     maxOrder + 1,
+        isDone:    false,
+        createdAt: nowIso(),
+      };
+
+      if (notes?.trim()) {
+        taskData.notes = [{ id: nowIso(), text: notes.trim(), createdAt: nowIso() }];
+      }
+
+      const ref = await db.collection("goals").doc(goalId).collection("tasks").add(taskData);
+      res.json({ success: true, taskId: ref.id });
+    } catch (error: any) {
+      console.error("POST /api/goals/:goalId/tasks error:", error);
+      res.status(500).json({ error: "Failed to add task" });
+    }
+  });
+
+  // ── Ask for help on a task (creates Goal Room thread) ─────────────────────
+  const AskForHelpSchema = z.object({
+    goalId:      z.string().min(1),
+    groupId:     z.string().min(1),
+    taskText:    z.string().min(1).max(500),
+    description: z.string().max(1000).optional(),
+    authorName:  z.string().min(1),
+    authorAvatar: z.string().optional(),
+    notifyUserIds: z.array(z.string()).optional(),
+  });
+
+  app.post("/api/ask-for-help", authMiddleware, async (req: any, res) => {
+    try {
+      const v = AskForHelpSchema.safeParse(req.body);
+      if (!v.success) return res.status(400).json({ error: "Invalid payload" });
+      const { goalId, groupId, taskText, description, authorName, authorAvatar, notifyUserIds } = v.data;
+
+      const threadRef = await db.collection("groups").doc(groupId).collection("threads").add({
+        goalId,
+        badge:         "help",
+        title:         taskText,
+        linkedTaskText: taskText,
+        authorId:       req.userId,
+        authorName,
+        authorAvatar:   authorAvatar || "",
+        previewText:    description || "Asking for help with this task.",
+        replyCount:     0,
+        usefulCount:    0,
+        reactions:      {},
+        isPinned:       false,
+        createdAt:      nowIso(),
+        lastActivityAt: nowIso(),
+      });
+
+      // Send notifications to users who have this task
+      if (notifyUserIds && notifyUserIds.length > 0) {
+        const batch = db.batch();
+        notifyUserIds.forEach((uid) => {
+          const nRef = db.collection("notifications").doc();
+          batch.set(nRef, {
+            type:       "help_request",
+            toUserId:   uid,
+            fromUserId: req.userId,
+            fromName:   authorName,
+            threadId:   threadRef.id,
+            groupId,
+            taskText,
+            read:       false,
+            createdAt:  nowIso(),
+          });
+        });
+        await batch.commit();
+      }
+
+      res.json({ success: true, threadId: threadRef.id });
+    } catch (error: any) {
+      console.error("POST /api/ask-for-help error:", error);
+      res.status(500).json({ error: "Failed to post help request" });
     }
   });
 
@@ -1648,19 +2233,38 @@ async function startServer() {
         return res.status(403).json({ error: "Must join group to view media" });
       }
 
-      const consumedBy = mediaData.consumedBy ?? [];
-      if (consumedBy.includes(userId)) {
-        return res.status(410).json({ error: "Media already viewed and expired" });
+      // U2: previously a single view marked the media consumed for that user,
+      // so a fast re-tap (network blip, accidental scroll-away) silently 410'd.
+      // We now track first-open time per user; the same viewer can re-open
+      // within REVIEW_WINDOW_SEC, after which the media is locked for them.
+      const REVIEW_WINDOW_SEC = 30;
+      const consumedBy: string[] = mediaData.consumedBy ?? [];
+      const openedAtMap: Record<string, string> = mediaData.firstOpenedAt ?? {};
+      const firstOpenedAtIso = openedAtMap[userId];
+
+      if (consumedBy.includes(userId) && firstOpenedAtIso) {
+        const elapsedSec = (Date.now() - new Date(firstOpenedAtIso).getTime()) / 1000;
+        if (elapsedSec > REVIEW_WINDOW_SEC) {
+          return res.status(410).json({ error: "Media already viewed and expired" });
+        }
+        // Within window — allow re-view, do not re-record.
+        return res.json({
+          type: mediaData.type,
+          data: mediaData.data,
+          expiresIn: Math.max(1, Math.ceil(REVIEW_WINDOW_SEC - elapsedSec)),
+        });
       }
 
+      const nowIsoStr = nowIso();
       await mediaDoc.ref.update({
         consumedBy: admin.firestore.FieldValue.arrayUnion(userId),
+        [`firstOpenedAt.${userId}`]: nowIsoStr,
       });
 
       res.json({
         type: mediaData.type,
         data: mediaData.data,
-        expiresIn: 30,
+        expiresIn: REVIEW_WINDOW_SEC,
       });
     } catch (error: any) {
       console.error("Media open error:", error);
@@ -1686,6 +2290,11 @@ async function startServer() {
 
   app.post("/api/moderation/signal", authMiddleware, async (req: any, res) => {
     try {
+      // Per-user request rate limit (shared bucket).
+      if (!(await checkRateLimit(req.userId))) {
+        return res.status(429).json({ error: "Too many requests. Please wait a minute." });
+      }
+
       const validation = ModerationSignalSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({ error: "Invalid payload", details: validation.error.format() });
@@ -1696,6 +2305,14 @@ async function startServer() {
 
       if (targetUserId === userId) {
         return res.status(400).json({ error: "Cannot moderate yourself" });
+      }
+
+      // Per-target cap stops one reporter spamming hide/block/report actions
+      // against the same user to bury them via repeat signals.
+      if (!(await checkModerationTargetLimit(userId, targetUserId))) {
+        return res.status(429).json({
+          error: "You've already reported this user multiple times recently. Please wait before signalling again.",
+        });
       }
 
       await db.collection("moderation_events").add({
@@ -1921,6 +2538,41 @@ async function startServer() {
       });
 
       res.json({ rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Admin: Gemini model call stats ───────────────────────────────────────
+  app.get("/api/admin/gemini-model-stats", authMiddleware, async (req, res) => {
+    if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+    const windowMs = 15 * 60 * 1000;
+    res.json({ stats: getModelCallStats(windowMs), windowMs });
+  });
+
+  // ── Admin: Gemini model order ─────────────────────────────────────────────
+  app.get("/api/admin/gemini-model-order", authMiddleware, async (req, res) => {
+    if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const snap = await db.collection("admin_settings").doc("gemini").get();
+      const modelOrder: string[] = snap.exists ? (snap.data()?.modelOrder ?? []) : [];
+      res.json({ modelOrder });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/admin/gemini-model-order", authMiddleware, async (req, res) => {
+    if (!(await isAdminRequest(req))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const { modelOrder } = req.body;
+      if (!Array.isArray(modelOrder) || modelOrder.length > 5) {
+        return res.status(400).json({ error: "modelOrder must be an array of up to 5 strings" });
+      }
+      const cleaned: string[] = modelOrder.map((m: any) => (typeof m === "string" ? m.trim() : ""));
+      await db.collection("admin_settings").doc("gemini").set({ modelOrder: cleaned, updatedAt: new Date().toISOString() }, { merge: true });
+      setGeminiModelOrder(cleaned);
+      res.json({ ok: true, modelOrder: cleaned });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
