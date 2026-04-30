@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useUserContext } from '../contexts/UserContext';
 import { Goal, GoalTask, GoalRoomThread, GoalRoomReply, User, ThreadBadge } from '../types';
-import { User as FirebaseUser } from 'firebase/auth';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
 import {
   ArrowLeft, Lock, Edit2, Check, Plus, Send,
   HelpCircle, Loader2, X, BookOpen, Zap, Bell, Info, Trash2,
@@ -12,13 +12,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { generateMicroSteps } from '../services/geminiService';
-import { db } from '../firebase';
-import {
-  collection, query, orderBy, onSnapshot, limit,
-  doc, updateDoc, addDoc, deleteDoc, increment, serverTimestamp,
-  getDoc,
-} from 'firebase/firestore';
-import { auth } from '../firebase';
+import { supabase } from '../lib/supabase';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -268,19 +262,17 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     // Auto-generate micro-steps only for manual tasks — AI tasks always have embedded microSteps
     if (!task.microSteps?.length && task.source !== 'ai') {
       const run = async () => {
-        const user = auth.currentUser;
+        const user = user;
         if (!user) return;
         setGeneratingSteps(true);
         setMicroStepsError(null);
         try {
-          const idToken = await user.getIdToken();
+          const idToken = ((await supabase.auth.getSession()).data.session?.access_token || "");
           const steps = await generateMicroSteps(task.text, idToken);
           if (steps.length > 0) {
-            await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { microSteps: steps });
+            await supabase.from('tasks').update({ micro_steps: steps }).eq('id', task.id);
           }
         } catch (e) {
-          // B2: previously the error was console-logged and the spinner just
-          // disappeared, leaving the user with no idea why nothing showed up.
           console.error('micro-steps generation failed', e);
           setMicroStepsError("Couldn't generate sub-steps right now. Tap retry.");
         } finally {
@@ -293,15 +285,13 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
 
   const retryMicroSteps = async () => {
     if (!task) return;
-    const user = auth.currentUser;
-    if (!user) return;
     setGeneratingSteps(true);
     setMicroStepsError(null);
     try {
-      const idToken = await user.getIdToken();
+      const idToken = ((await supabase.auth.getSession()).data.session?.access_token || "");
       const steps = await generateMicroSteps(task.text, idToken);
       if (steps.length > 0) {
-        await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { microSteps: steps });
+        await supabase.from('tasks').update({ micro_steps: steps }).eq('id', task.id);
       }
     } catch (e) {
       console.error('micro-steps retry failed', e);
@@ -315,7 +305,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     if (!task || !editText.trim() || saving) return;
     setSaving(true);
     try {
-      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { text: editText.trim() });
+      await supabase.from('tasks').update({ text: editText.trim() }).eq('id', task.id);
       setEditing(false);
     } catch(e) { console.error(e); } finally { setSaving(false); }
   };
@@ -325,45 +315,39 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     setNoteSaving(true);
     try {
       const existing = task.notes ?? [];
-      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
+      await supabase.from('tasks').update({
         notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
-      });
+      }).eq('id', task.id);
       setNoteText(''); setAddingNote(false);
     } catch(e) { console.error(e); } finally { setNoteSaving(false); }
   };
 
   const submitHelp = async () => {
     if (!task || !goal.groupId || !helpType || helpSaving) return;
-    const uid  = auth.currentUser?.uid;
-    const name = auth.currentUser?.displayName || 'Member';
+    const uid  = user?.id;
+    const name = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Member';
     if (!uid) return;
     setHelpSaving(true);
-    let threadRef: any = null;
     try {
       const now = new Date().toISOString();
-      threadRef = await addDoc(collection(db, 'groups', goal.groupId, 'threads'), {
-        goalId:         goal.id, badge: 'help', title: task.text,
-        linkedTaskId:   task.id, linkedTaskText: task.text,
-        authorId: uid, authorName: name,
-        previewText:    helpBlocking.trim() || `${helpType} needed`,
-        replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
-      });
+      const { data: thread, error: threadErr } = await supabase.from('threads').insert({
+        group_id:         goal.groupId, goal_id: goal.id, badge: 'help', title: task.text,
+        linked_task_text: task.text, author_id: uid, author_name: name,
+        preview_text:    helpBlocking.trim() || `${helpType} needed`,
+        reply_count: 0, useful_count: 0, created_at: now, last_activity_at: now,
+      }).select('id').single();
+      if (threadErr || !thread) throw threadErr || new Error('Failed to create thread');
+
       if (helpBlocking.trim()) {
-        try {
-          await addDoc(collection(db, 'groups', goal.groupId, 'threads', threadRef.id, 'replies'), {
-            threadId: threadRef.id, goalId: goal.id, authorId: uid, authorName: name,
-            text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
-            reactions: {}, createdAt: now,
-          });
-        } catch (replyErr) {
-          // B3: don't leave an orphan empty thread that has no body. The
-          // thread + first reply must commit together or not at all.
+        const { error: replyErr } = await supabase.from('replies').insert({
+          thread_id: thread.id, group_id: goal.groupId, goal_id: goal.id,
+          author_id: uid, author_name: name,
+          text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
+          reactions: {}, created_at: now,
+        });
+        if (replyErr) {
           console.error('Reply write failed; rolling back thread.', replyErr);
-          try {
-            await deleteDoc(doc(db, 'groups', goal.groupId, 'threads', threadRef.id));
-          } catch (rollbackErr) {
-            console.error('Thread rollback failed:', rollbackErr);
-          }
+          await supabase.from('threads').delete().eq('id', thread.id).catch(console.error);
           throw replyErr;
         }
       }
@@ -379,9 +363,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     setReminderSaving(true);
     try {
       const iso = reminderValue ? new Date(reminderValue).toISOString() : null;
-      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
-        reminderAt: iso ?? null,
-      });
+      await supabase.from('tasks').update({ reminder_at: iso }).eq('id', task.id);
       setEditingReminder(false);
     } catch(e) { console.error(e); } finally { setReminderSaving(false); }
   };
@@ -390,7 +372,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     if (!task || reminderSaving) return;
     setReminderSaving(true);
     try {
-      await updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), { reminderAt: null });
+      await supabase.from('tasks').update({ reminder_at: null }).eq('id', task.id);
       setReminderValue('');
       setEditingReminder(false);
     } catch(e) { console.error(e); } finally { setReminderSaving(false); }
@@ -632,7 +614,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
 
 type PendingDelete = { task: GoalTask; timerId: ReturnType<typeof setTimeout> };
 
-function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
+function PlanTab({ goal, user }: { goal: Goal; user: SupabaseUser | null }) {
   const [tasks,         setTasks]         = useState<GoalTask[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [addingTask,    setAddingTask]    = useState(false);
@@ -659,7 +641,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
       const pd = pendingDeleteRef.current;
       if (pd) {
         clearTimeout(pd.timerId);
-        deleteDoc(doc(db, 'goals', goal.id, 'tasks', pd.task.id)).catch(console.error);
+        supabase.from('tasks').delete().eq('id', pd.task.id).catch(console.error);
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -667,36 +649,50 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
 
   useEffect(() => {
     if (isTemp) { setLoading(false); return; }
-    return onSnapshot(
-      query(collection(db, 'goals', goal.id, 'tasks'), orderBy('order', 'asc')),
-      (snap) => {
-        const updated = snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalTask);
-        setTasks(updated);
-        setLoading(false);
-        setDetailTask(prev => prev ? (updated.find(t => t.id === prev.id) ?? prev) : null);
-        // Keep goal progress in sync with actual task completion
-        const active = updated.filter(t => t.id !== pendingDeleteRef.current?.task.id);
-        if (active.length > 0) {
-          const pct = Math.round(active.filter(t => t.isDone).length / active.length * 100);
-          updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
-        }
-      },
-      (err) => { console.error(err); setLoading(false); }
-    );
+
+    const fetchTasks = async () => {
+      const { data } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('goal_id', goal.id)
+        .order('order', { ascending: true });
+
+      const updated: GoalTask[] = (data || []).map((d: any) => ({
+        id: d.id, text: d.text, isDone: d.is_done, order: d.order,
+        microSteps: d.micro_steps, source: d.source, goalId: d.goal_id,
+        ownerId: d.owner_id, reminderAt: d.reminder_at, createdAt: d.created_at,
+        notes: d.notes,
+      }));
+      setTasks(updated);
+      setLoading(false);
+      setDetailTask(prev => prev ? (updated.find(t => t.id === prev.id) ?? prev) : null);
+      const active = updated.filter(t => t.id !== pendingDeleteRef.current?.task.id);
+      if (active.length > 0) {
+        const pct = Math.round(active.filter(t => t.isDone).length / active.length * 100);
+        supabase.from('goals').update({ progress_percent: pct }).eq('id', goal.id).catch(console.error);
+      }
+    };
+
+    fetchTasks();
+    const channel = supabase
+      .channel(`tasks:goal:${goal.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks', filter: `goal_id=eq.${goal.id}` }, fetchTasks)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [goal.id]);
 
   const toggleDone = async (task: GoalTask): Promise<void> => {
     const newDone = !task.isDone;
-    // Optimistic progress: compute before Firestore confirms
     const active = tasks.filter(t => t.id !== pendingDeleteRef.current?.task.id);
     const newDoneCount = active.filter(t => t.id === task.id ? newDone : t.isDone).length;
     const newPct = active.length > 0 ? Math.round(newDoneCount / active.length * 100) : 0;
     await Promise.all([
-      updateDoc(doc(db, 'goals', goal.id, 'tasks', task.id), {
-        isDone: newDone,
-        completedAt: newDone ? new Date().toISOString() : null,
-      }),
-      updateDoc(doc(db, 'goals', goal.id), { progressPercent: newPct }),
+      supabase.from('tasks').update({
+        is_done: newDone,
+        completed_at: newDone ? new Date().toISOString() : null,
+      }).eq('id', task.id),
+      supabase.from('goals').update({ progress_percent: newPct }).eq('id', goal.id),
     ]);
   };
 
@@ -704,9 +700,9 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     if (!newTaskText.trim() || saving || isTemp) return;
     setSaving(true);
     try {
-      await addDoc(collection(db, 'goals', goal.id, 'tasks'), {
-        text: newTaskText.trim(), isDone: false, order: tasks.length,
-        source: 'manual', goalId: goal.id, ownerId: user.uid, createdAt: new Date().toISOString(),
+      await supabase.from('tasks').insert({
+        text: newTaskText.trim(), is_done: false, order: tasks.length,
+        source: 'manual', goal_id: goal.id, owner_id: user.id, created_at: new Date().toISOString(),
       });
       setNewTaskText(''); setAddingTask(false);
     } catch(e) { console.error(e); } finally { setSaving(false); }
@@ -716,18 +712,16 @@ function PlanTab({ goal, user }: { goal: Goal; user: FirebaseUser | null }) {
     const prev = pendingDeleteRef.current;
     if (prev) {
       clearTimeout(prev.timerId);
-      deleteDoc(doc(db, 'goals', goal.id, 'tasks', prev.task.id)).catch(console.error);
+      supabase.from('tasks').delete().eq('id', prev.task.id).catch(console.error);
     }
     setDetailTask(null);
     const timerId = setTimeout(async () => {
-      await deleteDoc(doc(db, 'goals', goal.id, 'tasks', task.id)).catch(console.error);
-      // Read latest tasks via ref — closure-captured `tasks` would be stale
-      // if other tasks were toggled during the 5s undo window.
+      await supabase.from('tasks').delete().eq('id', task.id).catch(console.error);
       const remaining = tasksRef.current.filter(t => t.id !== task.id);
       const pct = remaining.length > 0
         ? Math.round(remaining.filter(t => t.isDone).length / remaining.length * 100)
         : 0;
-      updateDoc(doc(db, 'goals', goal.id), { progressPercent: pct }).catch(console.error);
+      supabase.from('goals').update({ progress_percent: pct }).eq('id', goal.id).catch(console.error);
       pendingDeleteRef.current = null;
       setPendingDelete(null);
     }, 5000);
@@ -894,7 +888,7 @@ function ThreadCard({ thread, onOpen }: { thread: GoalRoomThread; onOpen: () => 
 
 function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers, onBack }: {
   thread: GoalRoomThread; groupId: string; goalId: string;
-  user: FirebaseUser | null;
+  user: SupabaseUser | null;
   blockedUsers: string[];
   hiddenUsers: string[];
   onBack: () => void;
@@ -909,27 +903,45 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
   const filtered = replies.filter(r => !blockedUsers.includes(r.authorId) && !hiddenUsers.includes(r.authorId));
 
   useEffect(() => {
-    return onSnapshot(
-      query(collection(db, 'groups', groupId, 'threads', thread.id, 'replies'), orderBy('createdAt', 'asc')),
-      (snap) => { setReplies(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomReply)); setLoading(false); },
-      (err)  => { console.error(err); setLoading(false); }
-    );
+    const fetchReplies = async () => {
+      const { data } = await supabase
+        .from('replies')
+        .select('*')
+        .eq('thread_id', thread.id)
+        .order('created_at', { ascending: true });
+      setReplies((data || []).map((d: any) => ({
+        id: d.id, threadId: d.thread_id, groupId: d.group_id,
+        authorId: d.author_id, authorName: d.author_name, authorAvatar: d.author_avatar,
+        text: d.text, reactions: d.reactions || {}, usefulCount: d.useful_count || 0,
+        createdAt: d.created_at,
+      }) as GoalRoomReply));
+      setLoading(false);
+    };
+    fetchReplies();
+    const channel = supabase
+      .channel(`replies:${thread.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'replies', filter: `thread_id=eq.${thread.id}` }, fetchReplies)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [groupId, thread.id]);
 
   const sendReply = async () => {
     if (!replyText.trim() || sending || !user) return;
     setSending(true);
     const now = new Date().toISOString();
+    const authorName = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Member';
     try {
-      await addDoc(collection(db, 'groups', groupId, 'threads', thread.id, 'replies'), {
-        threadId: thread.id, goalId,
-        authorId: user.uid, authorName: user.displayName || 'Member',
-        text: replyText.trim(), reactions: {}, createdAt: now,
+      await supabase.from('replies').insert({
+        thread_id: thread.id, group_id: groupId, goal_id: goalId,
+        author_id: user.id, author_name: authorName,
+        text: replyText.trim(), reactions: {}, created_at: now,
       });
-      await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id), {
-        replyCount:     increment(1),
-        lastActivityAt: now,
-      });
+      // Increment reply_count
+      const { data: th } = await supabase.from('threads').select('reply_count').eq('id', thread.id).single();
+      await supabase.from('threads').update({
+        reply_count: (th?.reply_count || 0) + 1,
+        last_activity_at: now,
+      }).eq('id', thread.id);
       setReplyText('');
     } catch(e) { console.error(e); }
     finally { setSending(false); }
@@ -937,13 +949,13 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
 
   const reactToReply = async (replyId: string, reaction: string) => {
     try {
-      await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id, 'replies', replyId), {
-        [`reactions.${reaction}`]: increment(1),
-      });
+      const { data: r } = await supabase.from('replies').select('reactions, useful_count').eq('id', replyId).single();
+      const reactions = r?.reactions || {};
+      reactions[reaction] = (reactions[reaction] || 0) + 1;
+      await supabase.from('replies').update({ reactions }).eq('id', replyId);
       if (reaction === 'useful') {
-        await updateDoc(doc(db, 'groups', groupId, 'threads', thread.id), {
-          usefulCount: increment(1),
-        });
+        const { data: th } = await supabase.from('threads').select('useful_count').eq('id', thread.id).single();
+        await supabase.from('threads').update({ useful_count: (th?.useful_count || 0) + 1 }).eq('id', thread.id);
       }
     } catch(e) { console.error(e); }
   };
@@ -951,14 +963,10 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
   const saveReplyToNotes = async (reply: GoalRoomReply) => {
     if (!user || savedNotes.has(reply.id)) return;
     try {
-      await addDoc(collection(db, 'goals', goalId, 'notes'), {
-        goalId, ownerId: user.uid,
-        text:           reply.text,
-        source:         'saved_from_room',
-        privacy:        'private',
-        savedFromAuthorName: reply.authorName,
-        savedFromReplyId:    reply.id,
-        createdAt:      new Date().toISOString(),
+      await supabase.from('goal_notes').insert({
+        goal_id: goalId, owner_id: user.id,
+        text:    reply.text,
+        created_at: new Date().toISOString(),
       });
       setSavedNotes(prev => new Set([...prev, reply.id]));
     } catch(e) { console.error(e); }
@@ -1070,7 +1078,7 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
-  goal: Goal; user: FirebaseUser | null;
+  goal: Goal; user: SupabaseUser | null;
   blockedUsers: string[]; hiddenUsers: string[];
 }) {
   const [threads,        setThreads]       = useState<GoalRoomThread[]>([]);
@@ -1089,31 +1097,44 @@ function GoalRoomTab({ goal, user, blockedUsers, hiddenUsers }: {
 
   useEffect(() => {
     if (!groupId) { setLoading(false); return; }
-    let debounce: ReturnType<typeof setTimeout>;
-    const unsub = onSnapshot(
-      query(collection(db, 'groups', groupId, 'threads'), orderBy('lastActivityAt', 'desc'), limit(50)),
-      (snap) => {
-        clearTimeout(debounce);
-        debounce = setTimeout(() => {
-          setThreads(snap.docs.map(d => ({ id: d.id, ...d.data() }) as GoalRoomThread));
-          setLoading(false);
-        }, 100);
-      },
-      (err)  => { clearTimeout(debounce); console.error(err); setLoading(false); }
-    );
-    return () => { clearTimeout(debounce); unsub(); };
+
+    const fetchThreads = async () => {
+      const { data } = await supabase
+        .from('threads')
+        .select('*')
+        .eq('group_id', groupId)
+        .order('last_activity_at', { ascending: false })
+        .limit(50);
+      setThreads((data || []).map((d: any) => ({
+        id: d.id, groupId: d.group_id, goalId: d.goal_id,
+        badge: d.badge, title: d.title, linkedTaskText: d.linked_task_text,
+        authorId: d.author_id, authorName: d.author_name, authorAvatar: d.author_avatar,
+        previewText: d.preview_text, replyCount: d.reply_count, usefulCount: d.useful_count,
+        reactions: d.reactions || {}, isPinned: d.is_pinned,
+        createdAt: d.created_at, lastActivityAt: d.last_activity_at,
+      }) as GoalRoomThread));
+      setLoading(false);
+    };
+
+    fetchThreads();
+    const channel = supabase
+      .channel(`threads:${groupId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'threads', filter: `group_id=eq.${groupId}` }, fetchThreads)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [groupId]);
 
   const createThread = async () => {
     if (!newTitle.trim() || newSaving || !user || !groupId) return;
     setNewSaving(true);
     const now = new Date().toISOString();
+    const authorName = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Member';
     try {
-      await addDoc(collection(db, 'groups', groupId, 'threads'), {
-        goalId: goal.id, badge: newBadge, title: newTitle.trim(),
-        authorId: user.uid, authorName: user.displayName || 'Member',
-        previewText: newBody.trim() || newTitle.trim(),
-        replyCount: 0, usefulCount: 0, createdAt: now, lastActivityAt: now,
+      await supabase.from('threads').insert({
+        group_id: groupId, goal_id: goal.id, badge: newBadge, title: newTitle.trim(),
+        author_id: user.id, author_name: authorName,
+        preview_text: newBody.trim() || newTitle.trim(),
+        reply_count: 0, useful_count: 0, created_at: now, last_activity_at: now,
       });
       setCreating(false); setNewTitle(''); setNewBody(''); setNewBadge('help');
     } catch(e) { console.error(e); }
@@ -1296,7 +1317,7 @@ function AddTaskPopup({
     if (!text.trim() || !user) return;
     setSaving(true);
     try {
-      const token = await user.getIdToken();
+      const token = ((await supabase.auth.getSession()).data.session?.access_token || "");
       await fetch(`/api/goals/${myGoalId}/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1379,7 +1400,7 @@ function AskForHelpPopup({
     if (!user || !goal.groupId) return;
     setSending(true);
     try {
-      const token = await user.getIdToken();
+      const token = ((await supabase.auth.getSession()).data.session?.access_token || "");
       await fetch('/api/ask-for-help', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1511,7 +1532,7 @@ function UserActionPopup({
     if (!user) return;
     setBusyAction(action);
     try {
-      const token = await user.getIdToken();
+      const token = ((await supabase.auth.getSession()).data.session?.access_token || "");
       if (action === 'favourite') {
         await fetch('/api/favourites', {
           method: 'POST',
@@ -1737,7 +1758,7 @@ function PeopleTab({ goal }: { goal: Goal }) {
     let cancelled = false;
     (async () => {
       try {
-        const token = await user.getIdToken();
+        const token = ((await supabase.auth.getSession()).data.session?.access_token || "");
         const res   = await fetch(`/api/goals/${goal.id}/people-tasks`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -1906,7 +1927,7 @@ function PeopleTab({ goal }: { goal: Goal }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface GoalDetailScreenProps {
-  user: FirebaseUser | null; dbUser: User | null;
+  user: SupabaseUser | null; dbUser: User | null;
   goalId: string; goals: Goal[];
   initialTab: 'plan' | 'goal-room' | 'people';
   setCurrentScreen: (s: any) => void;

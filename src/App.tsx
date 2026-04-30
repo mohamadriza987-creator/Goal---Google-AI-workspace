@@ -1,18 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { auth, db, googleProvider } from './firebase';
-import { signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, onSnapshot, doc, orderBy, limit, setDoc, collectionGroup, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { supabase } from './lib/supabase';
 import { Goal, GoalTask, User, CalendarNote } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 
-/* POLISH: shared screen-transition tokens — mirrors --dur-panel / --ease-out-quad
-   so every page swap animates on transform + opacity (never layout). */
 const PANEL_INITIAL = { opacity: 0, y: 8 };
 const PANEL_ANIMATE = { opacity: 1, y: 0 };
 const PANEL_EXIT    = { opacity: 0, y: -4 };
 const PANEL_TRANS   = { duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] as const };
-
-// ── Screen types ──────────────────────────────────────────────────────────────
 
 type Screen =
   | 'auth'
@@ -38,8 +33,6 @@ enum OperationType {
   WRITE  = 'write',
 }
 
-// ── Screen + feature imports ──────────────────────────────────────────────────
-
 const HomeScreen       = React.lazy(() => import('./components/HomeScreen').then(m => ({ default: m.HomeScreen })));
 const GoalDetailScreen = React.lazy(() => import('./components/GoalDetailScreen').then(m => ({ default: m.GoalDetailScreen })));
 const CalendarScreen   = React.lazy(() => import('./components/CalendarScreen').then(m => ({ default: m.CalendarScreen })));
@@ -49,11 +42,8 @@ import { SortableNavConsole }    from './components/SortableNavConsole';
 import { HomeEditModeProvider }  from './contexts/HomeEditModeContext';
 import { UserContext }           from './contexts/UserContext';
 
-// ═════════════════════════════════════════════════════════════════════════════
 export default function App() {
-// ═════════════════════════════════════════════════════════════════════════════
-
-  const [user,           setUser]           = useState<FirebaseUser | null>(null);
+  const [user,           setUser]           = useState<SupabaseUser | null>(null);
   const [dbUser,         setDbUser]         = useState<User | null>(null);
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
@@ -65,10 +55,8 @@ export default function App() {
   const [optimisticGoals,setOptimisticGoals]= useState<Goal[]>([]);
   const [navVisible,     setNavVisible]     = useState(true);
   const lastScrollY = useRef(0);
-  // Stable ref so the reminders effect doesn't re-subscribe on every goals update
   const goalsRef = useRef<Goal[]>(goals);
 
-  // ── Nav hide-on-scroll ──────────────────────────────────────────────────
   useEffect(() => {
     const onScroll = () => {
       const y = window.scrollY;
@@ -81,43 +69,32 @@ export default function App() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
-  // ── Error handler ───────────────────────────────────────────────────────
-  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-    console.error('Firestore Error:', JSON.stringify({
+  const handleDbError = (error: unknown, operationType: OperationType, path: string | null) => {
+    console.error('Supabase Error:', JSON.stringify({
       error: error instanceof Error ? error.message : String(error),
       operationType,
       path,
-      userId: auth.currentUser?.uid,
+      userId: user?.id,
     }));
   };
 
   // ── Auth + user profile subscription ───────────────────────────────────
   useEffect(() => {
-    let userUnsubscribe: (() => void) | null = null;
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        setCurrentScreen({ name: 'home' });
+        subscribeToUserProfile(session.user.id);
+      }
+    });
 
-    const unsubscribeAuth = onAuthStateChanged(auth, async (u) => {
+    const { data: { subscription: authSub } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const u = session?.user ?? null;
       setUser(u);
       if (u) {
-        // User profile
-        const userRef = doc(db, 'users', u.uid);
-        userUnsubscribe = onSnapshot(userRef, (snap) => {
-          if (snap.exists()) {
-            setDbUser({ id: snap.id, ...snap.data() } as User);
-          } else {
-            const newUser: Partial<User> = {
-              displayName: u.displayName || 'Anonymous',
-              username:    u.email?.split('@')[0] || 'user',
-              avatarUrl:   u.photoURL || undefined,
-              blockedUsers: [],
-              hiddenUsers:  [],
-              createdAt:   new Date().toISOString(),
-            };
-            setDoc(userRef, newUser, { merge: true })
-              .catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${u.uid}`));
-          }
-        }, (err) => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
-
-        if (currentScreen.name === 'auth') setCurrentScreen({ name: 'home' });
+        setCurrentScreen(prev => prev.name === 'auth' ? { name: 'home' } : prev);
+        subscribeToUserProfile(u.id);
       } else {
         setDbUser(null);
         setGoals([]);
@@ -125,111 +102,257 @@ export default function App() {
         setGoalLimit(5);
         setHasMoreGoals(false);
         setCurrentScreen({ name: 'auth' });
-        if (userUnsubscribe) userUnsubscribe();
       }
     });
 
-    return () => {
-      unsubscribeAuth();
-      if (userUnsubscribe) userUnsubscribe();
-    };
+    return () => { authSub.unsubscribe(); };
   }, []);
 
+  const userProfileChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  function subscribeToUserProfile(userId: string) {
+    if (userProfileChannelRef.current) {
+      supabase.removeChannel(userProfileChannelRef.current);
+    }
+
+    // Initial fetch
+    supabase.from('users').select('*').eq('id', userId).single().then(({ data }) => {
+      if (data) {
+        setDbUser(mapDbUser(data));
+      } else {
+        // Create profile from Supabase auth metadata
+        supabase.auth.getUser().then(({ data: authData }) => {
+          const u = authData.user;
+          if (!u) return;
+          const newUser = {
+            id:           u.id,
+            email:        u.email,
+            display_name: u.user_metadata?.full_name || u.user_metadata?.name || 'Anonymous',
+            username:     u.email?.split('@')[0] || 'user',
+            avatar_url:   u.user_metadata?.avatar_url || null,
+            blocked_users: [],
+            hidden_users:  [],
+            created_at:   new Date().toISOString(),
+          };
+          supabase.from('users').upsert(newUser).then(() => {
+            setDbUser(mapDbUser(newUser));
+          });
+        });
+      }
+    });
+
+    // Real-time subscription
+    const channel = supabase
+      .channel(`users:${userId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'users',
+        filter: `id=eq.${userId}`,
+      }, (payload) => {
+        if (payload.new) setDbUser(mapDbUser(payload.new as any));
+      })
+      .subscribe();
+
+    userProfileChannelRef.current = channel;
+  }
+
+  function mapDbUser(data: any): User {
+    return {
+      id:               data.id,
+      displayName:      data.display_name || 'Anonymous',
+      username:         data.username     || data.email?.split('@')[0] || 'user',
+      avatarUrl:        data.avatar_url,
+      age:              data.age,
+      locality:         data.locality,
+      nationality:      data.nationality,
+      languages:        data.languages,
+      preferredLanguage: data.preferred_language,
+      lastLoggedInAt:   data.last_logged_in_at,
+      role:             data.role,
+      blockedUsers:     data.blocked_users  || [],
+      hiddenUsers:      data.hidden_users   || [],
+      createdAt:        data.created_at,
+    };
+  }
+
   // ── Goals subscription (paginated) ─────────────────────────────────────
+  const goalsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
   useEffect(() => {
     if (!user) return;
     setGoalsLoading(true);
-    const q = query(
-      collection(db, 'goals'),
-      where('ownerId', '==', user.uid),
-      orderBy('createdAt', 'desc'),
-      limit(goalLimit),
-    );
-    const unsub = onSnapshot(q, (snapshot) => {
-      const g = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Goal));
+
+    const fetchGoals = async () => {
+      const { data } = await supabase
+        .from('goals')
+        .select('*')
+        .eq('owner_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(goalLimit);
+
+      const g = (data || []).map(mapGoal);
       goalsRef.current = g;
       setGoals(g);
       setGoalsLoading(false);
-      // If we got exactly the limit there may be more; fewer means we've reached the end
       setHasMoreGoals(g.length === goalLimit);
-      // Dedup by tempId only
       setOptimisticGoals(prev =>
         prev.filter(og => !g.some(rg => rg.tempId && rg.tempId === og.id))
       );
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'goals'));
-    return () => unsub();
+    };
+
+    fetchGoals();
+
+    if (goalsChannelRef.current) supabase.removeChannel(goalsChannelRef.current);
+
+    const channel = supabase
+      .channel(`goals:${user.id}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'goals',
+        filter: `owner_id=eq.${user.id}`,
+      }, () => { fetchGoals(); })
+      .subscribe();
+
+    goalsChannelRef.current = channel;
+
+    return () => {
+      if (goalsChannelRef.current) supabase.removeChannel(goalsChannelRef.current);
+    };
   }, [user, goalLimit]);
 
-  // ── Reminders (calendar data) ──────────────────────────────────────────
+  function mapGoal(data: any): Goal {
+    return {
+      id:                      data.id,
+      ownerId:                 data.owner_id,
+      title:                   data.title        || '',
+      description:             data.description  || '',
+      visibility:              data.visibility   || 'public',
+      publicFields:            data.public_fields,
+      category:                data.category,
+      categories:              data.categories,
+      tags:                    data.tags,
+      status:                  data.status       || 'active',
+      progressPercent:         data.progress_percent ?? 0,
+      likesCount:              0,
+      groupId:                 data.group_id,
+      groupJoined:             data.group_joined,
+      joinedAt:                data.joined_at,
+      eligibleAt:              data.eligible_at,
+      createdAt:               data.created_at,
+      tempId:                  data.temp_id,
+      sourceText:              data.source_text,
+      normalizedMatchingText:  data.normalized_matching_text,
+      timeHorizon:             data.time_horizon,
+      embedding:               data.embedding,
+      embeddingUpdatedAt:      data.embedding_updated_at,
+      similarGoals:            data.similar_goals,
+    };
+  }
+
+  // ── Reminders (tasks + notes with reminderAt) ──────────────────────────
   useEffect(() => {
     if (!user) return;
 
-    let latestTask: {task: GoalTask; goal: Goal; reminderAt: string}[]           = [];
-    let latestNote: {task: GoalTask; goal: Goal; reminderAt: string; noteText: string}[] = [];
+    const fetchReminders = async () => {
+      const { data: taskRows } = await supabase
+        .from('tasks')
+        .select('id, goal_id, text, is_done, reminder_at, order, micro_steps, source, created_at')
+        .eq('owner_id', user.id)
+        .not('reminder_at', 'is', null)
+        .limit(500);
 
-    const recompute = () => {
-      const merged = [...latestTask, ...latestNote];
+      const taskReminders: typeof allReminders = [];
+      for (const t of (taskRows || [])) {
+        const goal = goalsRef.current.find(g => g.id === t.goal_id);
+        if (goal) {
+          taskReminders.push({
+            task: { id: t.id, text: t.text, isDone: t.is_done, order: t.order, microSteps: t.micro_steps, source: t.source, reminderAt: t.reminder_at, createdAt: t.created_at } as GoalTask,
+            goal,
+            reminderAt: t.reminder_at,
+          });
+        }
+      }
+
+      const { data: noteRows } = await supabase
+        .from('goal_notes')
+        .select('id, goal_id, task_id, text, reminder_at')
+        .eq('owner_id', user.id)
+        .not('reminder_at', 'is', null)
+        .limit(500);
+
+      const noteReminders: typeof allReminders = [];
+      for (const n of (noteRows || [])) {
+        const goal = goalsRef.current.find(g => g.id === n.goal_id);
+        if (goal) {
+          noteReminders.push({
+            task: { id: n.task_id, text: 'Note Reminder' } as any,
+            goal,
+            reminderAt: n.reminder_at,
+            noteText: n.text,
+          });
+        }
+      }
+
+      const merged = [...taskReminders, ...noteReminders];
       merged.sort((a, b) => new Date(a.reminderAt).getTime() - new Date(b.reminderAt).getTime());
       setAllReminders(merged);
     };
 
-    const tQ = query(collectionGroup(db, 'tasks'), where('ownerId', '==', user.uid), limit(500));
-    const unsubT = onSnapshot(tQ, (snap) => {
-      latestTask = [];
-      snap.docs.forEach(d => {
-        const data = d.data() as GoalTask;
-        if (!data.reminderAt) return;
-        const goalId = d.ref.parent.parent?.id;
-        const goal   = goalsRef.current.find(g => g.id === goalId);
-        if (goal) latestTask.push({ task: { id: d.id, ...data }, goal, reminderAt: data.reminderAt });
-      });
-      recompute();
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/tasks'));
-
-    const nQ = query(collectionGroup(db, 'notes'), where('ownerId', '==', user.uid), limit(500));
-    const unsubN = onSnapshot(nQ, (snap) => {
-      latestNote = [];
-      snap.docs.forEach(d => {
-        const data  = d.data();
-        if (!data.reminderAt) return;
-        const taskR = d.ref.parent.parent;
-        const goalR = taskR?.parent.parent;
-        const goal  = goalsRef.current.find(g => g.id === goalR?.id);
-        if (goal) latestNote.push({ task: { id: taskR?.id, text: 'Note Reminder' } as any, goal, reminderAt: data.reminderAt, noteText: data.text });
-      });
-      recompute();
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'reminders/notes'));
-
-    return () => { unsubT(); unsubN(); };
-  }, [user]);
+    fetchReminders();
+  }, [user, goals]);
 
   // ── Calendar notes ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'users', user.uid, 'calendarNotes'), orderBy('date', 'asc'));
-    const unsub = onSnapshot(q, snap => {
-      setCalendarNotes(snap.docs.map(d => ({ id: d.id, ...d.data() } as CalendarNote)));
-    }, err => handleFirestoreError(err, OperationType.GET, `users/${user.uid}/calendarNotes`));
-    return () => unsub();
+
+    supabase
+      .from('calendar_notes')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('date', { ascending: true })
+      .then(({ data }) => {
+        setCalendarNotes((data || []).map((n: any) => ({
+          id:        n.date,
+          date:      n.date,
+          text:      n.text,
+          createdAt: n.created_at,
+          updatedAt: n.updated_at,
+        } as CalendarNote)));
+      });
   }, [user]);
 
   const saveCalendarNote = async (date: string, text: string) => {
     if (!user) return;
-    const ref = doc(db, 'users', user.uid, 'calendarNotes', date);
-    await setDoc(ref, { id: date, date, text, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true });
+    const now = new Date().toISOString();
+    await supabase.from('calendar_notes').upsert({
+      user_id:    user.id,
+      date,
+      text,
+      created_at: now,
+      updated_at: now,
+    }, { onConflict: 'user_id,date' });
+    setCalendarNotes(prev => {
+      const existing = prev.find(n => n.date === date);
+      if (existing) return prev.map(n => n.date === date ? { ...n, text, updatedAt: now } : n);
+      return [...prev, { id: date, date, text, createdAt: now, updatedAt: now }];
+    });
   };
 
   const deleteCalendarNote = async (date: string) => {
     if (!user) return;
-    await deleteDoc(doc(db, 'users', user.uid, 'calendarNotes', date));
+    await supabase.from('calendar_notes').delete().eq('user_id', user.id).eq('date', date);
+    setCalendarNotes(prev => prev.filter(n => n.date !== date));
   };
 
   // ── Auth ────────────────────────────────────────────────────────────────
   const handleLogin = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, 'auth_popup');
+      handleDbError(err, OperationType.GET, 'auth_oauth');
     }
   };
 
@@ -246,18 +369,16 @@ export default function App() {
     updateOptimisticGoal(tempId, { savingStatus: 'saving', saveErrorMessage: undefined });
 
     try {
-      // Single token reused across this save cycle — Firebase caches internally
-      // but back-to-back awaits still serialise unnecessarily.
-      const idToken = await user.getIdToken();
-      const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` };
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+      const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` };
 
-      // 1. Embedding — surface failure rather than silently saving without one
+      // 1. Embedding
       let embedding: number[] | undefined;
       let embeddingFailed = false;
       try {
         const r = await fetch('/api/generate-embedding', {
-          method: 'POST',
-          headers: authHeaders,
+          method: 'POST', headers: authHeaders,
           body: JSON.stringify({ text: structuredGoal.normalizedMatchingText }),
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -267,54 +388,55 @@ export default function App() {
         console.error('Embedding failed:', e);
       }
 
-      // 2. Save goal doc — default visibility to 'public'
+      // 2. Save goal doc
       const visibility = structuredGoal.privacy === 'private' ? 'private' : 'public';
-      const goalRef = await addDoc(collection(db, 'goals'), {
-        ownerId: user.uid,
-        tempId,
-        title:   structuredGoal.title,
-        description: structuredGoal.description,
-        category: structuredGoal.categories[0],
-        categories: structuredGoal.categories,
-        tags:     structuredGoal.tags,
-        timeHorizon: structuredGoal.timeHorizon,
-        progressPercent: 0,
-        status:   'active',
+      const { data: goalRow, error: goalErr } = await supabase.from('goals').insert({
+        owner_id:                 user.id,
+        temp_id:                  tempId,
+        title:                    structuredGoal.title,
+        description:              structuredGoal.description,
+        category:                 structuredGoal.categories[0],
+        categories:               structuredGoal.categories,
+        tags:                     structuredGoal.tags,
+        time_horizon:             structuredGoal.timeHorizon,
+        progress_percent:         0,
+        status:                   'active',
         visibility,
-        publicFields: visibility === 'public' ? ['title', 'description', 'tasks', 'progress'] : [],
-        createdAt: goal.createdAt,
-        sourceText: structuredGoal.transcript,
-        normalizedMatchingText: structuredGoal.normalizedMatchingText,
+        public_fields:            visibility === 'public' ? ['title', 'description', 'tasks', 'progress'] : [],
+        created_at:               goal.createdAt,
+        source_text:              structuredGoal.transcript,
+        normalized_matching_text: structuredGoal.normalizedMatchingText,
         embedding,
-        embeddingUpdatedAt: embedding ? new Date().toISOString() : undefined,
-        matchingMetadata: { age: dbUser?.age ?? null, locality: dbUser?.locality ?? null },
-      });
+        embedding_updated_at:     embedding ? new Date().toISOString() : null,
+        matching_metadata:        { age: dbUser?.age ?? null, locality: dbUser?.locality ?? null },
+      }).select('id').single();
 
-      // 3. Tasks batch
-      const batch = writeBatch(db);
-      structuredGoal.tasks.forEach((task, i) => {
-        const tRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
-        batch.set(tRef, {
-          text: task.text, isDone: false, order: i,
-          microSteps: task.microSteps,
-          createdAt: new Date().toISOString(),
-          source: 'ai',
-          goalId: goalRef.id,
-          ownerId: user.uid,
-        });
-      });
-      manualTasks.forEach((text: string, i: number) => {
-        const tRef = doc(collection(db, 'goals', goalRef.id, 'tasks'));
-        batch.set(tRef, {
-          text, isDone: false, order: structuredGoal.tasks.length + i,
-          microSteps: [],
-          createdAt: new Date().toISOString(),
-          source: 'manual',
-          goalId: goalRef.id,
-          ownerId: user.uid,
-        });
-      });
-      await batch.commit();
+      if (goalErr || !goalRow) throw new Error(goalErr?.message || 'Failed to create goal');
+
+      // 3. Tasks
+      const allTasks = [
+        ...structuredGoal.tasks.map((task, i) => ({
+          goal_id:    goalRow.id,
+          owner_id:   user.id,
+          text:       task.text,
+          is_done:    false,
+          order:      i,
+          micro_steps: task.microSteps,
+          created_at: new Date().toISOString(),
+          source:     'ai',
+        })),
+        ...manualTasks.map((text: string, i: number) => ({
+          goal_id:    goalRow.id,
+          owner_id:   user.id,
+          text,
+          is_done:    false,
+          order:      structuredGoal.tasks.length + i,
+          micro_steps: [],
+          created_at: new Date().toISOString(),
+          source:     'manual',
+        })),
+      ];
+      if (allTasks.length > 0) await supabase.from('tasks').insert(allTasks);
 
       if (embeddingFailed) {
         updateOptimisticGoal(tempId, {
@@ -325,14 +447,12 @@ export default function App() {
       }
       updateOptimisticGoal(tempId, { savingStatus: 'success' });
 
-      // 4. Combined post-save: assign group + precompute matches + index — one
-      //    round trip, one auth token, server runs them in the right order.
+      // 4. Post-save: assign group + precompute matches + index
       if (embedding) {
         try {
           const res = await fetch('/api/goals/post-save', {
-            method: 'POST',
-            headers: authHeaders,
-            body: JSON.stringify({ goalId: goalRef.id, embedding }),
+            method: 'POST', headers: authHeaders,
+            body: JSON.stringify({ goalId: goalRow.id, embedding }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
@@ -343,7 +463,7 @@ export default function App() {
             });
           }
         } catch (e) {
-          console.error('Post-save (group assign / index) failed', e);
+          console.error('Post-save failed', e);
           updateOptimisticGoal(tempId, {
             savingStatus: 'partial',
             saveErrorMessage: 'Goal saved, but joining a community room failed. Open the goal to retry.',
@@ -368,14 +488,11 @@ export default function App() {
   const navigate = (s: ScreenState | Screen) =>
     setCurrentScreen(typeof s === 'string' ? { name: s } : s);
 
-  // ── Render ──────────────────────────────────────────────────────────────
   const isAuth = currentScreen.name === 'auth';
 
   return (
     <UserContext.Provider value={{ user, dbUser }}>
-    <HomeEditModeProvider userId={user?.uid ?? null}>
-    {/* POLISH: app shell — paint containment isolates screen repaints,
-        safe-area top padding respects iOS notch / dynamic island. */}
+    <HomeEditModeProvider userId={user?.id ?? null}>
     <div className="min-h-screen font-sans selection:bg-white selection:text-black"
          style={{
            background:  'var(--c-bg)',
@@ -384,14 +501,11 @@ export default function App() {
            paddingTop:  'env(safe-area-inset-top)',
          }}>
 
-      {/* ── Screens ─────────────────────────────────────────────────── */}
       <React.Suspense fallback={null}>
       <AnimatePresence mode="wait">
 
-        {/* AUTH */}
         {currentScreen.name === 'auth' && (
           <motion.div key="auth"
-            /* POLISH: shared panel transition — transform + opacity only */
             initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}
             className="flex flex-col items-center justify-center h-screen p-6 text-center">
             <h1 className="text-page-title mb-3" style={{ fontSize: 38, letterSpacing: -1 }}>Goal</h1>
@@ -404,10 +518,8 @@ export default function App() {
           </motion.div>
         )}
 
-        {/* HOME */}
         {currentScreen.name === 'home' && (
           <motion.div key="home"
-            /* POLISH */
             initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <HomeScreen
               user={user}
@@ -417,17 +529,15 @@ export default function App() {
               hasMoreGoals={hasMoreGoals}
               loadMoreGoals={loadMoreGoals}
               setCurrentScreen={navigate}
-              handleFirestoreError={handleFirestoreError}
+              handleFirestoreError={handleDbError}
               addOptimisticGoal={addOptimisticGoal}
               performSaveGoal={performSaveGoal}
             />
           </motion.div>
         )}
 
-        {/* GOAL DETAIL */}
         {currentScreen.name === 'goal-detail' && currentScreen.goalId && (
           <motion.div key="goal-detail"
-            /* POLISH */
             initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <GoalDetailScreen
               user={user}
@@ -436,15 +546,13 @@ export default function App() {
               goals={displayGoals}
               initialTab={currentScreen.initialTab ?? 'plan'}
               setCurrentScreen={navigate}
-              handleFirestoreError={handleFirestoreError}
+              handleFirestoreError={handleDbError}
             />
           </motion.div>
         )}
 
-        {/* CALENDAR */}
         {currentScreen.name === 'calendar' && (
           <motion.div key="calendar"
-            /* POLISH */
             initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <CalendarScreen
               allReminders={allReminders}
@@ -457,19 +565,15 @@ export default function App() {
           </motion.div>
         )}
 
-        {/* CHALLENGE */}
         {currentScreen.name === 'challenge' && (
           <motion.div key="challenge"
-            /* POLISH */
             initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <ChallengeScreen user={user} dbUser={dbUser} />
           </motion.div>
         )}
 
-        {/* PROFILE */}
         {currentScreen.name === 'profile' && (
           <motion.div key="profile"
-            /* POLISH */
             initial={PANEL_INITIAL} animate={PANEL_ANIMATE} exit={PANEL_EXIT} transition={PANEL_TRANS}>
             <ProfileScreen user={user} dbUser={dbUser} onNavigateHome={() => navigate({ name: 'home' })} />
           </motion.div>
@@ -478,7 +582,6 @@ export default function App() {
       </AnimatePresence>
       </React.Suspense>
 
-      {/* ── Bottom navigation — sortable, edit-mode aware ──────────── */}
       {!isAuth && currentScreen.name !== 'profile' && (
         <SortableNavConsole
           currentScreen={currentScreen.name}
