@@ -1977,10 +1977,10 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
     if (!editTitle.trim()) return;
     setIsSavingGoal(true);
     try {
-      await updateDoc(doc(db, 'goals', goal.id), {
+      await supabase.from('goals').update({
         title:       editTitle.trim(),
         description: editDescription.trim(),
-      });
+      }).eq('id', goal.id);
       setIsEditingGoal(false);
     } catch (e) {
       console.error('Failed to save goal edits', e);
@@ -1992,7 +1992,7 @@ export function GoalDetailScreen({ user, dbUser, goalId, goals, initialTab, setC
   const handleDeleteGoal = async () => {
     setIsDeleting(true);
     try {
-      await deleteDoc(doc(db, 'goals', goal.id));
+      await supabase.from('goals').delete().eq('id', goal.id);
       setCurrentScreen({ name: 'home' });
     } catch (e) {
       console.error('Failed to delete goal', e);

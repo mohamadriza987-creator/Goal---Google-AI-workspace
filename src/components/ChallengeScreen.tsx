@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
-import { User as FirebaseUser } from 'firebase/auth';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
 import { Trophy, Sparkles, Award, Bookmark, X, Loader2 } from 'lucide-react';
 
@@ -13,7 +14,7 @@ interface FavouriteEntry {
 }
 
 interface ChallengeScreenProps {
-  user: FirebaseUser | null;
+  user: SupabaseUser | null;
   dbUser: User | null;
 }
 
@@ -41,7 +42,7 @@ function EmptyCard({ message }: { message: string }) {
   );
 }
 
-function FavouritesSection({ user }: { user: FirebaseUser | null }) {
+function FavouritesSection({ user }: { user: SupabaseUser | null }) {
   const [favourites, setFavourites] = useState<FavouriteEntry[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [removing,   setRemoving]   = useState<string | null>(null);
@@ -51,7 +52,7 @@ function FavouritesSection({ user }: { user: FirebaseUser | null }) {
     let cancelled = false;
     (async () => {
       try {
-        const token = await user.getIdToken();
+        const token = (await supabase.auth.getSession()).data.session?.access_token ?? '';
         const res   = await fetch('/api/favourites', { headers: { Authorization: `Bearer ${token}` } });
         if (!cancelled && res.ok) {
           const data = await res.json();
