@@ -1,15 +1,13 @@
 import React from 'react';
-import { User as FirebaseUser } from 'firebase/auth';
-import { auth, db } from '../firebase';
-import { collection, addDoc } from 'firebase/firestore';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
 import { Shield, LogOut, Plus, RefreshCw, Search, Users, ArrowLeft, UserX, Loader2, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Goal, Group, User } from '../types';
-import { getDocs, updateDoc, doc as firestoreDoc, writeBatch, setDoc, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
 interface ProfileScreenProps {
-  user: FirebaseUser | null;
+  user: SupabaseUser | null;
   dbUser: User | null;
   onNavigateHome: () => void;
 }
@@ -47,8 +45,9 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
 
   React.useEffect(() => {
     if (!isAdminUser || !user) return;
-    user.getIdToken().then((tok) =>
-      fetch('/api/admin/gemini-model-order', { headers: { Authorization: `Bearer ${tok}` } })
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const tok = session?.access_token;
+      return fetch('/api/admin/gemini-model-order', { headers: { Authorization: `Bearer ${tok}` } })
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
           if (data?.modelOrder) {
@@ -57,18 +56,19 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
           }
         })
         .catch(() => {})
-    );
+    });
   }, [isAdminUser, user]);
 
   React.useEffect(() => {
     if (!isAdminUser || !user) return;
     const fetchStats = () => {
-      user.getIdToken().then((tok) =>
-        fetch('/api/admin/gemini-model-stats', { headers: { Authorization: `Bearer ${tok}` } })
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        const tok = session?.access_token;
+        return fetch('/api/admin/gemini-model-stats', { headers: { Authorization: `Bearer ${tok}` } })
           .then((r) => r.ok ? r.json() : null)
           .then((data) => { if (data?.stats) setModelStats(data.stats); })
-          .catch(() => {})
-      );
+          .catch(() => {});
+      });
     };
     fetchStats();
     const id = setInterval(fetchStats, 15 * 60 * 1000);
@@ -80,7 +80,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
     setModelOrderSaving(true);
     setModelOrderMsg(null);
     try {
-      const tok = await user.getIdToken();
+      const tok = (await supabase.auth.getSession()).data.session?.access_token;
       const r = await fetch('/api/admin/gemini-model-order', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
@@ -100,7 +100,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
     if (!user || !isAdminUser) return;
     setIndexStatusLoading(true);
     try {
-      const tok = await user.getIdToken();
+      const tok = (await supabase.auth.getSession()).data.session?.access_token;
       const r = await fetch('/api/admin/index-status', { headers: { Authorization: `Bearer ${tok}` } });
       if (r.ok) setIndexStatus(await r.json());
     } catch (e) { console.error('index-status error', e); }
@@ -117,7 +117,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
     setIndexRows([]);
     (async () => {
       try {
-        const tok = await user.getIdToken();
+        const tok = (await supabase.auth.getSession()).data.session?.access_token;
         const r = await fetch(`/api/admin/index-data?dataset=${indexDataset}`, {
           headers: { Authorization: `Bearer ${tok}` },
         });
@@ -139,7 +139,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
     setForceRebuildStatus('running');
     setForceRebuildMsg('');
     try {
-      const tok = await user.getIdToken();
+      const tok = (await supabase.auth.getSession()).data.session?.access_token;
       const r = await fetch('/api/admin/force-rebuild-index', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
@@ -161,33 +161,40 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
   };
 
   React.useEffect(() => {
-    if (showModeration && isAdminUser) {
-      const q = query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(50));
-      const unsubscribe = onSnapshot(q, (snap) => {
-        setReports(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      });
-      return () => unsubscribe();
-    }
+    if (!showModeration || !isAdminUser) return;
+    const fetchReports = () =>
+      supabase.from('reports').select('*').order('created_at', { ascending: false }).limit(50)
+        .then(({ data }) => { if (data) setReports(data); });
+    fetchReports();
+    const channel = supabase.channel('reports-admin')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, fetchReports)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [showModeration, isAdminUser]);
 
   React.useEffect(() => {
-    if (showGoalMap) {
-      const unsubGoals = onSnapshot(collection(db, 'goals'), (snap) => {
-        setAllGoals(snap.docs.map(d => ({ id: d.id, ...d.data() } as Goal)));
-      });
-      const unsubGroups = onSnapshot(collection(db, 'groups'), (snap) => {
-        setAllGroups(snap.docs.map(d => ({ id: d.id, ...d.data() } as Group)));
-      });
-      return () => {
-        unsubGoals();
-        unsubGroups();
-      };
-    }
+    if (!showGoalMap) return;
+    const fetchGoals = () =>
+      supabase.from('goals').select('*').then(({ data }) => { if (data) setAllGoals(data as Goal[]); });
+    const fetchGroups = () =>
+      supabase.from('groups').select('*').then(({ data }) => { if (data) setAllGroups(data as Group[]); });
+    fetchGoals();
+    fetchGroups();
+    const goalsChannel = supabase.channel('goals-map')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'goals' }, fetchGoals)
+      .subscribe();
+    const groupsChannel = supabase.channel('groups-map')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'groups' }, fetchGroups)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(goalsChannel);
+      supabase.removeChannel(groupsChannel);
+    };
   }, [showGoalMap]);
 
   const handleResolveReport = async (reportId: string, status: 'resolved' | 'dismissed') => {
     try {
-      await updateDoc(firestoreDoc(db, 'reports', reportId), { status, updatedAt: new Date().toISOString() });
+      await supabase.from('reports').update({ status, updated_at: new Date().toISOString() }).eq('id', reportId);
     } catch (err) {
       console.error("Error resolving report:", err);
     }
@@ -198,7 +205,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
     setBackfillStatus('running');
     setBackfillMsg('');
     try {
-      const tok = await user.getIdToken();
+      const tok = (await supabase.auth.getSession()).data.session?.access_token;
       const r = await fetch('/api/admin/backfill-index', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
@@ -223,7 +230,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
     setSyncResult(null);
     setConfirmSync(false);
     try {
-      const idToken = await user.getIdToken();
+      const idToken = (await supabase.auth.getSession()).data.session?.access_token;
       const res = await fetch("/api/admin/reconcile", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${idToken}` },
@@ -268,7 +275,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
 
       <div className="flex flex-col items-center text-center mb-12">
         <div className="w-24 h-24 rounded-full bg-zinc-800 mb-4" />
-        <h2 className="text-2xl font-bold break-words w-full">{user?.displayName}</h2>
+        <h2 className="text-2xl font-bold break-words w-full">{user?.user_metadata?.full_name}</h2>
         <p className="text-zinc-500 text-sm break-words w-full">@{user?.email?.split('@')[0]}</p>
       </div>
 
@@ -565,7 +572,7 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
         <BlockedUsersSection user={user} />
 
         <button
-          onClick={() => auth.signOut()}
+          onClick={() => supabase.auth.signOut()}
           className="w-full p-6 bg-zinc-900/50 border border-zinc-800 rounded-3xl flex items-center gap-4 text-red-500 hover:bg-red-500/10 transition-colors"
         >
           <LogOut />
@@ -582,7 +589,7 @@ interface BlockedProfile {
   avatarUrl: string;
 }
 
-function BlockedUsersSection({ user }: { user: FirebaseUser | null }) {
+function BlockedUsersSection({ user }: { user: SupabaseUser | null }) {
   const [blocked,    setBlocked]    = React.useState<BlockedProfile[]>([]);
   const [loading,    setLoading]    = React.useState(true);
   const [unblocking, setUnblocking] = React.useState<string | null>(null);
@@ -594,7 +601,7 @@ function BlockedUsersSection({ user }: { user: FirebaseUser | null }) {
     setLoading(true);
     (async () => {
       try {
-        const token = await user.getIdToken();
+        const token = (await supabase.auth.getSession()).data.session?.access_token;
         const res   = await fetch('/api/blocked-users', { headers: { Authorization: `Bearer ${token}` } });
         if (!cancelled && res.ok) {
           const data = await res.json();
@@ -613,7 +620,7 @@ function BlockedUsersSection({ user }: { user: FirebaseUser | null }) {
     if (!user) return;
     setUnblocking(userId);
     try {
-      const token = await user.getIdToken();
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
       await fetch(`/api/blocked-users/${userId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },

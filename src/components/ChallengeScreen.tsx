@@ -71,7 +71,8 @@ function FavouritesSection({ user }: { user: SupabaseUser | null }) {
     if (!user) return;
     setRemoving(fav.targetUserId);
     try {
-      const token = await user.getIdToken();
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
       await fetch(`/api/favourites/${fav.targetUserId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },

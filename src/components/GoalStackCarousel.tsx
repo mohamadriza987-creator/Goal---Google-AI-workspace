@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'motion/react';
 import type { PanInfo } from 'motion/react';
 import { Goal, GoalTask } from '../types';
-import { db } from '../firebase';
-import { collection, query, orderBy, onSnapshot, limit } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { Bell, Users, ChevronRight, FileText, Loader2 } from 'lucide-react';
 
 const PEEK_RIGHT = 52;  // px of the next card visible on the right
@@ -28,17 +27,28 @@ function GoalStackCard({
 
   useEffect(() => {
     if (!isActive && !isNext) return;
-    const q = query(collection(db, 'goals', goal.id, 'tasks'), orderBy('order', 'asc'));
-    return onSnapshot(q, snap => {
-      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as GoalTask)));
-      setReady(true);
-    });
+    supabase.from('tasks').select('*').eq('goal_id', goal.id).order('order', { ascending: true })
+      .then(({ data }) => { if (data) { setTasks(data as GoalTask[]); setReady(true); } });
+    const channel = supabase.channel(`tasks-${goal.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks', filter: `goal_id=eq.${goal.id}` }, () => {
+        supabase.from('tasks').select('*').eq('goal_id', goal.id).order('order', { ascending: true })
+          .then(({ data }) => { if (data) { setTasks(data as GoalTask[]); setReady(true); } });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [goal.id, isActive, isNext]);
 
   useEffect(() => {
     if (!isActive || !goal.groupId) return;
-    const q = query(collection(db, 'groups', goal.groupId, 'threads'), limit(99));
-    return onSnapshot(q, snap => setActivity(snap.size));
+    supabase.from('threads').select('id', { count: 'exact', head: true }).eq('group_id', goal.groupId)
+      .then(({ count }) => { if (count !== null) setActivity(count); });
+    const channel = supabase.channel(`threads-${goal.groupId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'threads', filter: `group_id=eq.${goal.groupId}` }, () => {
+        supabase.from('threads').select('id', { count: 'exact', head: true }).eq('group_id', goal.groupId)
+          .then(({ count }) => { if (count !== null) setActivity(count); });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [goal.groupId, isActive]);
 
   const nextTask = tasks.find(t => !t.isDone);
