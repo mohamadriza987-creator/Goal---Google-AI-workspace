@@ -40,7 +40,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     return res.json({
       type: mediaData.type,
-      data: mediaData.data,
+      url: mediaData.url,
       expiresIn: Math.max(1, Math.ceil(REVIEW_WINDOW_SEC - elapsedSec)),
     });
   }
@@ -51,5 +51,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     first_opened_at: { ...openedAtMap, [auth.userId]: nowStr },
   }).eq('id', mediaId);
 
-  res.json({ type: mediaData.type, data: mediaData.data, expiresIn: REVIEW_WINDOW_SEC });
+  res.json({ type: mediaData.type, url: mediaData.url, expiresIn: REVIEW_WINDOW_SEC });
 }

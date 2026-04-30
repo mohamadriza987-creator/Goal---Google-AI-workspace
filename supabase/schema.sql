@@ -415,7 +415,7 @@ create table if not exists public.one_time_media (
   group_id       uuid not null references public.groups(id) on delete cascade,
   sender_id      uuid not null references public.users(id) on delete cascade,
   type           text not null,
-  data           text not null,
+  url            text not null,
   created_at     timestamptz not null default now(),
   consumed_by    text[] not null default '{}',
   first_opened_at jsonb not null default '{}'

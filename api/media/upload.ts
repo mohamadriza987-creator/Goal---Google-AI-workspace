@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { put } from '@vercel/blob';
 import { requireAuth, nowIso } from '../../lib/auth.js';
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js';
 import { z } from 'zod';
@@ -9,6 +10,11 @@ const Schema = z.object({
   data:     z.string().min(1),
   duration: z.number().optional(),
 });
+
+const MIME: Record<string, string> = {
+  image: 'image/jpeg',
+  video: 'video/mp4',
+};
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const auth = await requireAuth(req, res);
@@ -34,15 +40,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!goalSnap) return res.status(403).json({ error: 'Must join group to upload media' });
 
+  const base64 = data.includes(',') ? data.split(',')[1] : data;
+  const buffer = Buffer.from(base64, 'base64');
+  const ext    = type === 'video' ? 'mp4' : 'jpg';
+  const path   = `media/${groupId}/${auth.userId}-${Date.now()}.${ext}`;
+
+  const blob = await put(path, buffer, {
+    access:      'public',
+    contentType: MIME[type],
+  });
+
   const { data: media } = await supabaseAdmin
     .from('one_time_media')
     .insert({
-      group_id:    groupId,
-      sender_id:   auth.userId,
+      group_id:        groupId,
+      sender_id:       auth.userId,
       type,
-      data,
-      created_at:  nowIso(),
-      consumed_by: [],
+      url:             blob.url,
+      created_at:      nowIso(),
+      consumed_by:     [],
       first_opened_at: {},
     })
     .select('id')
