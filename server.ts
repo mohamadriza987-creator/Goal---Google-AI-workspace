@@ -816,7 +816,7 @@ async function backfillMissingLastLoggedIn(): Promise<{ fixed: number }> {
   if (toFix.length === 0) return { fixed: 0 };
 
   const now = nowIso();
-  const batches: admin.firestore.WriteBatch[] = [];
+  const batches: any[] = [];
   let batch = db.batch();
   let opCount = 0;
 

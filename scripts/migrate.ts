@@ -30,7 +30,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 async function migrateCollection(
   collection: string,
   table: string,
-  transform?: (doc: admin.firestore.DocumentData & { id: string }) => Record<string, unknown>
+  transform?: (doc: any) => Record<string, unknown>
 ) {
   console.log(`\nMigrating ${collection} → ${table}...`);
   const snap = await firestore.collection(collection).get();
@@ -51,7 +51,7 @@ async function migrateCollection(
   console.log(`  Done — ${rows.length} docs`);
 }
 
-function tsField(val: admin.firestore.Timestamp | string | undefined): string | undefined {
+function tsField(val: any): string | undefined {
   if (!val) return undefined;
   if (typeof val === 'string') return val;
   return val.toDate().toISOString();

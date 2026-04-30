@@ -227,7 +227,6 @@ export default function App() {
       visibility:              data.visibility   || 'public',
       publicFields:            data.public_fields,
       category:                data.category,
-      categories:              data.categories,
       tags:                    data.tags,
       status:                  data.status       || 'active',
       progressPercent:         data.progress_percent ?? 0,

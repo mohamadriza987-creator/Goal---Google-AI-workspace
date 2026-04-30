@@ -232,6 +232,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
   task: GoalTask | null; goal: Goal; onClose: () => void;
   onDelete: (t: GoalTask) => void;
 }) {
+  const { user } = useUserContext();
   const [editing,        setEditing]        = useState(false);
   const [editText,       setEditText]       = useState('');
   const [saving,         setSaving]         = useState(false);
@@ -262,7 +263,6 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     // Auto-generate micro-steps only for manual tasks — AI tasks always have embedded microSteps
     if (!task.microSteps?.length && task.source !== 'ai') {
       const run = async () => {
-        const user = user;
         if (!user) return;
         setGeneratingSteps(true);
         setMicroStepsError(null);
@@ -347,7 +347,8 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
         });
         if (replyErr) {
           console.error('Reply write failed; rolling back thread.', replyErr);
-          await supabase.from('threads').delete().eq('id', thread.id).catch(console.error);
+          const { error: rollbackErr } = await supabase.from('threads').delete().eq('id', thread.id);
+          if (rollbackErr) console.error(rollbackErr);
           throw replyErr;
         }
       }
@@ -641,7 +642,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: SupabaseUser | null }) {
       const pd = pendingDeleteRef.current;
       if (pd) {
         clearTimeout(pd.timerId);
-        supabase.from('tasks').delete().eq('id', pd.task.id).catch(console.error);
+        supabase.from('tasks').delete().eq('id', pd.task.id).then(({ error }) => { if (error) console.error(error); });
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -669,7 +670,7 @@ function PlanTab({ goal, user }: { goal: Goal; user: SupabaseUser | null }) {
       const active = updated.filter(t => t.id !== pendingDeleteRef.current?.task.id);
       if (active.length > 0) {
         const pct = Math.round(active.filter(t => t.isDone).length / active.length * 100);
-        supabase.from('goals').update({ progress_percent: pct }).eq('id', goal.id).catch(console.error);
+        supabase.from('goals').update({ progress_percent: pct }).eq('id', goal.id).then(({ error }) => { if (error) console.error(error); });
       }
     };
 
@@ -712,16 +713,17 @@ function PlanTab({ goal, user }: { goal: Goal; user: SupabaseUser | null }) {
     const prev = pendingDeleteRef.current;
     if (prev) {
       clearTimeout(prev.timerId);
-      supabase.from('tasks').delete().eq('id', prev.task.id).catch(console.error);
+      supabase.from('tasks').delete().eq('id', prev.task.id).then(({ error }) => { if (error) console.error(error); });
     }
     setDetailTask(null);
     const timerId = setTimeout(async () => {
-      await supabase.from('tasks').delete().eq('id', task.id).catch(console.error);
+      const { error: deleteErr } = await supabase.from('tasks').delete().eq('id', task.id);
+      if (deleteErr) console.error(deleteErr);
       const remaining = tasksRef.current.filter(t => t.id !== task.id);
       const pct = remaining.length > 0
         ? Math.round(remaining.filter(t => t.isDone).length / remaining.length * 100)
         : 0;
-      supabase.from('goals').update({ progress_percent: pct }).eq('id', goal.id).catch(console.error);
+      supabase.from('goals').update({ progress_percent: pct }).eq('id', goal.id).then(({ error }) => { if (error) console.error(error); });
       pendingDeleteRef.current = null;
       setPendingDelete(null);
     }, 5000);
@@ -912,7 +914,7 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
       setReplies((data || []).map((d: any) => ({
         id: d.id, threadId: d.thread_id, groupId: d.group_id,
         authorId: d.author_id, authorName: d.author_name, authorAvatar: d.author_avatar,
-        text: d.text, reactions: d.reactions || {}, usefulCount: d.useful_count || 0,
+        text: d.text, reactions: d.reactions || {}, usefulCount: d.useful_count || 0, goalId: d.goal_id,
         createdAt: d.created_at,
       }) as GoalRoomReply));
       setLoading(false);

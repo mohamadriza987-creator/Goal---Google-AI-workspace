@@ -1,6 +1,16 @@
 {
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/api/goals/(.*)", "destination": "/api/goals/$1" },
+    { "source": "/api/groups/(.*)", "destination": "/api/groups/$1" },
+    { "source": "/api/media/(.*)", "destination": "/api/media/$1" },
+    { "source": "/api/moderation/(.*)", "destination": "/api/moderation/$1" },
+    { "source": "/api/favourites/(.*)", "destination": "/api/favourites/$1" },
+    { "source": "/api/blocked-users/(.*)", "destination": "/api/blocked-users/$1" },
+    { "source": "/api/admin/(.*)", "destination": "/api/admin/$1" },
+    { "source": "/api/tasks/(.*)", "destination": "/api/tasks/$1" },
+    { "source": "/api/(generate-goal|generate-embedding|transcribe|normalize-goal|ask-for-help)", "destination": "/api/ai/$1" },
+    { "source": "/api/(health|silence|poke)", "destination": "/api/system/$1" },
+    { "source": "/api/debug/inspect-goals", "destination": "/api/system/debug/inspect-goals" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
