@@ -228,9 +228,10 @@ function TaskCard({ task, isNextStep, onOpenDetail, onToggleDone }: {
 // Task Detail Sheet
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskDetailSheet({ task, goal, onClose, onDelete }: {
+function TaskDetailSheet({ task, goal, onClose, onDelete, onNoteAdded }: {
   task: GoalTask | null; goal: Goal; onClose: () => void;
   onDelete: (t: GoalTask) => void;
+  onNoteAdded: (taskId: string, note: { id: string; text: string; createdAt: string }) => void;
 }) {
   const [editing,        setEditing]        = useState(false);
   const [editText,       setEditText]       = useState('');
@@ -262,8 +263,6 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     // Auto-generate micro-steps only for manual tasks — AI tasks always have embedded microSteps
     if (!task.microSteps?.length && task.source !== 'ai') {
       const run = async () => {
-        const user = user;
-        if (!user) return;
         setGeneratingSteps(true);
         setMicroStepsError(null);
         try {
@@ -314,18 +313,30 @@ function TaskDetailSheet({ task, goal, onClose, onDelete }: {
     if (!task || !noteText.trim() || noteSaving) return;
     setNoteSaving(true);
     try {
-      const existing = task.notes ?? [];
-      await supabase.from('tasks').update({
-        notes: [...existing, { id: Date.now().toString(), text: noteText.trim(), createdAt: new Date().toISOString() }],
-      }).eq('id', task.id);
+      const { data: inserted, error } = await supabase
+        .from('goal_notes')
+        .insert({
+          task_id:    task.id,
+          goal_id:    task.goalId,
+          owner_id:   (await supabase.auth.getUser()).data.user?.id,
+          text:       noteText.trim(),
+          created_at: new Date().toISOString(),
+        })
+        .select('id, text, created_at')
+        .single();
+      if (error) throw error;
+      if (inserted) {
+        onNoteAdded(task.id, { id: inserted.id, text: inserted.text, createdAt: inserted.created_at });
+      }
       setNoteText(''); setAddingNote(false);
     } catch(e) { console.error(e); } finally { setNoteSaving(false); }
   };
 
   const submitHelp = async () => {
     if (!task || !goal.groupId || !helpType || helpSaving) return;
-    const uid  = user?.id;
-    const name = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Member';
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    const uid  = authUser?.id;
+    const name = authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || 'Member';
     if (!uid) return;
     setHelpSaving(true);
     try {
@@ -657,11 +668,26 @@ function PlanTab({ goal, user }: { goal: Goal; user: SupabaseUser | null }) {
         .eq('goal_id', goal.id)
         .order('order', { ascending: true });
 
-      const updated: GoalTask[] = (data || []).map((d: any) => ({
+      const taskRows = data || [];
+      const taskIds = taskRows.map((t: any) => t.id as string);
+      const notesMap: Record<string, { id: string; text: string; createdAt: string }[]> = {};
+      if (taskIds.length > 0) {
+        const { data: notesData } = await supabase
+          .from('goal_notes')
+          .select('id, task_id, text, created_at')
+          .in('task_id', taskIds)
+          .order('created_at', { ascending: true });
+        for (const n of (notesData || [])) {
+          if (!notesMap[n.task_id]) notesMap[n.task_id] = [];
+          notesMap[n.task_id].push({ id: n.id, text: n.text, createdAt: n.created_at });
+        }
+      }
+
+      const updated: GoalTask[] = taskRows.map((d: any) => ({
         id: d.id, text: d.text, isDone: d.is_done, order: d.order,
         microSteps: d.micro_steps, source: d.source, goalId: d.goal_id,
         ownerId: d.owner_id, reminderAt: d.reminder_at, createdAt: d.created_at,
-        notes: d.notes,
+        notes: notesMap[d.id] ?? [],
       }));
       setTasks(updated);
       setLoading(false);
@@ -815,6 +841,15 @@ function PlanTab({ goal, user }: { goal: Goal; user: SupabaseUser | null }) {
         goal={goal}
         onClose={() => setDetailTask(null)}
         onDelete={requestDelete}
+        onNoteAdded={(taskId, note) => {
+          setTasks(prev => prev.map(t =>
+            t.id === taskId ? { ...t, notes: [...(t.notes ?? []), note] } : t
+          ));
+          setDetailTask(prev => prev?.id === taskId
+            ? { ...prev, notes: [...(prev.notes ?? []), note] }
+            : prev
+          );
+        }}
       />
 
       {/* Undo delete toast */}
