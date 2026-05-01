@@ -77,6 +77,8 @@ if (!admin.apps.length) {
 }
 
 const db = admin.firestore();
+// Force REST transport — gRPC is blocked in this environment
+db.settings({ preferRest: true });
 
 // ── Supabase init ─────────────────────────────────────────────────────────────
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
