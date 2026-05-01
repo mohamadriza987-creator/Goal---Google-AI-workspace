@@ -76,8 +76,7 @@ if (!admin.apps.length) {
   admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 }
 
-const db       = admin.firestore();
-const fbAuth   = admin.auth();
+const db = admin.firestore();
 
 // ── Supabase init ─────────────────────────────────────────────────────────────
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
@@ -111,51 +110,24 @@ function bool(val: any, fallback = false): boolean {
 }
 
 // ── Step 1: Build Firebase UID → Supabase UUID map ───────────────────────────
-console.log('Step 1 — Building Firebase UID → Supabase UUID map from auth.identities…');
+// Queried directly from auth.identities via Supabase MCP on 2026-05-01.
+// Firebase UIDs = Google OAuth sub claims stored in auth.identities.provider_id.
+// Only include users who have a public.users profile (FK constraint on goals.owner_id).
+console.log('Step 1 — Loading Firebase UID → Supabase UUID map…');
 
-const { data: identities, error: identErr } = await supabase
-  .rpc('get_firebase_uid_map')
-  .select('*');
-
-// get_firebase_uid_map might not exist — fall back to raw SQL via a known approach
-// We use the service role to query auth schema directly via the admin API
-const { data: authUsers, error: authErr } = await (supabase as any)
-  .from('auth.users')
-  .select('id');
-
-// The above won't work through PostgREST; use execute_sql equivalent via admin listUsers
-// Instead, query auth.identities via a Postgres function we'll invoke inline.
-
-// Fetch all Google identities from Supabase (only service role can do this)
-const uidMapResult = await supabase.rpc('list_google_identities').select('*').maybeSingle();
-
-// That RPC doesn't exist either. Let's use a direct SQL approach:
-type UidMapRow = { supabase_uuid: string; firebase_uid: string };
-
-// We query this via Supabase's built-in admin method
-const allSupaUsers = await (async () => {
-  // List all users via Supabase Auth Admin API (paginated)
-  const users: Array<{ id: string; firebase_uid: string }> = [];
-  let page = 1;
-  while (true) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 1000 });
-    if (error || !data?.users?.length) break;
-    for (const u of data.users) {
-      const googleId = u.identities?.find((i: any) => i.provider === 'google');
-      if (googleId) {
-        // In Supabase JS SDK, identity.id = the provider's user ID (Google sub = Firebase UID)
-        users.push({ id: u.id, firebase_uid: googleId.id });
-      }
-    }
-    if (data.users.length < 1000) break;
-    page++;
-  }
-  return users;
-})();
+const KNOWN_UID_MAP: Array<{ firebase_uid: string; supabase_uuid: string; email: string; has_profile: boolean }> = [
+  { firebase_uid: '114887610529231933656', supabase_uuid: '7c505d4c-be25-45c4-893d-964edf8343da', email: 'mohamadriza987@gmail.com',     has_profile: true  },
+  { firebase_uid: '106355380333382000960', supabase_uuid: '0e6a7b1b-0d58-455d-82c4-a17b7dbc2ef6', email: 'riza9987@gmail.com',           has_profile: true  },
+  { firebase_uid: '114695419186631743064', supabase_uuid: 'd87ea3c6-5364-4293-a884-86308c07c318', email: 'ai.riza71242704@gmail.com',    has_profile: false },
+];
 
 const uidMap = new Map<string, string>(); // firebase_uid → supabase_uuid
-for (const u of allSupaUsers) {
-  uidMap.set(u.firebase_uid, u.id);
+for (const entry of KNOWN_UID_MAP) {
+  if (!entry.has_profile) {
+    console.log(`   ⚠️  Skipping ${entry.email} — no public.users profile yet (must sign in first)`);
+    continue;
+  }
+  uidMap.set(entry.firebase_uid, entry.supabase_uuid);
 }
 
 console.log(`   Found ${uidMap.size} Firebase↔Supabase user mappings:`);
