@@ -351,7 +351,7 @@ function TaskDetailSheet({ task, goal, onClose, onDelete, onNoteAdded }: {
 
       if (helpBlocking.trim()) {
         const { error: replyErr } = await supabase.from('replies').insert({
-          thread_id: thread.id, group_id: goal.groupId, goal_id: goal.id,
+          thread_id: thread.id, group_id: goal.groupId,
           author_id: uid, author_name: name,
           text: `Type of help needed: ${helpType}\n\nWhat's blocking me: ${helpBlocking}`,
           reactions: {}, created_at: now,
@@ -967,7 +967,7 @@ function ThreadDetail({ thread, groupId, goalId, user, blockedUsers, hiddenUsers
     const authorName = user?.user_metadata?.full_name || user?.user_metadata?.name || 'Member';
     try {
       await supabase.from('replies').insert({
-        thread_id: thread.id, group_id: groupId, goal_id: goalId,
+        thread_id: thread.id, group_id: groupId,
         author_id: user.id, author_name: authorName,
         text: replyText.trim(), reactions: {}, created_at: now,
       });
