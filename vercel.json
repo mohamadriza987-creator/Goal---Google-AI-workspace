@@ -1,5 +1,4 @@
 {
-  "nodeVersion": "20.x",
   "rewrites": [
     { "source": "/api/goals/(.*)", "destination": "/api/goals/$1" },
     { "source": "/api/groups/(.*)", "destination": "/api/groups/$1" },
