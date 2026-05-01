@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { Goal, User } from '../types';
 import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
@@ -16,7 +17,7 @@ import { GoalStackCarousel }    from './GoalStackCarousel';
 import { useHomeEditMode }      from '../contexts/HomeEditModeContext';
 
 interface HomeScreenProps {
-  user: any;
+  user: SupabaseUser | null;
   dbUser: User | null;
   goals: Goal[];
   goalsLoading?: boolean;
@@ -269,7 +270,12 @@ export function HomeScreen({
     setPhase('generating');
     setProcessingError(null);
     try {
-      const token = idToken ?? (await supabase.auth.getSession()).data.session?.access_token;
+      let token = idToken;
+      if (!token) {
+        const { data: { session } } = await supabase.auth.getSession();
+        token = session?.access_token;
+        if (!token) throw new Error('Not authenticated');
+      }
       const structured = await generateGoal(input, token, {
         age: dbUser?.age,
         nationality: dbUser?.nationality,
@@ -309,7 +315,9 @@ export function HomeScreen({
       setPhase('generating');
       setProcessingError(null);
       try {
-        const idToken = (await supabase.auth.getSession()).data.session?.access_token;
+        const { data: { session } } = await supabase.auth.getSession();
+        const idToken = session?.access_token;
+        if (!idToken) throw new Error('Not authenticated');
         const newTranscript = await transcribeAudio(b64, blob.type, idToken, ac.signal);
         const combined = newTranscript
           ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
@@ -320,7 +328,9 @@ export function HomeScreen({
         setPhase('idle');
       }
     } else {
-      const idToken = (await supabase.auth.getSession()).data.session?.access_token;
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Not authenticated');
       await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false, idToken);
     }
   };
@@ -342,7 +352,9 @@ export function HomeScreen({
   const handleTypedGoalSubmit = async () => {
     if (!typedGoal.trim()) return;
     setCurrentTranscript(typedGoal.trim());
-    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
+    const { data: { session } } = await supabase.auth.getSession();
+    const idToken = session?.access_token;
+    if (!idToken) throw new Error('Not authenticated');
     await processTranscript(typedGoal.trim(), idToken);
     setTypedGoal('');
     setIsTyping(false);
@@ -351,7 +363,9 @@ export function HomeScreen({
   const handleRegenerate = async () => {
     if (!currentTranscript) return;
     setIsEditingTranscript(false);
-    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
+    const { data: { session } } = await supabase.auth.getSession();
+    const idToken = session?.access_token;
+    if (!idToken) throw new Error('Not authenticated');
     await processTranscript(currentTranscript, idToken, true);
   };
 
@@ -359,13 +373,17 @@ export function HomeScreen({
     if (!additionalDetails.trim() || refinementCount >= REFINEMENT_LIMIT) return;
     const combined = `${currentTranscript}\n\nAdditional details: ${additionalDetails.trim()}`;
     setCurrentTranscript(combined);
-    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
+    const { data: { session } } = await supabase.auth.getSession();
+    const idToken = session?.access_token;
+    if (!idToken) throw new Error('Not authenticated');
     await processTranscript(combined, idToken, true);
   };
 
   const retryGeneration = async () => {
     if (!currentTranscript) return;
-    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
+    const { data: { session } } = await supabase.auth.getSession();
+    const idToken = session?.access_token;
+    if (!idToken) throw new Error('Not authenticated');
     await processTranscript(currentTranscript, idToken);
   };
 
@@ -423,7 +441,8 @@ export function HomeScreen({
   const removeManualTask = (i: number) => setManualTasks(p => p.filter((_, j) => j !== i));
 
   // ── Derived ──────────────────────────────────────────────────────────────
-  const firstName = dbUser?.displayName?.split(' ')[0] || user?.user_metadata?.full_name?.split(' ')[0] || 'there';
+  const rawName = user?.user_metadata?.full_name || user?.user_metadata?.name;
+  const firstName = dbUser?.displayName?.split(' ')[0] || rawName?.split(' ')[0] || 'there';
   const avatarUrl = dbUser?.avatarUrl || user?.user_metadata?.avatar_url;
 
   // ══════════════════════════════════════════════════════════════════════════
