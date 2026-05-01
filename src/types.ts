@@ -51,6 +51,7 @@ export interface Goal {
   visibility: 'private' | 'public';
   publicFields?: string[];
   category?: string;
+  categories?: string[];
   status: 'active' | 'completed' | 'archived';
   progressPercent: number;
   likesCount: number;

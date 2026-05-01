@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Goal, User } from '../types';
+import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -22,7 +23,7 @@ interface HomeScreenProps {
   hasMoreGoals?: boolean;
   loadMoreGoals?: () => void;
   setCurrentScreen: (screen: any) => void;
-  handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
+  handleDbError: (error: unknown, operationType: any, path: string | null) => void;
   addOptimisticGoal: (goal: Goal) => void;
   performSaveGoal: (goal: Goal) => Promise<void>;
 }
@@ -203,7 +204,6 @@ export function HomeScreen({
   hasMoreGoals = false,
   loadMoreGoals,
   setCurrentScreen,
-  handleFirestoreError,
   addOptimisticGoal,
   performSaveGoal,
 }: HomeScreenProps) {
@@ -269,7 +269,7 @@ export function HomeScreen({
     setPhase('generating');
     setProcessingError(null);
     try {
-      const token = idToken ?? await user.getIdToken();
+      const token = idToken ?? (await supabase.auth.getSession()).data.session?.access_token;
       const structured = await generateGoal(input, token, {
         age: dbUser?.age,
         nationality: dbUser?.nationality,
@@ -309,7 +309,7 @@ export function HomeScreen({
       setPhase('generating');
       setProcessingError(null);
       try {
-        const idToken = await user.getIdToken();
+        const idToken = (await supabase.auth.getSession()).data.session?.access_token;
         const newTranscript = await transcribeAudio(b64, blob.type, idToken, ac.signal);
         const combined = newTranscript
           ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
@@ -320,7 +320,7 @@ export function HomeScreen({
         setPhase('idle');
       }
     } else {
-      const idToken = await user.getIdToken();
+      const idToken = (await supabase.auth.getSession()).data.session?.access_token;
       await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false, idToken);
     }
   };
@@ -342,7 +342,7 @@ export function HomeScreen({
   const handleTypedGoalSubmit = async () => {
     if (!typedGoal.trim()) return;
     setCurrentTranscript(typedGoal.trim());
-    const idToken = await user.getIdToken();
+    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
     await processTranscript(typedGoal.trim(), idToken);
     setTypedGoal('');
     setIsTyping(false);
@@ -351,7 +351,7 @@ export function HomeScreen({
   const handleRegenerate = async () => {
     if (!currentTranscript) return;
     setIsEditingTranscript(false);
-    const idToken = await user.getIdToken();
+    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
     await processTranscript(currentTranscript, idToken, true);
   };
 
@@ -359,13 +359,13 @@ export function HomeScreen({
     if (!additionalDetails.trim() || refinementCount >= REFINEMENT_LIMIT) return;
     const combined = `${currentTranscript}\n\nAdditional details: ${additionalDetails.trim()}`;
     setCurrentTranscript(combined);
-    const idToken = await user.getIdToken();
+    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
     await processTranscript(combined, idToken, true);
   };
 
   const retryGeneration = async () => {
     if (!currentTranscript) return;
-    const idToken = await user.getIdToken();
+    const idToken = (await supabase.auth.getSession()).data.session?.access_token;
     await processTranscript(currentTranscript, idToken);
   };
 
@@ -378,7 +378,7 @@ export function HomeScreen({
     const tempId    = `temp-${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
     const optimistic: Goal = {
-      id: tempId, ownerId: user.uid,
+      id: tempId, ownerId: user.id,
       title: structuredGoal.title, description: structuredGoal.description,
       category: structuredGoal.categories[0],
       // CLAUDE.md: Default visibility = public, only public/private allowed.
@@ -423,8 +423,8 @@ export function HomeScreen({
   const removeManualTask = (i: number) => setManualTasks(p => p.filter((_, j) => j !== i));
 
   // ── Derived ──────────────────────────────────────────────────────────────
-  const firstName = dbUser?.displayName?.split(' ')[0] || user?.displayName?.split(' ')[0] || 'there';
-  const avatarUrl = dbUser?.avatarUrl || user?.photoURL;
+  const firstName = dbUser?.displayName?.split(' ')[0] || user?.user_metadata?.full_name?.split(' ')[0] || 'there';
+  const avatarUrl = dbUser?.avatarUrl || user?.user_metadata?.avatar_url;
 
   // ══════════════════════════════════════════════════════════════════════════
   // RENDER

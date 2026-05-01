@@ -529,7 +529,7 @@ export default function App() {
               hasMoreGoals={hasMoreGoals}
               loadMoreGoals={loadMoreGoals}
               setCurrentScreen={navigate}
-              handleFirestoreError={handleDbError}
+              handleDbError={handleDbError}
               addOptimisticGoal={addOptimisticGoal}
               performSaveGoal={performSaveGoal}
             />
@@ -546,7 +546,7 @@ export default function App() {
               goals={displayGoals}
               initialTab={currentScreen.initialTab ?? 'plan'}
               setCurrentScreen={navigate}
-              handleFirestoreError={handleDbError}
+              handleDbError={handleDbError}
             />
           </motion.div>
         )}
