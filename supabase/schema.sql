@@ -58,7 +58,7 @@ create policy "groups: select if member" on public.groups for select
 create table if not exists public.goals (
   id                       uuid primary key default gen_random_uuid(),
   owner_id                 uuid not null references public.users(id) on delete cascade,
-  temp_id                  text,
+  temp_id                  text unique,
   title                    text,
   description              text,
   category                 text,
