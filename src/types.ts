@@ -114,7 +114,7 @@ export interface GoalTask {
 }
 
 export interface CalendarNote {
-  id: string;    // YYYY-MM-DD date key, used as Firestore doc ID
+  id: string;    // YYYY-MM-DD date key
   date: string;  // YYYY-MM-DD
   text: string;
   createdAt: string;

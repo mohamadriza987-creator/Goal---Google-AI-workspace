@@ -375,7 +375,7 @@ export async function findOrCreateGroupForGoal(goalId: string) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Indexed matching (replaces Firestore-based runIndexedMatching)
+// Indexed matching
 // ─────────────────────────────────────────────────────────────────────────────
 
 const IDX_COSINE_EXISTING = 0.78;

@@ -42,7 +42,6 @@
     "@types/react-calendar": "^3.9.0",
     "@vercel/node": "^5.7.13",
     "autoprefixer": "^10.4.21",
-    "firebase-admin": "^13.4.0",
     "tailwindcss": "^4.1.14"
   }
 }
