@@ -162,9 +162,14 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
 
   React.useEffect(() => {
     if (!showModeration || !isAdminUser) return;
-    const fetchReports = () =>
-      supabase.from('reports').select('*').order('created_at', { ascending: false }).limit(50)
-        .then(({ data }) => { if (data) setReports(data); });
+    const fetchReports = async () => {
+      const tok = (await supabase.auth.getSession()).data.session?.access_token;
+      const r = await fetch('/api/admin/reports', {
+        headers: { 'Authorization': `Bearer ${tok}` },
+      });
+      const data = await r.json();
+      if (r.ok && data?.reports) setReports(data.reports);
+    };
     fetchReports();
     const channel = supabase.channel('reports-admin')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, fetchReports)
@@ -194,7 +199,15 @@ export function ProfileScreen({ user, dbUser, onNavigateHome }: ProfileScreenPro
 
   const handleResolveReport = async (reportId: string, status: 'resolved' | 'dismissed') => {
     try {
-      await supabase.from('reports').update({ status, updated_at: new Date().toISOString() }).eq('id', reportId);
+      const tok = (await supabase.auth.getSession()).data.session?.access_token;
+      await fetch('/api/admin/reports', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${tok}`,
+        },
+        body: JSON.stringify({ reportId, status }),
+      });
     } catch (err) {
       console.error("Error resolving report:", err);
     }
