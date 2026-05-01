@@ -110,6 +110,30 @@ export default function App() {
 
   const userProfileChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
+  /**
+   * Called once on first login when no public.users profile exists yet.
+   * Looks up the caller's Google provider_id (= Firebase UID for Google OAuth
+   * users) and re-assigns any migrated goals/tasks/notes that still carry the
+   * old Firebase UID as owner_id. See server_legacy/goals/backfill-owner.ts.
+   */
+  async function runOwnerBackfill() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      const res = await fetch('/api/goals/backfill-owner', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) { console.warn('[backfill] HTTP', res.status, await res.text()); return; }
+      const body = await res.json();
+      if (body.migrated) {
+        console.log(`[backfill] Re-owned ${body.goals_updated} goals to current user`);
+      }
+    } catch (e) {
+      console.warn('[backfill] Failed (non-critical):', e);
+    }
+  }
+
   function subscribeToUserProfile(userId: string) {
     if (userProfileChannelRef.current) {
       supabase.removeChannel(userProfileChannelRef.current);
@@ -120,7 +144,8 @@ export default function App() {
       if (data) {
         setDbUser(mapDbUser(data));
       } else {
-        // Create profile from Supabase auth metadata
+        // First login: create profile from Supabase auth metadata, then attempt
+        // to migrate any goals that were stored under a legacy Firebase UID.
         supabase.auth.getUser().then(({ data: authData }) => {
           const u = authData.user;
           if (!u) return;
@@ -136,6 +161,8 @@ export default function App() {
           };
           supabase.from('users').upsert(newUser).then(() => {
             setDbUser(mapDbUser(newUser));
+            // Non-blocking: attempt to migrate legacy Firebase-owned rows
+            runOwnerBackfill();
           });
         });
       }
@@ -182,12 +209,19 @@ export default function App() {
     setGoalsLoading(true);
 
     const fetchGoals = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('goals')
         .select('*')
         .eq('owner_id', user.id)
         .order('created_at', { ascending: false })
         .limit(goalLimit);
+
+      if (error) {
+        console.error('[goals] Fetch failed:', error.message, { code: error.code, details: error.details });
+        handleDbError(error, OperationType.LIST, 'goals');
+        setGoalsLoading(false);
+        return;
+      }
 
       const g = (data || []).map(mapGoal);
       goalsRef.current = g;
