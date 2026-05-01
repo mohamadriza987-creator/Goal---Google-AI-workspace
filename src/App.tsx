@@ -145,9 +145,10 @@ export default function App() {
     supabase.from('users').select('*').eq('id', userId).single().then(({ data }) => {
       if (data) {
         setDbUser(mapDbUser(data));
+        // Idempotent: re-own any rows still under a legacy Firebase UID
+        runOwnerBackfill();
       } else {
-        // First login: create profile from Supabase auth metadata, then attempt
-        // to migrate any goals that were stored under a legacy Firebase UID.
+        // First login: create profile from Supabase auth metadata
         supabase.auth.getUser().then(({ data: authData }) => {
           const u = authData.user;
           if (!u) return;
