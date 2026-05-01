@@ -1,15 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import { getGeminiApiKey } from "../lib/env.js";
 
 let aiInstance: GoogleGenAI | null = null;
 
 function getAI() {
   if (!aiInstance) {
-    const apiKey = process.env.gemfree || process.env.GEMINI_API_KEY;
-    
-    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-      console.error("Gemini API key is missing. Checked 'gemfree' and 'GEMINI_API_KEY' environment variables.");
-      throw new Error("Gemini API key is missing. Please ensure it is configured in the Settings menu as 'gemfree' or 'GEMINI_API_KEY'.");
-    }
+    const apiKey = getGeminiApiKey();
     
     const keySource = process.env.gemfree ? "gemfree" : "GEMINI_API_KEY";
     console.log(`Backend initializing Panda with "${keySource}" secret (prefix: ${apiKey.substring(0, 4)}...)`);

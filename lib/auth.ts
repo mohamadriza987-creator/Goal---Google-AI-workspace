@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { supabaseAdmin } from './supabaseAdmin.js';
+import { getAdminEmailOrNull } from './env.js';
 
 export interface AuthedRequest extends VercelRequest {
   userId: string;
@@ -41,9 +42,10 @@ export async function requireAuth(
 }
 
 export async function isAdmin(userId: string, userEmail?: string): Promise<boolean> {
-  const adminEmail = process.env.ADMIN_EMAIL || 'mohamadriza987@gmail.com';
+  const adminEmail = getAdminEmailOrNull();
+  if (!adminEmail) return false;
 
-  if (userEmail?.toLowerCase() === adminEmail.toLowerCase()) return true;
+  if (userEmail?.toLowerCase() === adminEmail) return true;
 
   const { data } = await supabaseAdmin
     .from('users')

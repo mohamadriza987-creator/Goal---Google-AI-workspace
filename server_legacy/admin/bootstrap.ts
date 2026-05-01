@@ -1,12 +1,16 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { requireAuth } from '../../lib/auth.js';
+import { getAdminEmailOrNull } from '../../lib/env.js';
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
-  const adminEmail = (process.env.ADMIN_EMAIL || 'mohamadriza987@gmail.com').toLowerCase();
+  const adminEmail = getAdminEmailOrNull();
+  if (!adminEmail) {
+    return res.status(403).json({ error: 'Forbidden: ADMIN_EMAIL is not configured' });
+  }
   if (auth.userEmail?.toLowerCase() !== adminEmail) {
     return res.status(403).json({ error: 'Forbidden: not the configured admin email' });
   }

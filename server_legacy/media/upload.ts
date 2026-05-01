@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { put } from '@vercel/blob';
 import { requireAuth, nowIso } from '../../lib/auth.js';
+import { getRequiredEnv } from '../../lib/env.js';
 import { supabaseAdmin } from '../../lib/supabaseAdmin.js';
 import { z } from 'zod';
 
@@ -17,6 +18,7 @@ const MIME: Record<string, string> = {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  getRequiredEnv('BLOB_READ_WRITE_TOKEN');
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
