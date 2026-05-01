@@ -62,6 +62,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.json({ migrated: false, reason: 'No distinct legacy UID found' });
   }
 
+  // Firebase UIDs (Google sub claims) are numeric strings, not UUIDs.
+  // Postgres would throw "invalid input syntax for type uuid" if we try to
+  // filter a uuid column with a non-UUID string, so bail out early.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(legacyUid)) {
+    return res.json({ migrated: false, reason: 'Legacy UID is not UUID-shaped; no rows to migrate' });
+  }
+
   // ── 2. Check if any goals exist with the legacy UID ──────────────────────
   const { count, error: countErr } = await supabaseAdmin
     .from('goals')
