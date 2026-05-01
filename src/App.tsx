@@ -48,6 +48,7 @@ export default function App() {
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
   const [goalsLoading,   setGoalsLoading]   = useState(true);
+  const [goalsError,     setGoalsError]     = useState<string | null>(null);
   const [goalLimit,      setGoalLimit]      = useState(5);
   const [hasMoreGoals,   setHasMoreGoals]   = useState(false);
   const [allReminders,   setAllReminders]   = useState<{task: GoalTask; goal: Goal; reminderAt: string; noteText?: string}[]>([]);
@@ -99,6 +100,7 @@ export default function App() {
         setDbUser(null);
         setGoals([]);
         setGoalsLoading(true);
+        setGoalsError(null);
         setGoalLimit(5);
         setHasMoreGoals(false);
         setCurrentScreen({ name: 'auth' });
@@ -219,10 +221,12 @@ export default function App() {
       if (error) {
         console.error('[goals] Fetch failed:', error.message, { code: error.code, details: error.details });
         handleDbError(error, OperationType.LIST, 'goals');
+        setGoalsError('Could not load goals.');
         setGoalsLoading(false);
         return;
       }
 
+      setGoalsError(null);
       const g = (data || []).map(mapGoal);
       goalsRef.current = g;
       setGoals(g);
@@ -560,6 +564,7 @@ export default function App() {
               dbUser={dbUser}
               goals={displayGoals}
               goalsLoading={goalsLoading}
+              goalsError={goalsError}
               hasMoreGoals={hasMoreGoals}
               loadMoreGoals={loadMoreGoals}
               setCurrentScreen={navigate}

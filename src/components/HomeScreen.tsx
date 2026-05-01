@@ -25,6 +25,7 @@ interface HomeScreenProps {
   loadMoreGoals?: () => void;
   setCurrentScreen: (screen: any) => void;
   handleDbError: (error: unknown, operationType: any, path: string | null) => void;
+  goalsError?: string | null;
   addOptimisticGoal: (goal: Goal) => void;
   performSaveGoal: (goal: Goal) => Promise<void>;
 }
@@ -205,6 +206,7 @@ export function HomeScreen({
   hasMoreGoals = false,
   loadMoreGoals,
   setCurrentScreen,
+  goalsError,
   addOptimisticGoal,
   performSaveGoal,
 }: HomeScreenProps) {
@@ -330,7 +332,7 @@ export function HomeScreen({
     } else {
       const { data: { session } } = await supabase.auth.getSession();
       const idToken = session?.access_token;
-      if (!idToken) throw new Error('Not authenticated');
+      if (!idToken) { setProcessingError('Session expired — please sign in again.'); setPhase('idle'); return; }
       await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false, idToken);
     }
   };
@@ -342,7 +344,7 @@ export function HomeScreen({
   const handlePandaClick = async () => {
     if (isRecording) {
       const blob = await stopRecording();
-      if (blob) processAudio(blob, isAddingDetails || currentView === 'review');
+      if (blob) await processAudio(blob, isAddingDetails || currentView === 'review');
     } else {
       setProcessingError(null);
       await startRecording();
@@ -350,41 +352,57 @@ export function HomeScreen({
   };
 
   const handleTypedGoalSubmit = async () => {
-    if (!typedGoal.trim()) return;
+    if (!typedGoal.trim() || phase !== 'idle') return;
     setCurrentTranscript(typedGoal.trim());
-    const { data: { session } } = await supabase.auth.getSession();
-    const idToken = session?.access_token;
-    if (!idToken) throw new Error('Not authenticated');
-    await processTranscript(typedGoal.trim(), idToken);
-    setTypedGoal('');
-    setIsTyping(false);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(typedGoal.trim(), idToken);
+      setTypedGoal('');
+      setIsTyping(false);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Failed to generate goal.');
+    }
   };
 
   const handleRegenerate = async () => {
     if (!currentTranscript) return;
     setIsEditingTranscript(false);
-    const { data: { session } } = await supabase.auth.getSession();
-    const idToken = session?.access_token;
-    if (!idToken) throw new Error('Not authenticated');
-    await processTranscript(currentTranscript, idToken, true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(currentTranscript, idToken, true);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Failed to regenerate goal.');
+    }
   };
 
   const handleAddDetailsSubmit = async () => {
     if (!additionalDetails.trim() || refinementCount >= REFINEMENT_LIMIT) return;
     const combined = `${currentTranscript}\n\nAdditional details: ${additionalDetails.trim()}`;
     setCurrentTranscript(combined);
-    const { data: { session } } = await supabase.auth.getSession();
-    const idToken = session?.access_token;
-    if (!idToken) throw new Error('Not authenticated');
-    await processTranscript(combined, idToken, true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(combined, idToken, true);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Failed to add details.');
+    }
   };
 
   const retryGeneration = async () => {
     if (!currentTranscript) return;
-    const { data: { session } } = await supabase.auth.getSession();
-    const idToken = session?.access_token;
-    if (!idToken) throw new Error('Not authenticated');
-    await processTranscript(currentTranscript, idToken);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(currentTranscript, idToken);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Retry failed.');
+    }
   };
 
   // ── Save goal ────────────────────────────────────────────────────────────
@@ -636,8 +654,16 @@ export function HomeScreen({
                 />
               )}
 
+              {/* Goals load error */}
+              {!isEditMode && !goalsLoading && goalsError && goals.length === 0 && (
+                <div className="px-4 mt-10 text-center space-y-1">
+                  <p className="text-body" style={{ color: '#e07070' }}>Couldn't load your goals.</p>
+                  <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>Check your connection and refresh.</p>
+                </div>
+              )}
+
               {/* Empty state */}
-              {!isEditMode && !goalsLoading && goals.length === 0 && (
+              {!isEditMode && !goalsLoading && !goalsError && goals.length === 0 && (
                 <div className="px-4 mt-10 text-center">
                   <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
                     Record your first goal using the bar below.
