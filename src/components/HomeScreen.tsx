@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { Goal, User } from '../types';
+import { supabase } from '../lib/supabase';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, Send, Check, Edit2, Trash2, Plus, ArrowLeft, Loader2, X, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -15,14 +17,15 @@ import { GoalStackCarousel }    from './GoalStackCarousel';
 import { useHomeEditMode }      from '../contexts/HomeEditModeContext';
 
 interface HomeScreenProps {
-  user: any;
+  user: SupabaseUser | null;
   dbUser: User | null;
   goals: Goal[];
   goalsLoading?: boolean;
   hasMoreGoals?: boolean;
   loadMoreGoals?: () => void;
   setCurrentScreen: (screen: any) => void;
-  handleFirestoreError: (error: unknown, operationType: any, path: string | null) => void;
+  handleDbError: (error: unknown, operationType: any, path: string | null) => void;
+  goalsError?: string | null;
   addOptimisticGoal: (goal: Goal) => void;
   performSaveGoal: (goal: Goal) => Promise<void>;
 }
@@ -203,7 +206,7 @@ export function HomeScreen({
   hasMoreGoals = false,
   loadMoreGoals,
   setCurrentScreen,
-  handleFirestoreError,
+  goalsError,
   addOptimisticGoal,
   performSaveGoal,
 }: HomeScreenProps) {
@@ -269,7 +272,12 @@ export function HomeScreen({
     setPhase('generating');
     setProcessingError(null);
     try {
-      const token = idToken ?? await user.getIdToken();
+      let token = idToken;
+      if (!token) {
+        const { data: { session } } = await supabase.auth.getSession();
+        token = session?.access_token;
+        if (!token) throw new Error('Not authenticated');
+      }
       const structured = await generateGoal(input, token, {
         age: dbUser?.age,
         nationality: dbUser?.nationality,
@@ -309,7 +317,9 @@ export function HomeScreen({
       setPhase('generating');
       setProcessingError(null);
       try {
-        const idToken = await user.getIdToken();
+        const { data: { session } } = await supabase.auth.getSession();
+        const idToken = session?.access_token;
+        if (!idToken) throw new Error('Not authenticated');
         const newTranscript = await transcribeAudio(b64, blob.type, idToken, ac.signal);
         const combined = newTranscript
           ? `${currentTranscript}\n\nAdditional: ${newTranscript}`
@@ -320,7 +330,9 @@ export function HomeScreen({
         setPhase('idle');
       }
     } else {
-      const idToken = await user.getIdToken();
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) { setProcessingError('Session expired — please sign in again.'); setPhase('idle'); return; }
       await runGoalGeneration({ audioBase64: b64, mimeType: blob.type }, false, idToken);
     }
   };
@@ -332,7 +344,7 @@ export function HomeScreen({
   const handlePandaClick = async () => {
     if (isRecording) {
       const blob = await stopRecording();
-      if (blob) processAudio(blob, isAddingDetails || currentView === 'review');
+      if (blob) await processAudio(blob, isAddingDetails || currentView === 'review');
     } else {
       setProcessingError(null);
       await startRecording();
@@ -340,33 +352,57 @@ export function HomeScreen({
   };
 
   const handleTypedGoalSubmit = async () => {
-    if (!typedGoal.trim()) return;
+    if (!typedGoal.trim() || phase !== 'idle') return;
     setCurrentTranscript(typedGoal.trim());
-    const idToken = await user.getIdToken();
-    await processTranscript(typedGoal.trim(), idToken);
-    setTypedGoal('');
-    setIsTyping(false);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(typedGoal.trim(), idToken);
+      setTypedGoal('');
+      setIsTyping(false);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Failed to generate goal.');
+    }
   };
 
   const handleRegenerate = async () => {
     if (!currentTranscript) return;
     setIsEditingTranscript(false);
-    const idToken = await user.getIdToken();
-    await processTranscript(currentTranscript, idToken, true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(currentTranscript, idToken, true);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Failed to regenerate goal.');
+    }
   };
 
   const handleAddDetailsSubmit = async () => {
     if (!additionalDetails.trim() || refinementCount >= REFINEMENT_LIMIT) return;
     const combined = `${currentTranscript}\n\nAdditional details: ${additionalDetails.trim()}`;
     setCurrentTranscript(combined);
-    const idToken = await user.getIdToken();
-    await processTranscript(combined, idToken, true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(combined, idToken, true);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Failed to add details.');
+    }
   };
 
   const retryGeneration = async () => {
     if (!currentTranscript) return;
-    const idToken = await user.getIdToken();
-    await processTranscript(currentTranscript, idToken);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const idToken = session?.access_token;
+      if (!idToken) throw new Error('Session expired — please sign in again.');
+      await processTranscript(currentTranscript, idToken);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setProcessingError(err.message || 'Retry failed.');
+    }
   };
 
   // ── Save goal ────────────────────────────────────────────────────────────
@@ -378,7 +414,7 @@ export function HomeScreen({
     const tempId    = `temp-${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
     const optimistic: Goal = {
-      id: tempId, ownerId: user.uid,
+      id: tempId, ownerId: user.id,
       title: structuredGoal.title, description: structuredGoal.description,
       category: structuredGoal.categories[0],
       // CLAUDE.md: Default visibility = public, only public/private allowed.
@@ -423,8 +459,9 @@ export function HomeScreen({
   const removeManualTask = (i: number) => setManualTasks(p => p.filter((_, j) => j !== i));
 
   // ── Derived ──────────────────────────────────────────────────────────────
-  const firstName = dbUser?.displayName?.split(' ')[0] || user?.displayName?.split(' ')[0] || 'there';
-  const avatarUrl = dbUser?.avatarUrl || user?.photoURL;
+  const rawName = user?.user_metadata?.full_name || user?.user_metadata?.name;
+  const firstName = dbUser?.displayName?.split(' ')[0] || rawName?.split(' ')[0] || 'there';
+  const avatarUrl = dbUser?.avatarUrl || user?.user_metadata?.avatar_url;
 
   // ══════════════════════════════════════════════════════════════════════════
   // RENDER
@@ -617,8 +654,16 @@ export function HomeScreen({
                 />
               )}
 
+              {/* Goals load error */}
+              {!isEditMode && !goalsLoading && goalsError && goals.length === 0 && (
+                <div className="px-4 mt-10 text-center space-y-1">
+                  <p className="text-body" style={{ color: '#e07070' }}>Couldn't load your goals.</p>
+                  <p className="text-meta" style={{ color: 'var(--c-text-3)', fontSize: 12 }}>Check your connection and refresh.</p>
+                </div>
+              )}
+
               {/* Empty state */}
-              {!isEditMode && !goalsLoading && goals.length === 0 && (
+              {!isEditMode && !goalsLoading && !goalsError && goals.length === 0 && (
                 <div className="px-4 mt-10 text-center">
                   <p className="text-body" style={{ color: 'var(--c-text-3)' }}>
                     Record your first goal using the bar below.

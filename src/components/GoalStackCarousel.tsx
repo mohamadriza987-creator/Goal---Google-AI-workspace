@@ -27,13 +27,41 @@ function GoalStackCard({
 
   useEffect(() => {
     if (!isActive && !isNext) return;
-    supabase.from('tasks').select('*').eq('goal_id', goal.id).order('order', { ascending: true })
-      .then(({ data }) => { if (data) { setTasks(data as GoalTask[]); setReady(true); } });
+
+    const load = async () => {
+      const { data: taskRows } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('goal_id', goal.id)
+        .order('order', { ascending: true });
+      if (!taskRows) return;
+
+      const taskIds = taskRows.map((t: any) => t.id as string);
+      const notesMap: Record<string, { id: string; text: string; createdAt: string }[]> = {};
+      if (taskIds.length > 0) {
+        const { data: notesData } = await supabase
+          .from('goal_notes')
+          .select('id, task_id, text, created_at')
+          .in('task_id', taskIds)
+          .order('created_at', { ascending: true });
+        for (const n of (notesData || [])) {
+          if (!notesMap[n.task_id]) notesMap[n.task_id] = [];
+          notesMap[n.task_id].push({ id: n.id, text: n.text, createdAt: n.created_at });
+        }
+      }
+
+      setTasks(taskRows.map((d: any): GoalTask => ({
+        id: d.id, text: d.text, isDone: d.is_done, order: d.order,
+        microSteps: d.micro_steps, source: d.source, goalId: d.goal_id,
+        ownerId: d.owner_id, reminderAt: d.reminder_at, createdAt: d.created_at,
+        notes: notesMap[d.id] ?? [],
+      })));
+      setReady(true);
+    };
+
+    load();
     const channel = supabase.channel(`tasks-${goal.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks', filter: `goal_id=eq.${goal.id}` }, () => {
-        supabase.from('tasks').select('*').eq('goal_id', goal.id).order('order', { ascending: true })
-          .then(({ data }) => { if (data) { setTasks(data as GoalTask[]); setReady(true); } });
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks', filter: `goal_id=eq.${goal.id}` }, load)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [goal.id, isActive, isNext]);

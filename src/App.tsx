@@ -48,6 +48,7 @@ export default function App() {
   const [currentScreen,  setCurrentScreen]  = useState<ScreenState>({ name: 'auth' });
   const [goals,          setGoals]          = useState<Goal[]>([]);
   const [goalsLoading,   setGoalsLoading]   = useState(true);
+  const [goalsError,     setGoalsError]     = useState<string | null>(null);
   const [goalLimit,      setGoalLimit]      = useState(5);
   const [hasMoreGoals,   setHasMoreGoals]   = useState(false);
   const [allReminders,   setAllReminders]   = useState<{task: GoalTask; goal: Goal; reminderAt: string; noteText?: string}[]>([]);
@@ -99,6 +100,7 @@ export default function App() {
         setDbUser(null);
         setGoals([]);
         setGoalsLoading(true);
+        setGoalsError(null);
         setGoalLimit(5);
         setHasMoreGoals(false);
         setCurrentScreen({ name: 'auth' });
@@ -110,6 +112,30 @@ export default function App() {
 
   const userProfileChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
+  /**
+   * Called once on first login when no public.users profile exists yet.
+   * Looks up the caller's Google provider_id (= Firebase UID for Google OAuth
+   * users) and re-assigns any migrated goals/tasks/notes that still carry the
+   * old Firebase UID as owner_id. See server_legacy/goals/backfill-owner.ts.
+   */
+  async function runOwnerBackfill() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      const res = await fetch('/api/goals/backfill-owner', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) { console.warn('[backfill] HTTP', res.status, await res.text()); return; }
+      const body = await res.json();
+      if (body.migrated) {
+        console.log(`[backfill] Re-owned ${body.goals_updated} goals to current user`);
+      }
+    } catch (e) {
+      console.warn('[backfill] Failed (non-critical):', e);
+    }
+  }
+
   function subscribeToUserProfile(userId: string) {
     if (userProfileChannelRef.current) {
       supabase.removeChannel(userProfileChannelRef.current);
@@ -119,8 +145,10 @@ export default function App() {
     supabase.from('users').select('*').eq('id', userId).single().then(({ data }) => {
       if (data) {
         setDbUser(mapDbUser(data));
+        // Idempotent: re-own any rows still under a legacy Firebase UID
+        runOwnerBackfill();
       } else {
-        // Create profile from Supabase auth metadata
+        // First login: create profile from Supabase auth metadata
         supabase.auth.getUser().then(({ data: authData }) => {
           const u = authData.user;
           if (!u) return;
@@ -136,6 +164,8 @@ export default function App() {
           };
           supabase.from('users').upsert(newUser).then(() => {
             setDbUser(mapDbUser(newUser));
+            // Non-blocking: attempt to migrate legacy Firebase-owned rows
+            runOwnerBackfill();
           });
         });
       }
@@ -182,13 +212,22 @@ export default function App() {
     setGoalsLoading(true);
 
     const fetchGoals = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('goals')
         .select('*')
         .eq('owner_id', user.id)
         .order('created_at', { ascending: false })
         .limit(goalLimit);
 
+      if (error) {
+        console.error('[goals] Fetch failed:', error.message, { code: error.code, details: error.details });
+        handleDbError(error, OperationType.LIST, 'goals');
+        setGoalsError('Could not load goals.');
+        setGoalsLoading(false);
+        return;
+      }
+
+      setGoalsError(null);
       const g = (data || []).map(mapGoal);
       goalsRef.current = g;
       setGoals(g);
@@ -526,10 +565,11 @@ export default function App() {
               dbUser={dbUser}
               goals={displayGoals}
               goalsLoading={goalsLoading}
+              goalsError={goalsError}
               hasMoreGoals={hasMoreGoals}
               loadMoreGoals={loadMoreGoals}
               setCurrentScreen={navigate}
-              handleFirestoreError={handleDbError}
+              handleDbError={handleDbError}
               addOptimisticGoal={addOptimisticGoal}
               performSaveGoal={performSaveGoal}
             />
@@ -546,7 +586,7 @@ export default function App() {
               goals={displayGoals}
               initialTab={currentScreen.initialTab ?? 'plan'}
               setCurrentScreen={navigate}
-              handleFirestoreError={handleDbError}
+              handleDbError={handleDbError}
             />
           </motion.div>
         )}

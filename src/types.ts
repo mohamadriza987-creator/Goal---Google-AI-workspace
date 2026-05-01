@@ -51,6 +51,7 @@ export interface Goal {
   visibility: 'private' | 'public';
   publicFields?: string[];
   category?: string;
+  categories?: string[];
   status: 'active' | 'completed' | 'archived';
   progressPercent: number;
   likesCount: number;
@@ -113,7 +114,7 @@ export interface GoalTask {
 }
 
 export interface CalendarNote {
-  id: string;    // YYYY-MM-DD date key, used as Firestore doc ID
+  id: string;    // YYYY-MM-DD date key
   date: string;  // YYYY-MM-DD
   text: string;
   createdAt: string;
