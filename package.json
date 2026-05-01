@@ -10,7 +10,6 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
